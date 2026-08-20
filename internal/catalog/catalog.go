@@ -21,8 +21,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -48,20 +46,6 @@ func WithRemoteURL(url string) Option {
 func WithHTTPClient(client *http.Client) Option {
 	return func(c *Catalog) {
 		c.httpClient = client
-	}
-}
-
-// WithWorkspaceDir sets the workspace directory to scan.
-func WithWorkspaceDir(dir string) Option {
-	return func(c *Catalog) {
-		c.workspaceDir = dir
-	}
-}
-
-// WithHomeDir sets the global user home directory.
-func WithHomeDir(dir string) Option {
-	return func(c *Catalog) {
-		c.homeDir = dir
 	}
 }
 
@@ -95,6 +79,18 @@ func WithFallbackCacheDir(dir string) Option {
 	}
 }
 
+// WithWorkspaceDir is kept for backward compatibility (no-op).
+func WithWorkspaceDir(dir string) Option {
+	return func(c *Catalog) {
+	}
+}
+
+// WithHomeDir is kept for backward compatibility (no-op).
+func WithHomeDir(dir string) Option {
+	return func(c *Catalog) {
+	}
+}
+
 // Catalog implements the Store interface with deterministic in-memory lookup.
 type Catalog struct {
 	mu           sync.RWMutex
@@ -102,8 +98,6 @@ type Catalog struct {
 	manifest     *Manifest
 	remoteURL    string
 	httpClient   *http.Client
-	workspaceDir string
-	homeDir      string
 	enableRemote bool
 }
 
@@ -305,39 +299,24 @@ func (c *Catalog) discoverEmbeddedLocked() {
 }
 
 // LoadContent retrieves the full raw markdown content for an item.
-// It checks local paths, embedded skills, cached copies, or fetches from remote URLs.
-// If an item is remote and uncached while offline, it returns an explicit network error instead of a fake stub.
+// It loads embedded skills, in-memory bodies, or streams live from remote URLs.
+// Kungfu does not load skills from local filesystem paths; local paths are only used for installation via learn.
 func (c *Catalog) LoadContent(item *Item) (string, error) {
 	if item == nil {
 		return "", errors.New("cannot load content for nil item")
 	}
 
-	// 1. Local path
-	if item.Path != "" {
-		path := item.Path
-		fi, err := os.Stat(path)
-		if err == nil && fi.IsDir() {
-			skillPath := filepath.Join(path, "SKILL.md")
-			if data, err := os.ReadFile(skillPath); err == nil {
-				return string(data), nil
-			}
-		}
-		if data, err := os.ReadFile(path); err == nil {
-			return string(data), nil
-		}
-	}
-
-	// 2. Embedded self-skill (kungfu)
+	// 1. Embedded self-skill (kungfu)
 	if item.Source == "embedded" && item.ID == "kungfu" {
 		return string(EmbeddedKungFuSkill), nil
 	}
 
-	// 3. Direct frontmatter body already in memory
+	// 2. Direct frontmatter body already in memory
 	if strings.HasPrefix(item.Body, "---") {
 		return item.Body, nil
 	}
 
-	// 4. Remote URL: Stream live over HTTP into memory
+	// 3. Remote URL: Stream live over HTTP into memory
 	if item.URL != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -369,10 +348,10 @@ func (c *Catalog) LoadContent(item *Item) (string, error) {
 		return string(data), nil
 	}
 
-	// 5. If item has raw body, return it
+	// 4. If item has raw body, return it
 	if item.Body != "" {
 		return item.Body, nil
 	}
 
-	return "", fmt.Errorf("content unavailable for skill %q (no local path, cache, or remote URL)", item.Name)
+	return "", fmt.Errorf("content unavailable for skill %q (remote URL or embedded content required)", item.Name)
 }

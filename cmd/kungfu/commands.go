@@ -78,15 +78,7 @@ func NewApp(opts GlobalOptions, stdout, stderr io.Writer) (*App, error) {
 		stderr = os.Stderr
 	}
 
-	catOpts := []catalog.Option{
-		catalog.WithLocalDiscovery(true),
-		catalog.WithRemoteSync(true),
-	}
-	if opts.CacheDir != "" {
-		catOpts = append(catOpts, catalog.WithCacheDir(opts.CacheDir))
-	}
-
-	store, err := catalog.NewCatalog(catOpts...)
+	store, err := catalog.NewCatalog(catalog.WithRemoteSync(true))
 	if err != nil {
 		return nil, fmt.Errorf("initializing catalog store: %w", err)
 	}
@@ -765,25 +757,16 @@ func (a *App) RunLearn(args []string) int {
 			return ExitGeneral
 		}
 
-		// Write or copy content
-		if item.Path != "" {
-			// Copy from source folder
-			if err := copyDir(item.Path, destDir); err != nil {
-				a.logError("copying skill from %q to %q: %v", item.Path, destDir, err)
-				return ExitGeneral
-			}
-		} else {
-			// Write synthesized or embedded SKILL.md
-			content, err := a.loadItemContent(&item)
-			if err != nil {
-				a.logError("rendering content for skill %q: %v", item.Name, err)
-				return mapErrorToExitCode(err)
-			}
-			skillFile := filepath.Join(destDir, "SKILL.md")
-			if err := os.WriteFile(skillFile, []byte(content), 0644); err != nil {
-				a.logError("writing SKILL.md to %q: %v", skillFile, err)
-				return ExitGeneral
-			}
+		// Write SKILL.md content
+		content, err := a.loadItemContent(&item)
+		if err != nil {
+			a.logError("rendering content for skill %q: %v", item.Name, err)
+			return mapErrorToExitCode(err)
+		}
+		skillFile := filepath.Join(destDir, "SKILL.md")
+		if err := os.WriteFile(skillFile, []byte(content), 0644); err != nil {
+			a.logError("writing SKILL.md to %q: %v", skillFile, err)
+			return ExitGeneral
 		}
 
 		results = append(results, LearnResult{
@@ -809,53 +792,6 @@ func (a *App) RunLearn(args []string) int {
 		}
 		return ExitSuccess
 	}
-}
-
-func copyFile(src, dst string, mode os.FileMode) error {
-	srcFile, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer srcFile.Close()
-
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-		return err
-	}
-
-	perm := mode.Perm()
-	if perm == 0 {
-		perm = 0644
-	}
-
-	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
-	if err != nil {
-		return err
-	}
-	defer dstFile.Close()
-
-	_, err = io.Copy(dstFile, srcFile)
-	return err
-}
-
-func copyDir(src, dst string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		// Skip symlinks
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
-		if info.IsDir() {
-			return os.MkdirAll(target, 0755)
-		}
-		return copyFile(path, target, info.Mode())
-	})
 }
 
 func (a *App) RunFind(args []string) int {

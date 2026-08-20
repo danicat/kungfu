@@ -258,14 +258,8 @@ func TestManifestNormalization(t *testing.T) {
 	}
 }
 
-func TestCatalog_LoadContent_LocalAndEmbedded(t *testing.T) {
-	tmpDir := t.TempDir()
-	skillDir := filepath.Join(tmpDir, "myskill")
-	_ = os.MkdirAll(skillDir, 0755)
-	expectedBody := "---\nname: myskill\ndescription: test\n---\n# My Skill\nContent here.\n"
-	_ = os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(expectedBody), 0644)
-
-	cat, err := NewCatalog(WithCacheDir(tmpDir), WithRemoteURL("http://127.0.0.1:0/unused"))
+func TestCatalog_LoadContent_EmbeddedAndBody(t *testing.T) {
+	cat, err := NewCatalog(WithRemoteURL("http://127.0.0.1:0/unused"))
 	if err != nil {
 		t.Fatalf("NewCatalog failed: %v", err)
 	}
@@ -280,21 +274,7 @@ func TestCatalog_LoadContent_LocalAndEmbedded(t *testing.T) {
 		t.Errorf("expected embedded kungfu content, got: %s", kfContent)
 	}
 
-	// 2. Local path
-	localItem := &Item{
-		ID:   "myskill",
-		Name: "myskill",
-		Path: skillDir,
-	}
-	localContent, err := cat.LoadContent(localItem)
-	if err != nil {
-		t.Fatalf("LoadContent local failed: %v", err)
-	}
-	if localContent != expectedBody {
-		t.Errorf("expected %q, got %q", expectedBody, localContent)
-	}
-
-	// 3. Direct body
+	// 2. Direct in-memory body
 	bodyItem := &Item{
 		ID:   "bodyskill",
 		Body: "---\nname: bodyskill\n---\nBody text",
@@ -302,6 +282,17 @@ func TestCatalog_LoadContent_LocalAndEmbedded(t *testing.T) {
 	bodyContent, err := cat.LoadContent(bodyItem)
 	if err != nil || bodyContent != bodyItem.Body {
 		t.Errorf("unexpected bodyContent: %s, err: %v", bodyContent, err)
+	}
+
+	// 3. Local path should not be loaded
+	localItem := &Item{
+		ID:   "myskill",
+		Name: "myskill",
+		Path: "/tmp/some/skill",
+	}
+	_, err = cat.LoadContent(localItem)
+	if err == nil {
+		t.Fatalf("expected error when loading item with only local path, got nil")
 	}
 }
 

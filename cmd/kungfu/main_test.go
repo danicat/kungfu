@@ -542,42 +542,6 @@ func TestKungFuLiveWorkflow(t *testing.T) {
 	t.Logf("=== kungfu load kungfu output ===\n%s", loadOut.String())
 }
 
-func TestCopyDirAndFile(t *testing.T) {
-	srcDir := t.TempDir()
-	dstDir := t.TempDir()
-
-	subDir := filepath.Join(srcDir, "subdir")
-	if err := os.MkdirAll(subDir, 0755); err != nil {
-		t.Fatalf("failed to create subdir: %v", err)
-	}
-
-	file1 := filepath.Join(srcDir, "file1.txt")
-	file2 := filepath.Join(subDir, "file2.txt")
-	if err := os.WriteFile(file1, []byte("content1"), 0644); err != nil {
-		t.Fatalf("failed to write file1: %v", err)
-	}
-	if err := os.WriteFile(file2, []byte("content2"), 0644); err != nil {
-		t.Fatalf("failed to write file2: %v", err)
-	}
-
-	if err := copyDir(srcDir, dstDir); err != nil {
-		t.Fatalf("copyDir failed: %v", err)
-	}
-
-	dstFile1 := filepath.Join(dstDir, "file1.txt")
-	dstFile2 := filepath.Join(dstDir, "subdir", "file2.txt")
-
-	data1, err := os.ReadFile(dstFile1)
-	if err != nil || string(data1) != "content1" {
-		t.Errorf("expected content1, got %q, err %v", string(data1), err)
-	}
-
-	data2, err := os.ReadFile(dstFile2)
-	if err != nil || string(data2) != "content2" {
-		t.Errorf("expected content2, got %q, err %v", string(data2), err)
-	}
-}
-
 func TestRun_Learn_Global(t *testing.T) {
 	origHome := os.Getenv("HOME")
 	tempHome := t.TempDir()
