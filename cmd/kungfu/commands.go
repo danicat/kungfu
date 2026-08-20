@@ -1114,48 +1114,6 @@ func listScripts(item catalog.Item) []string {
 	return scripts
 }
 
-func (a *App) RunSync(args []string) int {
-	fs := flag.NewFlagSet("sync", flag.ContinueOnError)
-	fs.SetOutput(a.Stderr)
-	var forceFlag, jsonFlag, rawFlag, humanFlag bool
-	fs.BoolVar(&forceFlag, "force", false, "Force synchronization ignoring local cache")
-	fs.BoolVar(&forceFlag, "f", false, "Force synchronization (shorthand)")
-	fs.BoolVar(&jsonFlag, "json", false, "Output in JSON format")
-	fs.BoolVar(&rawFlag, "raw", false, "Output in raw format")
-	fs.BoolVar(&humanFlag, "human", false, "Output in human-readable format")
-
-	if _, err := parseFlagsWithArgs(fs, args); err != nil {
-		return ExitUsage
-	}
-
-	mode := a.resolveMode(jsonFlag, rawFlag, humanFlag)
-
-	err := a.Store.Sync(forceFlag)
-	if err != nil {
-		a.logError("catalog sync failed: %v", err)
-		return mapErrorToExitCode(err)
-	}
-
-	items := a.Store.All()
-	categories := a.Store.Categories()
-
-	switch mode {
-	case OutputModeJSON:
-		type SyncPayload struct {
-			Status          string `json:"status"`
-			ItemsCount      int    `json:"items_count"`
-			CategoriesCount int    `json:"categories_count"`
-		}
-		enc := json.NewEncoder(a.Stdout)
-		enc.SetIndent("", "  ")
-		_ = enc.Encode(SyncPayload{Status: "synced", ItemsCount: len(items), CategoriesCount: len(categories)})
-		return ExitSuccess
-	default:
-		fmt.Fprintf(a.Stdout, "Catalog synchronized successfully. Total items: %d, Categories: %d\n", len(items), len(categories))
-		return ExitSuccess
-	}
-}
-
 func (a *App) loadItemContent(item *catalog.Item) (string, error) {
 	return a.Store.LoadContent(item)
 }

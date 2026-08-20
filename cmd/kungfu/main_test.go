@@ -445,41 +445,6 @@ func TestRun_RunAndRead(t *testing.T) {
 	})
 }
 
-func TestRun_Sync(t *testing.T) {
-	t.Run("sync default", func(t *testing.T) {
-		var stdout, stderr bytes.Buffer
-		code := Run([]string{"sync"}, &stdout, &stderr)
-		if code != ExitSuccess {
-			t.Fatalf("Run(sync) = %d, want %d; stderr: %s", code, ExitSuccess, stderr.String())
-		}
-		if !strings.Contains(stdout.String(), "Catalog synchronized") {
-			t.Errorf("expected success message in sync output, got: %s", stdout.String())
-		}
-	})
-
-	t.Run("sync raw", func(t *testing.T) {
-		var stdout, stderr bytes.Buffer
-		code := Run([]string{"sync", "--raw"}, &stdout, &stderr)
-		if code != ExitSuccess {
-			t.Fatalf("Run(sync --raw) = %d, want %d; stderr: %s", code, ExitSuccess, stderr.String())
-		}
-		if !strings.Contains(stdout.String(), "Catalog synchronized") {
-			t.Errorf("expected success message in sync raw output, got: %s", stdout.String())
-		}
-	})
-
-	t.Run("sync human", func(t *testing.T) {
-		var stdout, stderr bytes.Buffer
-		code := Run([]string{"sync", "--human"}, &stdout, &stderr)
-		if code != ExitSuccess {
-			t.Fatalf("Run(sync --human) = %d, want %d; stderr: %s", code, ExitSuccess, stderr.String())
-		}
-		if !strings.Contains(stdout.String(), "Catalog synchronized") {
-			t.Errorf("expected success message in sync human output, got: %s", stdout.String())
-		}
-	})
-}
-
 func TestMapErrorToExitCode(t *testing.T) {
 	tests := []struct {
 		name string
@@ -666,25 +631,5 @@ func TestRun_Read_JSON(t *testing.T) {
 	}
 	if resp.Skill != "readskill" || resp.Reference != "doc" || resp.Content != "Reference body content" {
 		t.Errorf("unexpected read JSON response: %+v", resp)
-	}
-}
-
-func TestRun_Sync_JSON(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := Run([]string{"sync", "--json"}, &stdout, &stderr)
-	if code != ExitSuccess {
-		t.Fatalf("sync --json failed with code %d: %s", code, stderr.String())
-	}
-
-	var payload struct {
-		Status          string `json:"status"`
-		ItemsCount      int    `json:"items_count"`
-		CategoriesCount int    `json:"categories_count"`
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
-		t.Fatalf("failed to unmarshal sync json: %v, out: %s", err, stdout.String())
-	}
-	if payload.Status != "synced" {
-		t.Errorf("expected sync status synced, got %q", payload.Status)
 	}
 }

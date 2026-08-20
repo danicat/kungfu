@@ -125,8 +125,6 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return app.RunRun(cmdArgs)
 	case "read", "doc":
 		return app.RunRead(cmdArgs)
-	case "sync", "update":
-		return app.RunSync(cmdArgs)
 	default:
 		fmt.Fprintf(stderr, "error: unknown command %q. Run kungfu --help for usage.\n", cmdName)
 		return ExitUsage
@@ -154,8 +152,6 @@ COMMANDS:
           Execute a script bundled within an agent skill.
   read    <skill> <reference> [--json]
           Read companion reference or documentation.
-  sync    [--force] [--json]
-          Synchronize catalog from remote registry and local workspace/global paths.
 
 GLOBAL FLAGS:
   --json            Emit strict RFC 8259 JSON output
@@ -164,7 +160,6 @@ GLOBAL FLAGS:
   --config <path>   Path to custom configuration file
   --verbose, -v     Verbose output to stderr
   --no-color        Disable colored output
-  --cache-dir <dir> Custom cache directory (default: ~/.cache/kungfu)
   --version, -V     Show kungfu version
   --help, -h        Show this help message
 

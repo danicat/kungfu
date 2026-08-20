@@ -15,7 +15,6 @@
 package catalog
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -24,7 +23,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestSchemaTypesAndErrors(t *testing.T) {
@@ -54,106 +52,6 @@ func TestSchemaTypesAndErrors(t *testing.T) {
 
 	if !errors.Is(ErrItemNotFound, ErrItemNotFound) {
 		t.Errorf("expected ErrItemNotFound identity")
-	}
-}
-
-func TestCacheLoadSave(t *testing.T) {
-	tempDir := t.TempDir()
-	cacheFile := filepath.Join(tempDir, "catalog.json")
-
-	manifest := &Manifest{
-		Version:   "1.0.0",
-		UpdatedAt: time.Now().UTC(),
-		Items: []Item{
-			{ID: "item-1", Name: "Item 1", Type: ItemTypeSkill, Category: "test"},
-		},
-		Categories: []Category{
-			{Name: "test", Count: 1},
-		},
-	}
-
-	cache := NewCache("https://example.com/catalog.json", tempDir, "", http.DefaultClient)
-
-	err := cache.SaveDisk(manifest, &CacheMeta{ETag: "W/\"12345\""})
-	if err != nil {
-		t.Fatalf("SaveDisk failed: %v", err)
-	}
-
-	if _, err := os.Stat(cacheFile); os.IsNotExist(err) {
-		t.Fatalf("cache file %s was not created", cacheFile)
-	}
-
-	loaded, meta, err := cache.LoadDisk()
-	if err != nil {
-		t.Fatalf("LoadDisk failed: %v", err)
-	}
-	if loaded == nil || len(loaded.Items) != 1 || loaded.Items[0].ID != "item-1" {
-		t.Errorf("loaded manifest mismatch: %+v", loaded)
-	}
-	if meta == nil || meta.ETag != "W/\"12345\"" {
-		t.Errorf("etag mismatch: got %+v, want %q", meta, "W/\"12345\"")
-	}
-}
-
-func TestCacheFetchHTTP(t *testing.T) {
-	manifest := Manifest{
-		Version:   "1.0.0",
-		UpdatedAt: time.Now().UTC(),
-		Items: []Item{
-			{ID: "remote-item", Name: "Remote Item", Type: ItemTypeSkill, Category: "remote"},
-		},
-		Categories: []Category{
-			{Name: "remote", Count: 1},
-		},
-	}
-
-	data, err := json.Marshal(manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if match := r.Header.Get("If-None-Match"); match == "W/\"cached-etag\"" {
-			w.WriteHeader(http.StatusNotModified)
-			return
-		}
-		w.Header().Set("ETag", "W/\"new-etag\"")
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(data)
-	}))
-	defer server.Close()
-
-	tempDir := t.TempDir()
-	cache := NewCache(server.URL, tempDir, "", server.Client())
-
-	// 1. Initial Fetch (200 OK)
-	m1, meta1, err := cache.Fetch(context.Background(), false)
-	if err != nil {
-		t.Fatalf("initial fetch failed: %v", err)
-	}
-	if m1 == nil || len(m1.Items) != 1 || meta1 == nil || meta1.ETag != "W/\"new-etag\"" {
-		t.Errorf("unexpected fetch result: %+v, meta: %+v", m1, meta1)
-	}
-
-	// Save with mock ETag
-	_ = cache.SaveDisk(m1, &CacheMeta{ETag: "W/\"cached-etag\""})
-
-	// 2. Fetch with Cache Hit (304 Not Modified)
-	m2, meta2, err := cache.Fetch(context.Background(), false)
-	if err != nil {
-		t.Fatalf("cached fetch failed: %v", err)
-	}
-	if m2 == nil || len(m2.Items) != 1 || meta2 == nil || meta2.ETag != "W/\"cached-etag\"" {
-		t.Errorf("cached fetch result mismatch: %+v, meta: %+v", m2, meta2)
-	}
-
-	// 3. Force Fetch
-	m3, _, err := cache.Fetch(context.Background(), true)
-	if err != nil {
-		t.Fatalf("force fetch failed: %v", err)
-	}
-	if m3 == nil || len(m3.Items) != 1 {
-		t.Errorf("force fetch data mismatch: %+v", m3)
 	}
 }
 
@@ -199,6 +97,7 @@ func TestOKFBundleParsing(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(bundleDir, "doc-a.md"), []byte(doc1), 0644)
 	_ = os.WriteFile(filepath.Join(bundleDir, "doc-b.md"), []byte(doc2), 0644)
 	_ = os.WriteFile(filepath.Join(bundleDir, "okf.yaml"), []byte(manifest), 0644)
+
 	bundle, err := ParseOKFBundle(bundleDir)
 	if err != nil {
 		t.Fatalf("ParseOKFBundle failed: %v", err)
@@ -213,7 +112,6 @@ func TestOKFBundleParsing(t *testing.T) {
 }
 
 func TestCatalogStoreOperations(t *testing.T) {
-	cacheDir := t.TempDir()
 	manifest := &Manifest{
 		Version: "1.0.0",
 		Categories: []Category{
@@ -233,11 +131,15 @@ func TestCatalogStoreOperations(t *testing.T) {
 		},
 	}
 	data, _ := json.Marshal(manifest)
-	_ = os.WriteFile(filepath.Join(cacheDir, CatalogFileName), data, 0644)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(data)
+	}))
+	defer ts.Close()
 
 	cat, err := NewCatalog(
-		WithCacheDir(cacheDir),
-		WithRemoteSync(false),
+		WithRemoteURL(ts.URL),
+		WithHTTPClient(ts.Client()),
 	)
 	if err != nil {
 		t.Fatalf("NewCatalog failed: %v", err)
@@ -411,9 +313,7 @@ func TestCatalog_LoadContent_Remote(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	tmpDir := t.TempDir()
 	cat, err := NewCatalog(
-		WithCacheDir(tmpDir),
 		WithHTTPClient(ts.Client()),
 	)
 	if err != nil {
@@ -432,13 +332,6 @@ func TestCatalog_LoadContent_Remote(t *testing.T) {
 	}
 	if !strings.Contains(content, "Remote Content") {
 		t.Errorf("expected Remote Content, got: %s", content)
-	}
-
-	// Check that disk cache was populated
-	cachedSkill := filepath.Join(tmpDir, "skills", "remote-skill", "SKILL.md")
-	data, err := os.ReadFile(cachedSkill)
-	if err != nil || !strings.Contains(string(data), "Remote Content") {
-		t.Errorf("expected cached skill file at %s, got err %v", cachedSkill, err)
 	}
 }
 

@@ -33,7 +33,8 @@ kungfu --version
 
 - **⚡ Sub-Millisecond Search**: Embedded pure-Go search engine supporting **BM25**, **TF-IDF**, and **Reciprocal Rank Fusion (RRF) Hybrid Search**.
 - **📦 Zero-Dependency Execution**: Single static binary with zero external runtime dependencies (no Node.js or Python required for core gateway operations).
-- **🛡️ 100% Offline Resilience**: Full multi-tier caching (`~/.cache/kungfu`) with automatic HTTP conditional synchronization (`ETag`, `If-Modified-Since`, `304 Not Modified`).
+- **🌐 In-Memory Live Gateway**: Direct in-memory discovery and streaming with zero implicit disk cache clutter.
+- **💾 Explicit Persistence**: Skills are permanently learned and persisted to workspace or global configuration only when explicitly instructed (`kungfu learn`).
 - **🤖 Autonomous Agent Native**: Verbatim markdown streaming for prompt context injection, clean POSIX stream separation (`stdout` machine data, `stderr` diagnostics), and structured JSON (`--json`).
 - **📐 Standards Compliant**: Adheres to the official [`agentskills.io`](https://agentskills.io) metadata specification and Open Knowledge Format (OKF).
 - **💡 "Did You Mean?" Engine**: Levenshtein-based fuzzy suggestions for misspelled skills, categories, tags, scripts, and references.
@@ -126,14 +127,6 @@ Read supplementary reference manuals, API guides, and architecture specification
 kungfu read godoctor architecture
 ```
 
-### 8. Synchronize Catalog (`sync`)
-
-Fetch the latest remote registry manifest and refresh the local cache:
-
-```bash
-kungfu sync
-```
-
 ---
 
 ## 🗂️ Canonical Taxonomy
@@ -148,7 +141,7 @@ All skills in the ecosystem map into one of the 7 canonical categories:
 | `agents` | 🤖 | Agent Skills authoring, evaluation suites, progressive disclosure, swarms |
 | `writing` | ✍️ | De-slopification, Inverted Pyramid density, tech review, style guidelines |
 | `standards` | 📐 | Request for Comments (RFCs), Architecture Decision Records (ADRs), QA gates |
-| `gateway` | 🥋 | Fast discovery, catalog synchronization, search indexing, batch loading |
+| `gateway` | 🥋 | Fast discovery, search indexing, live streaming, batch loading |
 
 ---
 

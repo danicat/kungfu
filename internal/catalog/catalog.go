@@ -16,6 +16,7 @@ package catalog
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -27,6 +28,9 @@ import (
 	"sync"
 	"time"
 )
+
+// DefaultRemoteURL is the default endpoint for the skills catalog.
+const DefaultRemoteURL = "https://skills.danicat.dev/catalog.json"
 
 const defaultRemoteURL = DefaultRemoteURL
 
@@ -47,20 +51,6 @@ func WithHTTPClient(client *http.Client) Option {
 	}
 }
 
-// WithCacheDir sets the cache directory for manifest and remote metadata.
-func WithCacheDir(dir string) Option {
-	return func(c *Catalog) {
-		c.cacheDir = dir
-	}
-}
-
-// WithFallbackCacheDir sets a secondary directory to read cached catalogs from if cacheDir has nothing.
-func WithFallbackCacheDir(dir string) Option {
-	return func(c *Catalog) {
-		c.fallbackCacheDir = dir
-	}
-}
-
 // WithWorkspaceDir sets the workspace directory to scan.
 func WithWorkspaceDir(dir string) Option {
 	return func(c *Catalog) {
@@ -75,14 +65,14 @@ func WithHomeDir(dir string) Option {
 	}
 }
 
-// WithRemoteSync enables or disables remote catalog syncing.
+// WithRemoteSync enables or disables remote catalog fetching.
 func WithRemoteSync(enable bool) Option {
 	return func(c *Catalog) {
 		c.enableRemote = enable
 	}
 }
 
-// WithRemoteDiscovery enables or disables remote catalog syncing (alias for WithRemoteSync).
+// WithRemoteDiscovery enables or disables remote catalog fetching (alias for WithRemoteSync).
 func WithRemoteDiscovery(enable bool) Option {
 	return WithRemoteSync(enable)
 }
@@ -93,19 +83,28 @@ func WithLocalDiscovery(enable bool) Option {
 	}
 }
 
+// WithCacheDir is kept for backward compatibility (no-op).
+func WithCacheDir(dir string) Option {
+	return func(c *Catalog) {
+	}
+}
+
+// WithFallbackCacheDir is kept for backward compatibility (no-op).
+func WithFallbackCacheDir(dir string) Option {
+	return func(c *Catalog) {
+	}
+}
+
 // Catalog implements the Store interface with deterministic in-memory lookup.
 type Catalog struct {
-	mu               sync.RWMutex
-	items            map[string]Item
-	manifest         *Manifest
-	cache            *Cache
-	remoteURL        string
-	httpClient       *http.Client
-	cacheDir         string
-	fallbackCacheDir string
-	workspaceDir     string
-	homeDir          string
-	enableRemote     bool
+	mu           sync.RWMutex
+	items        map[string]Item
+	manifest     *Manifest
+	remoteURL    string
+	httpClient   *http.Client
+	workspaceDir string
+	homeDir      string
+	enableRemote bool
 }
 
 // NewCatalog constructs a Catalog instance with option modifiers.
@@ -121,66 +120,38 @@ func NewCatalog(opts ...Option) (*Catalog, error) {
 		opt(c)
 	}
 
-	if c.cacheDir == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			c.cacheDir = filepath.Join(home, ".cache", "kungfu")
-		}
-	}
-
-	c.cache = NewCache(c.remoteURL, c.cacheDir, c.fallbackCacheDir, c.httpClient)
-
-	// 1. Load from disk cache if available
-	if manifest, _, err := c.cache.LoadDisk(); err == nil && manifest != nil && len(manifest.Items) > 0 {
-		c.manifest = manifest
-		for _, it := range manifest.Items {
-			c.items[strings.ToLower(it.ID)] = it
-			c.items[strings.ToLower(it.Name)] = it
-		}
-	} else if c.enableRemote {
-		// 2. Fetch directly from remote registry on startup if cache is empty
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		manifest, _, err := c.cache.Fetch(ctx, false)
-		cancel()
-		if err == nil && manifest != nil {
-			c.manifest = manifest
-			for _, it := range manifest.Items {
-				c.items[strings.ToLower(it.ID)] = it
-				c.items[strings.ToLower(it.Name)] = it
+	// 1. Fetch live remote catalog manifest if enabled
+	if c.enableRemote && c.remoteURL != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.remoteURL, nil)
+		if err == nil {
+			req.Header.Set("User-Agent", "kungfu/0.1.0")
+			resp, err := c.httpClient.Do(req)
+			if err == nil {
+				defer resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					data, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+					if err == nil {
+						var manifest Manifest
+						if err := json.Unmarshal(data, &manifest); err == nil {
+							c.manifest = &manifest
+							for _, it := range manifest.Items {
+								c.items[strings.ToLower(it.ID)] = it
+								c.items[strings.ToLower(it.Name)] = it
+							}
+						}
+					}
+				}
 			}
 		}
+		cancel()
 	}
 
-	// 3. Register built-in embedded kungfu item
+	// 2. Register built-in embedded kungfu item
 	c.mu.Lock()
 	c.discoverEmbeddedLocked()
 	c.mu.Unlock()
 	return c, nil
-}
-
-// Sync refreshes the catalog from the remote registry.
-func (c *Catalog) Sync(force bool) error {
-	var remoteErr error
-	if c.enableRemote && c.cache != nil {
-		manifest, _, err := c.cache.Fetch(context.Background(), force)
-		if err != nil {
-			remoteErr = err
-		} else if manifest != nil {
-			c.mu.Lock()
-			c.manifest = manifest
-			c.items = make(map[string]Item)
-			for _, it := range manifest.Items {
-				c.items[strings.ToLower(it.ID)] = it
-				c.items[strings.ToLower(it.Name)] = it
-			}
-			c.discoverEmbeddedLocked()
-			c.mu.Unlock()
-			return nil
-		}
-	}
-	c.mu.Lock()
-	c.discoverEmbeddedLocked()
-	c.mu.Unlock()
-	return remoteErr
 }
 
 // Get retrieves an item by ID or Name (case-insensitive).
@@ -366,19 +337,8 @@ func (c *Catalog) LoadContent(item *Item) (string, error) {
 		return item.Body, nil
 	}
 
-	// 4. Remote URL or cached copy
+	// 4. Remote URL: Stream live over HTTP into memory
 	if item.URL != "" {
-		cleanName := filepath.Base(filepath.Clean(item.Name))
-		if cleanName == "." || cleanName == ".." || strings.Contains(item.Name, "..") {
-			cleanName = "skill"
-		}
-		var cacheFile string
-		if c.cacheDir != "" {
-			cacheFile = filepath.Join(c.cacheDir, "skills", cleanName, "SKILL.md")
-			if data, err := os.ReadFile(cacheFile); err == nil && len(data) > 0 {
-				return string(data), nil
-			}
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
@@ -405,10 +365,6 @@ func (c *Catalog) LoadContent(item *Item) (string, error) {
 		}
 		if len(data) == 0 {
 			return "", fmt.Errorf("empty content downloaded for %q", item.Name)
-		}
-		if cacheFile != "" {
-			_ = os.MkdirAll(filepath.Dir(cacheFile), 0755)
-			_ = os.WriteFile(cacheFile, data, 0644)
 		}
 		return string(data), nil
 	}

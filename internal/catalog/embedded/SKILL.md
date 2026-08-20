@@ -1,7 +1,7 @@
 ---
 name: kungfu
 description: >
-  Agent Skills & Open Knowledge Gateway CLI. Search, discover, inspect, load, learn, and execute specialized agent skills and knowledge bundles with pure Go BM25/TF-IDF/Hybrid ranking, multi-skill batch loading, category/tag selectors, persistent learning, and local/remote catalog sync.
+  Agent Skills & Open Knowledge Gateway CLI. Search, discover, inspect, load, learn, and execute specialized agent skills and knowledge bundles with pure Go BM25/TF-IDF/Hybrid ranking, multi-skill batch loading, category/tag selectors, and persistent learning.
 license: Apache-2.0
 metadata:
   category: gateway
@@ -24,7 +24,7 @@ metadata:
 3. **Deterministic & Pure Go Search**: Zero-dependency pure Go search engine supporting BM25 ($k_1=1.2, b=0.75$), TF-IDF with sublinear scaling, Exact substring, and Reciprocal Rank Fusion (RRF).
 4. **Ergonomic & Unambiguous Loading**: Load or learn single skills, explicit groups, entire categories, or boolean tag expressions (`AND`, `OR`, `NOT`) with clear markdown boundaries.
 5. **Fuzzy "Did You Mean?" Assistance**: Automatic typo recovery, prefix matching, category/tag suggestions, and edit-distance suggestions whenever an item or command target is not found.
-6. **Offline-First Resilience**: Embedded self-skill (`kungfu`), HTTP conditional caching (ETag / If-Modified-Since), and SHA-256 integrity verification.
+6. **Embedded Gateway**: Embedded self-skill (`kungfu`) and live in-memory registry access without implicit disk clutter.
 
 ---
 
@@ -109,7 +109,6 @@ kungfu learn -f godoctor
 | `kungfu learn` | `kungfu learn <skills...> [-g] [-f] [-c <c>] [-t <t>]` | Install & persist skills into workspace or global dir |
 | `kungfu run` | `kungfu run <skill> <script> [args...]` | Run bundled skill automation script |
 | `kungfu read` | `kungfu read <skill> <reference>` | Read companion reference document |
-| `kungfu sync` | `kungfu sync [--force]` | Synchronize remote registry & local cache |
 
 ### Output Modes
 - **Default (Raw Markdown)**: Clean, uncompressed verbatim markdown documents separated with section headers.
@@ -121,5 +120,5 @@ kungfu learn -f godoctor
 - `1`: General Runtime Error
 - `2`: Usage / Flag Parsing Error
 - `3`: Item, Skill, or Category Not Found
-- `4`: Network Error (remote registry unavailable & offline cache missing)
+- `4`: Network Error (remote registry or skill resource unreachable)
 - `5`: Integrity Error (SHA-256 digest or frontmatter mismatch)

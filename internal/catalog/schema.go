@@ -26,7 +26,6 @@ var (
 	ErrInvalidFrontmatter = errors.New("invalid frontmatter")
 	ErrDigestMismatch     = errors.New("digest mismatch")
 	ErrEmptyManifest      = errors.New("empty catalog manifest")
-	ErrCacheNotFound      = errors.New("cache not found")
 )
 
 // ItemType defines the supported catalog item types.
@@ -228,13 +227,12 @@ type LoadedDoc struct {
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
-// Store defines the public catalog query and synchronization interface.
+// Store defines the public catalog query interface.
 type Store interface {
 	Get(idOrName string) (*Item, error)
 	List(category string) ([]Item, error)
 	ListByFilter(filter QueryFilter) []Item
 	All() []Item
 	Categories() []Category
-	Sync(force bool) error
 	LoadContent(item *Item) (string, error)
 }
