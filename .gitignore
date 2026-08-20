@@ -1,0 +1,33 @@
+# Binaries and build artifacts
+bin/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test databases and coverage artifacts
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+testquery.db
+coverage.out
+coverage.html
+
+# Operating System artifacts
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE and Editor configurations
+.idea/
+.vscode/
+*.swp
+*~
+*.bak
