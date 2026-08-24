@@ -137,6 +137,16 @@ func (t *Tokenizer) scan(text string) []string {
 				continue
 			}
 			if b >= 'A' && b <= 'Z' {
+				if len(buf) > 0 {
+					prev := text[i-1]
+					if (prev >= 'a' && prev <= 'z') || (prev >= '0' && prev <= '9') {
+						tokens = append(tokens, string(buf))
+						buf = buf[:0]
+					} else if len(buf) > 1 && i+1 < n && text[i+1] >= 'a' && text[i+1] <= 'z' {
+						tokens = append(tokens, string(buf))
+						buf = buf[:0]
+					}
+				}
 				buf = append(buf, b+32)
 				i++
 				continue

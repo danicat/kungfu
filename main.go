@@ -15,12 +15,18 @@
 package main
 
 import (
+	"embed"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+
+	"github.com/danicat/kungfu/internal/search"
 )
+
+//go:embed all:skills
+var embeddedSkills embed.FS
 
 func main() {
 	code := Run(os.Args[1:], os.Stdout, os.Stderr)
@@ -38,14 +44,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 	var opts GlobalOptions
 	var showVersion, showHelp bool
-	var jsonFlag, rawFlag, humanFlag bool
+	var jsonFlag, rawFlag bool
 
 	fs := flag.NewFlagSet("kungfu", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
 	fs.BoolVar(&jsonFlag, "json", false, "Output in JSON format")
-	fs.BoolVar(&rawFlag, "raw", false, "Output in raw format (default)")
-	fs.BoolVar(&humanFlag, "human", false, "Output in human-readable table format")
+	fs.BoolVar(&rawFlag, "raw", false, "Output in raw format")
 	fs.StringVar(&opts.Config, "config", "", "Path to custom config file")
 	fs.BoolVar(&opts.Verbose, "verbose", false, "Enable verbose logging")
 	fs.BoolVar(&opts.Verbose, "v", false, "Enable verbose logging (shorthand)")
@@ -83,7 +88,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
-	if showVersion {
+	if showVersion || cmdName == "version" {
 		fmt.Fprintf(stdout, "kungfu version %s\n", version)
 		return ExitSuccess
 	}
@@ -98,10 +103,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 	if jsonFlag {
 		opts.Mode = OutputModeJSON
-	} else if humanFlag {
-		opts.Mode = OutputModeHuman
-	} else {
+	} else if rawFlag {
 		opts.Mode = OutputModeRaw
+	} else {
+		opts.Mode = OutputModeHuman
 	}
 
 	app, err := NewApp(opts, stdout, stderr)
@@ -121,43 +126,64 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return app.RunLoad(cmdArgs)
 	case "learn", "install":
 		return app.RunLearn(cmdArgs)
+	case "forget", "unlearn":
+		return app.RunForget(cmdArgs)
+	case "update", "upgrade":
+		return app.RunUpdate(cmdArgs)
+	case "status":
+		return app.RunStatus(cmdArgs)
 	case "run", "exec":
 		return app.RunRun(cmdArgs)
-	case "read", "doc":
-		return app.RunRead(cmdArgs)
 	default:
-		fmt.Fprintf(stderr, "error: unknown command %q. Run kungfu --help for usage.\n", cmdName)
+		validCommands := []string{
+			"list", "find", "show", "load", "learn", "forget", "update", "status", "run", "version", "help",
+		}
+		fmt.Fprintf(stderr, "error: unknown command %q.\n", cmdName)
+		suggs := search.Suggest(cmdName, validCommands, 2)
+		if len(suggs) > 0 {
+			fmt.Fprintln(stderr, "\nDid you mean:")
+			for _, s := range suggs {
+				fmt.Fprintf(stderr, "  - kungfu %s\n", s)
+			}
+		}
+		fmt.Fprintln(stderr, "\nRun 'kungfu --help' for available commands and usage.")
 		return ExitUsage
 	}
 }
 
 func printGlobalHelp(w io.Writer) {
-	fmt.Fprintln(w, `kungfu - Agent Skills & Open Knowledge Gateway
+	fmt.Fprintln(w, `kungfu - Agent Skills Gateway
 
 USAGE:
   kungfu [global flags] <command> [flags] [arguments...]
 
 COMMANDS:
-  list    [--category <cat>] [--tags <expr>] [--all] [--json] [--human]
+  list    [--category <cat>] [--tags <expr>] [--all] [--json] [--raw]
           List available skill categories and items.
-  find    <keywords...> [--category <cat>] [--tags <expr>] [--strategy hybrid|bm25|tfidf|exact]
+  find    <keywords...> [--category <cat>] [--tags <expr>] [--strategy hybrid|bm25|tfidf|exact] [--limit <n>] [--threshold <t>] [--json] [--raw]
           Search skills with pure Go BM25/TF-IDF/Hybrid ranking.
-  show    <skill1> [skill2...] [--category <cat>] [--tags <expr>] [--all] [--json] [--human]
+  show    <skill1> [skill2...] [--category <cat>] [--tags <expr>] [--all] [--json] [--raw]
           Display metadata, description, tags, and summary for one or more skills.
-  load    <skill1> [skill2...] [--category <cat>] [--tags <expr>] [--all] [--json] [--human]
-          Load verbatim markdown instructions for single skills, groups, categories, or tag sets.
-  learn   <skill1> [skill2...] [--global] [--force] [--category <cat>] [--tags <expr>] [--all]
-          Install and persist skills to canonical workspace or global locations.
+  load    <skill1[/subpath]> [skill2...] [--category <cat>] [--tags <expr>] [--all] [--json] [--raw]
+          Load verbatim markdown instructions or subpath files (references, scripts, assets) for JIT execution.
+  learn   <skill1> [skill2...] [--global] [--force] [--load] [--category <cat>] [--tags <expr>] [--all] [--json] [--raw]
+          Install and persist skills to canonical workspace or global locations (optionally stream with --load).
+  forget  <skill1> [skill2...] [--global] [--force] [--all] [--json] [--raw]
+          Uninstall and soft-delete skills from workspace or global locations.
+  update  [skill1...] [--global] [--all] [--yes] [--force] [--refresh] [--json] [--raw]
+          Check for updates (dry-run without args) or apply updates to installed skills.
+  status  [skill1...] [--category <cat>] [--tags <expr>] [--global] [--json] [--raw]
+          Show installed skills, workspace paths, versions, forgotten skills, and JIT load history.
+  version
+          Display kungfu version.
   run     <skill> <script> [args...]
           Execute a script bundled within an agent skill.
-  read    <skill> <reference> [--json]
-          Read companion reference or documentation.
 
 GLOBAL FLAGS:
   --json            Emit strict RFC 8259 JSON output
-  --raw             Emit verbatim uncompressed markdown/text (default)
-  --human           Emit styled tables for terminal viewing
+  --raw             Emit verbatim raw markdown/text
   --config <path>   Path to custom configuration file
+  --cache-dir <dir> Custom cache directory (default ~/.cache/kungfu)
   --verbose, -v     Verbose output to stderr
   --no-color        Disable colored output
   --version, -V     Show kungfu version

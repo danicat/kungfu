@@ -14,10 +14,10 @@
 
 ### Installation
 
-Install the latest release using Go (1.24+):
+Install the latest release using Go (1.27+):
 
 ```bash
-go install github.com/danicat/kungfu/cmd/kungfu@latest
+go install github.com/danicat/kungfu@latest
 ```
 
 Verify your installation:
@@ -36,7 +36,7 @@ kungfu --version
 - **🌐 In-Memory Live Gateway**: Direct in-memory discovery and streaming with zero implicit disk cache clutter.
 - **💾 Explicit Persistence**: Skills are permanently learned and persisted to workspace or global configuration only when explicitly instructed (`kungfu learn`).
 - **🤖 Autonomous Agent Native**: Verbatim markdown streaming for prompt context injection, clean POSIX stream separation (`stdout` machine data, `stderr` diagnostics), and structured JSON (`--json`).
-- **📐 Standards Compliant**: Adheres to the official [`agentskills.io`](https://agentskills.io) metadata specification and Open Knowledge Format (OKF).
+- **📐 Standards Compliant**: Adheres to the official [`agentskills.io`](https://agentskills.io) metadata specification.
 - **💡 "Did You Mean?" Engine**: Levenshtein-based fuzzy suggestions for misspelled skills, categories, tags, scripts, and references.
 
 ---
@@ -104,6 +104,9 @@ Install skills directly into your workspace (`.agents/skills/`) or global home d
 # Install to current workspace (.agents/skills/<skill>/)
 kungfu learn godoctor
 
+# Install and load instructions into context
+kungfu learn godoctor --load
+
 # Install globally to user home (~/.agents/skills/<skill>/)
 kungfu learn godoctor -g
 
@@ -111,7 +114,52 @@ kungfu learn godoctor -g
 kungfu learn godoctor -f
 ```
 
-### 6. Run Bundled Scripts (`run`)
+### 6. Inspect State & Lifecycle (`status`)
+
+Inspect installed skills, workspace/global paths, versions, and JIT load history:
+
+```bash
+# Check installed skills in current workspace
+kungfu status
+
+# Check global skills
+kungfu status -g
+
+# Output structured JSON
+kungfu status --json
+```
+
+### 7. Check & Apply Updates (`update`)
+
+Check for upstream updates or sync latest versions with cryptographic integrity validation:
+
+```bash
+# Preview available updates (dry-run)
+kungfu update
+
+# Update all installed skills in current workspace
+kungfu update --all
+
+# Update a specific skill
+kungfu update godoctor
+```
+
+### 8. Uninstall Skills (`forget`)
+
+Uninstall skills and update state manifest:
+
+```bash
+# Uninstall from workspace
+kungfu forget godoctor
+
+# Uninstall all workspace skills
+kungfu forget --all
+
+# Uninstall global skill
+kungfu forget -g kungfu
+```
+
+### 9. Run Bundled Scripts (`run`)
 
 Execute companion automation scripts bundled inside skills with automatic runtime detection (`uv`, `python3`, `bun`, `deno`, `node`, `bash`):
 
@@ -119,7 +167,7 @@ Execute companion automation scripts bundled inside skills with automatic runtim
 kungfu run godoctor analyze.sh --json
 ```
 
-### 7. Read Companion References (`read`)
+### 10. Read Companion References (`read`)
 
 Read supplementary reference manuals, API guides, and architecture specifications:
 
@@ -129,9 +177,9 @@ kungfu read godoctor architecture
 
 ---
 
-## 🗂️ Canonical Taxonomy
+## 🗂️ Taxonomy & Categories
 
-All skills in the ecosystem map into one of the 7 canonical categories:
+Skills are dynamically organized into domain categories discovered directly from skill packages and discovery manifests, such as:
 
 | Category | Emoji | Scope & Focus |
 |---|---|---|
@@ -149,7 +197,7 @@ All skills in the ecosystem map into one of the 7 canonical categories:
 
 ```
                        ┌────────────────────────┐
-                       │       cmd/kungfu       │
+                       │     kungfu (Root)      │
                        │ (CLI Parsing & Streams)│
                        └───────────┬────────────┘
                                    │
@@ -157,17 +205,17 @@ All skills in the ecosystem map into one of the 7 canonical categories:
          │                         │                        │
          ▼                         ▼                        ▼
 ┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
-│ internal/search  │     │ internal/runner  │     │internal/compress │
-│ (BM25, TF-IDF,   │     │ (Subprocesses &  │     │ (Markdown AST &  │
-│  RRF Hybrid)     │     │  Ref Documents)  │     │  Table Compactor)│
+│ internal/search  │     │ internal/runner  │     │  internal/state  │
+│ (BM25, TF-IDF,   │     │ (Subprocesses &  │     │ (Manifests, TTL, │
+│  RRF Hybrid)     │     │  Ref Documents)  │     │  Soft Deletes)   │
 └────────┬─────────┘     └─────────┬────────┘     └────────┬─────────┘
          │                         │                       │
          └─────────────────────────┼───────────────────────┘
                                    ▼
                        ┌────────────────────────┐
                        │    internal/catalog    │
-                       │  (Schema, OKF, HTTP,   │
-                       │   Cache, Embedding)    │
+                       │ (Schema, Frontmatter,  │
+                       │  HTTP, Cache, Embed)   │
                        └────────────────────────┘
 ```
 

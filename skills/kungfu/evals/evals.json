@@ -1,0 +1,179 @@
+{
+  "skill_name": "kungfu",
+  "version": "0.1.0",
+  "description_eval": {
+    "train_set": [
+      {
+        "id": "train_pos_1",
+        "query": "/ebitengine-helper",
+        "should_trigger": true,
+        "rationale": "Unmapped slash command should trigger catalog lookup"
+      },
+      {
+        "id": "train_pos_2",
+        "query": "Find me a skill for optimizing SEO and structured data",
+        "should_trigger": true,
+        "rationale": "Explicit skill search request"
+      },
+      {
+        "id": "train_pos_3",
+        "query": "Do we have an agent skill for refactoring Go code?",
+        "should_trigger": true,
+        "rationale": "Inquiry about available agent skill capabilities"
+      },
+      {
+        "id": "train_pos_4",
+        "query": "Load the game development skills into context",
+        "should_trigger": true,
+        "rationale": "Batch loading skills by category"
+      },
+      {
+        "id": "train_pos_5",
+        "query": "Install godoctor and ebitengineer into this workspace",
+        "should_trigger": true,
+        "rationale": "Persisting skills into workspace directory"
+      },
+      {
+        "id": "train_pos_6",
+        "query": "Search the skill catalog for procedural audio generation",
+        "should_trigger": true,
+        "rationale": "Searching catalog with domain keywords"
+      },
+      {
+        "id": "train_neg_1",
+        "query": "Write a Go function to calculate fibonacci numbers",
+        "should_trigger": false,
+        "rationale": "Standard Go coding request, does not require skill discovery or management"
+      },
+      {
+        "id": "train_neg_2",
+        "query": "Explain how BM25 ranking algorithm works in mathematical terms",
+        "should_trigger": false,
+        "rationale": "Theoretical question on information retrieval math"
+      },
+      {
+        "id": "train_neg_3",
+        "query": "Run git commit -m 'update documentation'",
+        "should_trigger": false,
+        "rationale": "Standard git version control operation"
+      },
+      {
+        "id": "train_neg_4",
+        "query": "Optimize the database query latency in PostgreSQL",
+        "should_trigger": false,
+        "rationale": "Database optimization task, no skill catalog involvement requested"
+      },
+      {
+        "id": "train_neg_5",
+        "query": "What are the rules of Kung Fu martial arts?",
+        "should_trigger": false,
+        "rationale": "Martial arts domain question, distinct from the kungfu agent skill gateway"
+      },
+      {
+        "id": "train_neg_6",
+        "query": "How do I configure nginx as a reverse proxy?",
+        "should_trigger": false,
+        "rationale": "Standard devops/sysadmin configuration task"
+      }
+    ],
+    "validation_set": [
+      {
+        "id": "val_pos_1",
+        "query": "What skills are available in the writing category?",
+        "should_trigger": true,
+        "rationale": "Listing and inspecting catalog categories"
+      },
+      {
+        "id": "val_pos_2",
+        "query": "I need to run a bundled automation script from the ebitengineer skill",
+        "should_trigger": true,
+        "rationale": "Executing skill automation via kungfu run"
+      },
+      {
+        "id": "val_pos_3",
+        "query": "How do I discover new agent skills in the catalog?",
+        "should_trigger": true,
+        "rationale": "General inquiry into discovering and loading agent skills"
+      },
+      {
+        "id": "val_pos_4",
+        "query": "Load all skills tagged with golang AND backend",
+        "should_trigger": true,
+        "rationale": "Boolean tag selector loading query"
+      },
+      {
+        "id": "val_neg_1",
+        "query": "Refactor this TypeScript interface to use generics",
+        "should_trigger": false,
+        "rationale": "Standard TypeScript refactoring task"
+      },
+      {
+        "id": "val_neg_2",
+        "query": "Set up a docker-compose file for a redis instance",
+        "should_trigger": false,
+        "rationale": "Standard container orchestration task"
+      },
+      {
+        "id": "val_neg_3",
+        "query": "Debug why my unit test in Go is failing with nil pointer dereference",
+        "should_trigger": false,
+        "rationale": "Direct debugging task on current Go code"
+      },
+      {
+        "id": "val_neg_4",
+        "query": "Summarize this PDF document",
+        "should_trigger": false,
+        "rationale": "General document summarization request"
+      }
+    ]
+  },
+  "evals": [
+    {
+      "id": 1,
+      "name": "unmapped_slash_command_lookup",
+      "prompt": "User enters command /seo-optimizer to audit their article metadata.",
+      "expected_output": "Agent recognizes unmapped command, invokes kungfu find seo-optimizer, identifies the skill, and loads or learns it.",
+      "assertions": [
+        "Invokes kungfu find with 'seo-optimizer' or related keywords",
+        "Identifies seo-optimizer in catalog results",
+        "Uses kungfu load or kungfu learn to retrieve skill instructions",
+        "Does not error or report unknown command failure without checking catalog"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "multi_skill_jit_loading",
+      "prompt": "Load both godoctor and ebitengineer skills into the current session context.",
+      "expected_output": "Agent executes kungfu load godoctor ebitengineer and incorporates verbatim instructions.",
+      "assertions": [
+        "Runs kungfu load godoctor ebitengineer in a single batch invocation",
+        "Receives verbatim markdown bodies for both skills",
+        "Does not create files on disk (.agents/skills/ is untouched)",
+        "Acknowledges capabilities of both loaded skills"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "workspace_persistence_learning",
+      "prompt": "Install the skill-optimizer skill into our project workspace.",
+      "expected_output": "Agent executes kungfu learn skill-optimizer, writing to .agents/skills/skill-optimizer/SKILL.md.",
+      "assertions": [
+        "Runs kungfu learn skill-optimizer without -g flag",
+        "Confirms installation in .agents/skills/skill-optimizer",
+        "Reports success to user with skill summary",
+        "Preserves existing files unless --force is specified"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "category_and_boolean_tag_discovery",
+      "prompt": "Show me all skills in the game-dev category tagged with 2d and physics.",
+      "expected_output": "Agent executes kungfu find or kungfu list with --category game-dev and --tags \"2d AND physics\".",
+      "assertions": [
+        "Passes properly quoted boolean tag expression: --tags \"2d AND physics\"",
+        "Specifies --category game-dev",
+        "Presents matching skills with metadata to user"
+      ]
+    }
+  ]
+}

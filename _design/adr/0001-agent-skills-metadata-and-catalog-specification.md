@@ -21,7 +21,7 @@ To solve these challenges, we established a unified specification aligning the *
 
 ## 2. Decision
 
-We define and standardize the **Agent Skills & Open Knowledge Format (OKF) Metadata Specification** across both the `skills` repository (`https://skills.danicat.dev`) and the `kungfu` gateway CLI.
+We define and standardize the **Agent Skills Metadata Specification** across both the `skills` repository (`https://skills.danicat.dev`) and the `kungfu` gateway CLI.
 
 ### 2.1 YAML Frontmatter Specification (`SKILL.md`)
 

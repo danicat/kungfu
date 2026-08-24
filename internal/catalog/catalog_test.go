@@ -15,14 +15,15 @@
 package catalog
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSchemaTypesAndErrors(t *testing.T) {
@@ -55,24 +56,20 @@ func TestSchemaTypesAndErrors(t *testing.T) {
 	}
 }
 
-func TestOKFExtractionAndParsing(t *testing.T) {
-	docContent := "---\nname: doc-one\ndescription: >\n  First OKF Doc with multiline\n  folded description.\nmetadata:\n  tags: [go, ai]\n---\n# Main Heading\nLink to [[other-doc]] and [second doc](second.md)\n"
-	fm, body, err := ParseFrontmatter([]byte(docContent))
+func TestFrontmatterExtractionAndParsing(t *testing.T) {
+	docContent := "---\nname: doc-one\ndescription: >\n  First Skill Doc with multiline\n  folded description.\nmetadata:\n  tags: [go, ai]\n---\n# Main Heading\nSome markdown content here.\n"
+	fm, _, err := ParseFrontmatter([]byte(docContent))
 	if err != nil {
 		t.Fatalf("ParseFrontmatter failed: %v", err)
 	}
 	if fm.Name != "doc-one" {
 		t.Errorf("unexpected frontmatter name: %+v", fm)
 	}
-	if !strings.Contains(fm.Description, "First OKF Doc with multiline folded description.") {
+	if !strings.Contains(fm.Description, "First Skill Doc with multiline folded description.") {
 		t.Errorf("unexpected folded description: %q", fm.Description)
 	}
 	if fm.Metadata["tags"] != "go, ai" {
 		t.Errorf("unexpected metadata tags: %q", fm.Metadata["tags"])
-	}
-	links := ExtractInterlinks(body)
-	if len(links) != 2 || links[0] != "other-doc" || links[1] != "second" {
-		t.Errorf("unexpected interlinks: %v", links)
 	}
 	digest := ComputeDigest([]byte(docContent))
 	if !strings.HasPrefix(digest, "sha256:") {
@@ -83,31 +80,6 @@ func TestOKFExtractionAndParsing(t *testing.T) {
 	}
 	if err := VerifyDigest([]byte("corrupted"), digest); !errors.Is(err, ErrDigestMismatch) {
 		t.Errorf("VerifyDigest should fail with ErrDigestMismatch, got: %v", err)
-	}
-}
-
-func TestOKFBundleParsing(t *testing.T) {
-	bundleDir := filepath.Join(t.TempDir(), "test-bundle")
-	if err := os.MkdirAll(bundleDir, 0755); err != nil {
-		t.Fatalf("mkdir failed: %v", err)
-	}
-	doc1 := "---\nname: doc-a\ndescription: Document A\nmetadata:\n  tags: arch\n---\nBody A"
-	doc2 := "---\nname: doc-b\ndescription: Document B\nmetadata:\n  tags: eng\n---\nBody B"
-	manifest := "name: test-bundle\ndescription: Bundle of documents\nmetadata:\n  category: architecture\n"
-	_ = os.WriteFile(filepath.Join(bundleDir, "doc-a.md"), []byte(doc1), 0644)
-	_ = os.WriteFile(filepath.Join(bundleDir, "doc-b.md"), []byte(doc2), 0644)
-	_ = os.WriteFile(filepath.Join(bundleDir, "okf.yaml"), []byte(manifest), 0644)
-
-	bundle, err := ParseOKFBundle(bundleDir)
-	if err != nil {
-		t.Fatalf("ParseOKFBundle failed: %v", err)
-	}
-	if bundle.Name != "test-bundle" || len(bundle.Documents) != 2 {
-		t.Errorf("bundle parsing unexpected result: %+v", bundle)
-	}
-	item := bundle.ToItem("local")
-	if item.ID != "test-bundle" || item.Type != ItemTypeOKF || item.Category != "architecture" {
-		t.Errorf("ToItem conversion unexpected result: %+v", item)
 	}
 }
 
@@ -199,7 +171,7 @@ func TestCatalogStoreOperations(t *testing.T) {
 
 func TestManifestNormalization(t *testing.T) {
 	rawJSON := `{
-		"$schema": "https://agentskills.io/schema/v1/catalog.json",
+		"$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
 		"name": "danicat/skills",
 		"title": "Daniela Petruzalek Agent Skills Catalog",
 		"gateway": {
@@ -329,7 +301,7 @@ func TestCatalog_LoadContent_Remote(t *testing.T) {
 func TestCatalog_Options(t *testing.T) {
 	tmpDir := t.TempDir()
 	cat, err := NewCatalog(
-		WithRemoteURL("https://custom.example.com/catalog.json"),
+		WithRemoteURL("https://custom.example.com"),
 		WithCacheDir(tmpDir),
 		WithFallbackCacheDir(tmpDir),
 		WithWorkspaceDir(tmpDir),
@@ -339,7 +311,7 @@ func TestCatalog_Options(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCatalog with options failed: %v", err)
 	}
-	if cat.remoteURL != "https://custom.example.com/catalog.json" {
+	if cat.remoteURL != "https://custom.example.com/.well-known/agent-skills/index.json" {
 		t.Errorf("remoteURL option failed: %s", cat.remoteURL)
 	}
 	if cat.enableRemote {
@@ -369,5 +341,108 @@ func TestCatalog_LoadContent_NetworkError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "network") && !strings.Contains(err.Error(), "connection refused") {
 		t.Errorf("expected network-related error message, got: %v", err)
+	}
+}
+
+func TestFetchWithRetry_SuccessAfterRetries(t *testing.T) {
+	var attempts int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("success-content"))
+	}))
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	resp, err := fetchWithRetry(ctx, ts.Client(), ts.URL, "kungfu-test", 3, 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("expected fetchWithRetry to succeed after retries, got err: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if attempts != 3 {
+		t.Errorf("expected 3 attempts, got %d", attempts)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	if string(data) != "success-content" {
+		t.Errorf("expected success-content, got %s", string(data))
+	}
+}
+
+func TestFetchWithRetry_ContextCanceled(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel immediately after first failure
+	go func() {
+		time.Sleep(15 * time.Millisecond)
+		cancel()
+	}()
+
+	_, err := fetchWithRetry(ctx, ts.Client(), ts.URL, "kungfu-test", 3, 50*time.Millisecond)
+	if err == nil {
+		t.Fatalf("expected context cancellation error, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got: %v", err)
+	}
+}
+
+func TestCatalog_NewCatalog_RetryRecovery(t *testing.T) {
+	manifest := Manifest{
+		Version: "1.0",
+		Items: []Item{
+			{
+				ID:          "retry-skill",
+				Name:        "retry-skill",
+				Type:        ItemTypeSkill,
+				Title:       "Retry Skill",
+				Description: "Skill recovered after retry",
+				Category:    "testing",
+				Source:      "remote",
+			},
+		},
+	}
+	manifestData, _ := json.Marshal(manifest)
+
+	var attempts int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 3 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(manifestData)
+	}))
+	defer ts.Close()
+
+	cat, err := NewCatalog(
+		WithRemoteURL(ts.URL),
+		WithHTTPClient(ts.Client()),
+	)
+	if err != nil {
+		t.Fatalf("NewCatalog failed: %v", err)
+	}
+
+	item, err := cat.Get("retry-skill")
+	if err != nil {
+		t.Fatalf("expected retry-skill to be found after retries, got err: %v", err)
+	}
+	if item.Title != "Retry Skill" {
+		t.Errorf("expected title 'Retry Skill', got %q", item.Title)
+	}
+	if attempts != 3 {
+		t.Errorf("expected 3 server attempts, got %d", attempts)
 	}
 }

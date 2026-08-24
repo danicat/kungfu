@@ -47,6 +47,11 @@ func TestTokenizer_Basic(t *testing.T) {
 			expected: []string{"game", "engin", "astro", "loader", "pure", "go"},
 		},
 		{
+			name:     "camel case and acronyms",
+			input:    "EbitEngine ASTParser JSONDecoder",
+			expected: []string{"ebit", "engin", "ast", "parser", "json", "decod"},
+		},
+		{
 			name:     "utf8 characters",
 			input:    "Café über standard",
 			expected: []string{"café", "über", "standard"},
@@ -155,7 +160,7 @@ var sampleCatalogItems = []catalog.Item{
 	{
 		ID:          "physics-2d",
 		Name:        "physics-2d",
-		Type:        catalog.ItemTypeOKF,
+		Type:        catalog.ItemTypeSkill,
 		Title:       "2D Rigid Body Physics Engine",
 		Category:    "game-dev",
 		Tags:        []string{"physics", "simulation", "math", "game"},
@@ -234,6 +239,30 @@ func TestEngine_IndexAndSearch(t *testing.T) {
 			expectFirst: "physics-2d",
 			minResults:  1,
 		},
+		{
+			name:        "delimiter normalization space to hyphen (buffer cli -> buffer-cli)",
+			query:       "buffer cli",
+			strategy:    "hybrid",
+			limit:       3,
+			expectFirst: "buffer-cli",
+			minResults:  1,
+		},
+		{
+			name:        "compound name without separator (ebitengineer -> ebit engineer)",
+			query:       "ebit engineer",
+			strategy:    "hybrid",
+			limit:       3,
+			expectFirst: "ebitengineer",
+			minResults:  1,
+		},
+		{
+			name:        "edit distance 1 fuzzy match (astro loader typo -> astro-loader)",
+			query:       "astro loadr",
+			strategy:    "hybrid",
+			limit:       3,
+			expectFirst: "astro-loader",
+			minResults:  1,
+		},
 	}
 
 	for _, tc := range tests {
@@ -253,6 +282,29 @@ func TestEngine_IndexAndSearch(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestEngine_FuzzyAndDelimiterScores(t *testing.T) {
+	eng := search.NewEngine()
+	_ = eng.Index(sampleCatalogItems)
+
+	// "buffer cli" vs "buffer-cli" should have score >= 0.99
+	resExact := eng.Search("buffer cli", "hybrid", 1, 0.0)
+	if len(resExact) == 0 || resExact[0].Item.Name != "buffer-cli" {
+		t.Fatalf("Expected buffer-cli top match, got %v", resExact)
+	}
+	if resExact[0].Score < 0.95 {
+		t.Errorf("Expected score >= 0.95 for exact normalized match, got %f", resExact[0].Score)
+	}
+
+	// "buffer clii" (1 edit distance typo) should have score >= 0.90
+	resFuzzy1 := eng.Search("buffer clii", "hybrid", 1, 0.0)
+	if len(resFuzzy1) == 0 || resFuzzy1[0].Item.Name != "buffer-cli" {
+		t.Fatalf("Expected buffer-cli top match, got %v", resFuzzy1)
+	}
+	if resFuzzy1[0].Score < 0.90 {
+		t.Errorf("Expected score >= 0.90 for 1-edit distance match, got %f", resFuzzy1[0].Score)
 	}
 }
 

@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -151,74 +153,100 @@ func TestRunScript_NotFound(t *testing.T) {
 	}
 }
 
-func TestReadReference(t *testing.T) {
+func TestReadFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	refsDir := filepath.Join(tmpDir, "references")
-	if err := os.MkdirAll(refsDir, 0755); err != nil {
-		t.Fatalf("failed to create references dir: %v", err)
-	}
+	_ = os.MkdirAll(refsDir, 0755)
+	scriptsDir := filepath.Join(tmpDir, "scripts")
+	_ = os.MkdirAll(scriptsDir, 0755)
 
-	refPath := filepath.Join(refsDir, "architecture.md")
-	expectedContent := "# Architecture Guide\nDesign details here."
-	if err := os.WriteFile(refPath, []byte(expectedContent), 0644); err != nil {
-		t.Fatalf("failed to write ref file: %v", err)
-	}
-
-	rootRefPath := filepath.Join(tmpDir, "guide.md")
-	if err := os.WriteFile(rootRefPath, []byte("Root guide"), 0644); err != nil {
-		t.Fatalf("failed to write root ref file: %v", err)
-	}
-
-	skillFilePath := filepath.Join(tmpDir, "SKILL.md")
-	if err := os.WriteFile(skillFilePath, []byte("---\nname: test\n---\n"), 0644); err != nil {
-		t.Fatalf("failed to write skill file: %v", err)
-	}
+	_ = os.WriteFile(filepath.Join(refsDir, "guide.md"), []byte("# Guide Content"), 0644)
+	_ = os.WriteFile(filepath.Join(scriptsDir, "deploy.sh"), []byte("#!/bin/sh\necho deployed"), 0755)
+	_ = os.WriteFile(filepath.Join(tmpDir, "CANONICAL.md"), []byte("# Canonical Spec"), 0644)
 
 	item := catalog.Item{
-		ID:   "arch-skill",
-		Path: skillFilePath,
+		ID:   "test-skill",
+		Path: tmpDir,
 	}
 
-	// Test 1: with .md extension in references/
-	content, err := runner.ReadReference(item, "architecture.md")
-	if err != nil {
-		t.Fatalf("ReadReference failed: %v", err)
-	}
-	if content != expectedContent {
-		t.Errorf("expected %q, got %q", expectedContent, content)
+	// 1. Exact file path in root
+	c1, err := runner.ReadFile(item, "CANONICAL.md")
+	if err != nil || c1 != "# Canonical Spec" {
+		t.Fatalf("ReadFile CANONICAL.md failed: %v, got: %q", err, c1)
 	}
 
-	// Test 2: without .md extension in references/
-	content, err = runner.ReadReference(item, "architecture")
-	if err != nil {
-		t.Fatalf("ReadReference without extension failed: %v", err)
-	}
-	if content != expectedContent {
-		t.Errorf("expected %q, got %q", expectedContent, content)
+	// 2. Exact file path in subdirectory
+	c2, err := runner.ReadFile(item, "references/guide.md")
+	if err != nil || c2 != "# Guide Content" {
+		t.Fatalf("ReadFile references/guide.md failed: %v, got: %q", err, c2)
 	}
 
-	// Test 3: from root directory
-	content, err = runner.ReadReference(item, "guide")
-	if err != nil || content != "Root guide" {
-		t.Fatalf("ReadReference root failed: %v, got: %q", err, content)
+	// 3. Exact script file
+	c3, err := runner.ReadFile(item, "scripts/deploy.sh")
+	if err != nil || !strings.Contains(c3, "deployed") {
+		t.Fatalf("ReadFile scripts/deploy.sh failed: %v, got: %q", err, c3)
 	}
 
-	// Test 4: path traversal rejection
-	_, err = runner.ReadReference(item, "../../../../etc/passwd")
-	if err == nil {
-		t.Fatal("expected error on path traversal in ReadReference, got nil")
-	}
-	if !errors.Is(err, runner.ErrInvalidPath) {
-		t.Errorf("expected ErrInvalidPath, got: %v", err)
+	// 4. Non-existent file
+	_, err = runner.ReadFile(item, "missing.md")
+	if err == nil || !errors.Is(err, runner.ErrFileNotFound) {
+		t.Fatalf("expected ErrFileNotFound, got: %v", err)
 	}
 
-	// Test 5: non-existent reference
-	_, err = runner.ReadReference(item, "missing")
-	if err == nil {
-		t.Fatal("expected error for missing reference, got nil")
+	// 5. Path traversal rejection
+	_, err = runner.ReadFile(item, "../../../../etc/passwd")
+	if err == nil || !errors.Is(err, runner.ErrInvalidPath) {
+		t.Fatalf("expected ErrInvalidPath, got: %v", err)
 	}
-	if !errors.Is(err, runner.ErrReferenceNotFound) {
-		t.Errorf("expected ErrReferenceNotFound, got: %v", err)
+
+	// 6. Binary file rejection
+	_ = os.WriteFile(filepath.Join(tmpDir, "image.png"), []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00}, 0644)
+	_, err = runner.ReadFile(item, "image.png")
+	if err == nil || !errors.Is(err, runner.ErrBinaryFile) {
+		t.Fatalf("expected ErrBinaryFile, got: %v", err)
+	}
+}
+
+func TestReadFile_Remote(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/writing/mock-skill/references/linkedin_playbook.md":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("# LinkedIn Playbook Remote Content"))
+		case "/writing/mock-skill/references/twitter_playbook.md":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("# Twitter Playbook Remote Content"))
+		case "/writing/mock-skill/CANONICAL.md":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("# Remote Canonical"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	item := catalog.Item{
+		ID:   "mock-skill-unique",
+		Name: "mock-skill-unique",
+		URL:  server.URL + "/writing/mock-skill/SKILL.md",
+	}
+
+	// 1. Read remote file in references
+	c1, err := runner.ReadFile(item, "references/linkedin_playbook.md")
+	if err != nil || c1 != "# LinkedIn Playbook Remote Content" {
+		t.Fatalf("expected remote file success, got content %q, err: %v", c1, err)
+	}
+
+	// 2. Read remote file in root
+	c2, err := runner.ReadFile(item, "CANONICAL.md")
+	if err != nil || c2 != "# Remote Canonical" {
+		t.Fatalf("expected remote ReadFile success, got content %q, err: %v", c2, err)
+	}
+
+	// 3. Missing remote file
+	_, err = runner.ReadFile(item, "missing.md")
+	if err == nil || !errors.Is(err, runner.ErrFileNotFound) {
+		t.Errorf("expected ErrFileNotFound, got: %v", err)
 	}
 }
 
@@ -251,4 +279,98 @@ func TestDetectInterpreter(t *testing.T) {
 	_ = runner.RunScript(item, "shebang1.sh", nil, &out, &errBuf)
 	_ = runner.RunScript(item, "shebang2.sh", nil, &out, &errBuf)
 	_ = runner.RunScript(item, "script.py", nil, &out, &errBuf)
+}
+
+func TestInstallSkill_Local(t *testing.T) {
+	srcDir := t.TempDir()
+	destDir := filepath.Join(t.TempDir(), "installed_skill")
+
+	// Create source skill structure
+	_ = os.WriteFile(filepath.Join(srcDir, "SKILL.md"), []byte("# Skill Title\nRead [references/playbook.md](references/playbook.md)"), 0644)
+	refsDir := filepath.Join(srcDir, "references")
+	_ = os.MkdirAll(refsDir, 0755)
+	_ = os.WriteFile(filepath.Join(refsDir, "playbook.md"), []byte("# Playbook Content"), 0644)
+	scriptsDir := filepath.Join(srcDir, "scripts")
+	_ = os.MkdirAll(scriptsDir, 0755)
+	_ = os.WriteFile(filepath.Join(scriptsDir, "deploy.sh"), []byte("#!/bin/sh\necho deployed"), 0755)
+	_ = os.WriteFile(filepath.Join(srcDir, "CANONICAL.md"), []byte("# Canonical"), 0644)
+
+	item := catalog.Item{
+		ID:   "local-test-skill",
+		Name: "local-test-skill",
+		Path: srcDir,
+	}
+
+	files, err := runner.InstallSkill(item, destDir, "", nil)
+	if err != nil {
+		t.Fatalf("InstallSkill failed: %v", err)
+	}
+
+	if len(files) < 4 {
+		t.Errorf("expected at least 4 files installed, got %d: %v", len(files), files)
+	}
+
+	// Verify all files exist in destDir
+	for _, f := range []string{"SKILL.md", "references/playbook.md", "scripts/deploy.sh", "CANONICAL.md"} {
+		path := filepath.Join(destDir, filepath.FromSlash(f))
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("expected installed file %s at %s to exist, err: %v", f, path, err)
+		}
+	}
+}
+
+func TestInstallSkill_Remote(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/skills/writer/SKILL.md":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("# Writer Skill\nSee [references/guide.md](references/guide.md) and [scripts/run.py](scripts/run.py)"))
+		case "/skills/writer/references/guide.md":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("# Remote Guide Document\nCheck [references/subguide.md](references/subguide.md)"))
+		case "/skills/writer/references/subguide.md":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("# Nested Subguide"))
+		case "/skills/writer/scripts/run.py":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("print('running')"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	destDir := filepath.Join(t.TempDir(), "remote_installed_skill")
+	item := catalog.Item{
+		ID:   "remote-writer",
+		Name: "remote-writer",
+		URL:  server.URL + "/skills/writer/SKILL.md",
+	}
+
+	ctx := context.Background()
+	files, err := runner.InstallSkillContext(ctx, item, destDir, "", []string{"references/guide.md"}, server.Client())
+	if err != nil {
+		t.Fatalf("InstallSkillContext failed: %v", err)
+	}
+	if len(files) < 4 {
+		t.Errorf("expected at least 4 files installed, got %d: %v", len(files), files)
+	}
+
+	// Verify SKILL.md, guide.md, nested subguide.md, and run.py were installed
+	expected := []string{"SKILL.md", "references/guide.md", "references/subguide.md", "scripts/run.py"}
+	for _, f := range expected {
+		path := filepath.Join(destDir, filepath.FromSlash(f))
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("expected remote file %s to be installed at %s, err: %v", f, path, err)
+		}
+	}
+
+	// Verify script executable bit
+	scriptInfo, err := os.Stat(filepath.Join(destDir, "scripts", "run.py"))
+	if err != nil {
+		t.Fatalf("failed to stat script: %v", err)
+	}
+	if scriptInfo.Mode()&0111 == 0 {
+		t.Errorf("expected script to be executable, mode: %v", scriptInfo.Mode())
+	}
 }

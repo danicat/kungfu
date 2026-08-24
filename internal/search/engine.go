@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/danicat/kungfu/internal/catalog"
 )
@@ -435,12 +436,84 @@ func (e *Engine) searchTFIDF(query string, candidateDocIDs []uint32, limit int, 
 	return results
 }
 
+// normalizeKey converts delimiters (hyphens, underscores, dots, slashes, colons) to spaces and collapses whitespace.
+func normalizeKey(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	var sb strings.Builder
+	for _, r := range s {
+		if r == '-' || r == '_' || r == '.' || r == '/' || r == ':' {
+			sb.WriteRune(' ')
+		} else if unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsSpace(r) {
+			sb.WriteRune(r)
+		}
+	}
+	return strings.Join(strings.Fields(sb.String()), " ")
+}
+
+// compactKey extracts all alphanumeric characters without whitespace or punctuation.
+func compactKey(s string) string {
+	s = strings.ToLower(s)
+	var sb strings.Builder
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
+}
+
+func normalizeRRFScore(rawScore float32) float32 {
+	// Raw score >= 2.0 indicates an exact identity match (+2.0 boost + RRF)
+	if rawScore >= 2.0 {
+		val := 0.95 + 0.05*((rawScore-2.0)/0.0328)
+		if val > 1.0 {
+			val = 1.0
+		}
+		return val
+	}
+	// Raw score >= 1.5 indicates 1-edit distance fuzzy match (+1.6 boost)
+	if rawScore >= 1.5 {
+		val := 0.90 + 0.05*((rawScore-1.5)/0.5)
+		if val > 0.95 {
+			val = 0.95
+		}
+		return val
+	}
+	// Raw score >= 1.0 indicates prefix/substring or 2-edit distance match (+1.0 to +1.2 boost)
+	if rawScore >= 1.0 {
+		val := 0.80 + 0.10*((rawScore-1.0)/0.5)
+		if val > 0.90 {
+			val = 0.90
+		}
+		return val
+	}
+	// Raw score >= 0.7 indicates exact tag match (+0.8 boost)
+	if rawScore >= 0.7 {
+		val := 0.70 + 0.10*((rawScore-0.7)/0.3)
+		if val > 0.80 {
+			val = 0.80
+		}
+		return val
+	}
+	// Pure RRF ranking (max theoretical dual rank-1 is ~0.0328)
+	scaled := (rawScore / 0.0328) * 0.70
+	if scaled > 0.70 {
+		scaled = 0.70
+	}
+	if scaled < 0.01 {
+		scaled = 0.01
+	}
+	return scaled
+}
+
 func (e *Engine) searchExact(query string, candidateDocIDs []uint32, limit int, threshold float32) []Result {
 	queryNorm := strings.ToLower(strings.TrimSpace(query))
 	if len(queryNorm) == 0 {
 		return nil
 	}
 
+	normQuery := normalizeKey(queryNorm)
+	compQuery := compactKey(queryNorm)
 	rawTokens := e.tokenizer.TokenizeRaw(queryNorm)
 
 	type docScore struct {
@@ -461,35 +534,62 @@ func (e *Engine) searchExact(query string, candidateDocIDs []uint32, limit int, 
 		itemCat := strings.ToLower(item.Category)
 		itemDesc := strings.ToLower(item.Description)
 
-		// Exact full matches
-		if itemID == queryNorm || itemName == queryNorm || itemTitle == queryNorm {
+		normName := normalizeKey(itemName)
+		compName := compactKey(itemName)
+		normTitle := normalizeKey(itemTitle)
+		compTitle := compactKey(itemTitle)
+		normID := normalizeKey(itemID)
+		compID := compactKey(itemID)
+
+		// 1. Exact full or normalized matches
+		if itemID == queryNorm || itemName == queryNorm || itemTitle == queryNorm ||
+			(normQuery != "" && (normName == normQuery || normID == normQuery || normTitle == normQuery)) ||
+			(compQuery != "" && (compName == compQuery || compID == compQuery || compTitle == compQuery)) {
 			score += 10.0 * WeightName
 			mask |= FieldMaskName | FieldMaskTitle
-		} else if strings.Contains(itemName, queryNorm) || (len(itemTitle) > 0 && strings.Contains(itemTitle, queryNorm)) {
+		} else if strings.Contains(itemName, queryNorm) || strings.Contains(normName, normQuery) ||
+			(len(normTitle) > 0 && strings.Contains(normTitle, normQuery)) {
 			score += 5.0 * WeightName
 			mask |= FieldMaskName
+		} else {
+			// Fuzzy match (edit distance <= 2) on name/id
+			dist := Levenshtein(normQuery, normName)
+			distComp := Levenshtein(compQuery, compName)
+			minDist := dist
+			if distComp < minDist {
+				minDist = distComp
+			}
+			if minDist == 1 && len(compQuery) >= 3 {
+				score += 8.0 * WeightName
+				mask |= FieldMaskName
+			} else if minDist == 2 && len(compQuery) >= 4 {
+				score += 4.0 * WeightName
+				mask |= FieldMaskName
+			}
 		}
 
 		for _, tag := range item.Tags {
 			tagLow := strings.ToLower(tag)
-			if tagLow == queryNorm {
+			normTag := normalizeKey(tag)
+			compTag := compactKey(tag)
+			if tagLow == queryNorm || (normQuery != "" && normTag == normQuery) || (compQuery != "" && compTag == compQuery) {
 				score += 8.0 * WeightTags
 				mask |= FieldMaskTags
-			} else if strings.Contains(tagLow, queryNorm) {
+			} else if strings.Contains(tagLow, queryNorm) || strings.Contains(normTag, normQuery) {
 				score += 3.0 * WeightTags
 				mask |= FieldMaskTags
 			}
 		}
 
-		if itemCat == queryNorm {
+		if itemCat == queryNorm || (normQuery != "" && normalizeKey(itemCat) == normQuery) {
 			score += 6.0 * WeightCategory
 			mask |= FieldMaskCategory
-		} else if strings.Contains(itemCat, queryNorm) {
+		} else if strings.Contains(itemCat, queryNorm) || (normQuery != "" && strings.Contains(normalizeKey(itemCat), normQuery)) {
 			score += 2.0 * WeightCategory
 			mask |= FieldMaskCategory
 		}
 
-		if strings.Contains(itemDesc, queryNorm) {
+		if strings.Contains(itemDesc, queryNorm) || (normQuery != "" && strings.Contains(normalizeKey(itemDesc), normQuery)) {
 			score += 3.0 * WeightDescription
 			mask |= FieldMaskDescription
 		}
@@ -497,14 +597,15 @@ func (e *Engine) searchExact(query string, candidateDocIDs []uint32, limit int, 
 		// Token presence match
 		matchedTokens := 0
 		for _, tok := range rawTokens {
+			tokNorm := normalizeKey(tok)
 			tokFound := false
-			if strings.Contains(itemName, tok) || strings.Contains(itemTitle, tok) {
+			if strings.Contains(itemName, tok) || (tokNorm != "" && strings.Contains(normName, tokNorm)) || strings.Contains(itemTitle, tok) {
 				score += WeightName
 				mask |= FieldMaskName
 				tokFound = true
 			}
 			for _, tag := range item.Tags {
-				if strings.Contains(strings.ToLower(tag), tok) {
+				if strings.Contains(strings.ToLower(tag), tok) || (tokNorm != "" && strings.Contains(normalizeKey(tag), tokNorm)) {
 					score += WeightTags
 					mask |= FieldMaskTags
 					tokFound = true
@@ -583,17 +684,57 @@ func (e *Engine) searchHybrid(query string, candidateDocIDs []uint32, limit int,
 		matchMasks[id] |= fieldNamesToMask(res.MatchFields)
 	}
 
-	// Exact match boost: if query equals name or tag exactly, apply top boost
+	normQuery := normalizeKey(query)
+	compQuery := compactKey(query)
 	queryNorm := strings.ToLower(strings.TrimSpace(query))
+
+	// Exact, Normalized, and Edit Distance boosts
 	for id, item := range itemMap {
-		if strings.EqualFold(item.Name, queryNorm) || strings.EqualFold(item.ID, queryNorm) {
-			rrfScores[id] += 0.5
+		normName := normalizeKey(item.Name)
+		compName := compactKey(item.Name)
+		normID := normalizeKey(item.ID)
+		compID := compactKey(item.ID)
+		normTitle := normalizeKey(item.Title)
+		compTitle := compactKey(item.Title)
+
+		isExact := false
+		// 1. Literal, Normalized, or Compact Exact Match on Name/ID/Title
+		if strings.EqualFold(item.Name, queryNorm) || strings.EqualFold(item.ID, queryNorm) || strings.EqualFold(item.Title, queryNorm) ||
+			(normQuery != "" && (normName == normQuery || normID == normQuery || normTitle == normQuery)) ||
+			(compQuery != "" && (compName == compQuery || compID == compQuery || compTitle == compQuery)) {
+			rrfScores[id] += 2.0 // Top boost for exact identity match
 			matchMasks[id] |= FieldMaskName
+			isExact = true
+		} else if normQuery != "" && (strings.Contains(normName, normQuery) || strings.Contains(normTitle, normQuery)) {
+			rrfScores[id] += 1.2
+			matchMasks[id] |= FieldMaskName
+		} else {
+			// Fuzzy match (edit distance 1 or 2)
+			dist := Levenshtein(normQuery, normName)
+			distComp := Levenshtein(compQuery, compName)
+			minDist := dist
+			if distComp < minDist {
+				minDist = distComp
+			}
+			if minDist == 1 && len(compQuery) >= 3 {
+				rrfScores[id] += 1.6 // 1 edit distance away
+				matchMasks[id] |= FieldMaskName
+			} else if minDist == 2 && len(compQuery) >= 4 {
+				rrfScores[id] += 1.0 // 2 edit distance away
+				matchMasks[id] |= FieldMaskName
+			}
 		}
+
+		// Tags exact / normalized match
 		for _, tag := range item.Tags {
-			if strings.EqualFold(tag, queryNorm) {
-				rrfScores[id] += 0.3
+			normTag := normalizeKey(tag)
+			compTag := compactKey(tag)
+			if strings.EqualFold(tag, queryNorm) || (normQuery != "" && normTag == normQuery) || (compQuery != "" && compTag == compQuery) {
+				if !isExact {
+					rrfScores[id] += 0.8
+				}
 				matchMasks[id] |= FieldMaskTags
+				break
 			}
 		}
 	}
@@ -605,8 +746,9 @@ func (e *Engine) searchHybrid(query string, candidateDocIDs []uint32, limit int,
 
 	var ranked []scoredItem
 	for id, score := range rrfScores {
-		if score >= threshold {
-			ranked = append(ranked, scoredItem{id: id, score: score})
+		normScore := normalizeRRFScore(score)
+		if normScore >= threshold {
+			ranked = append(ranked, scoredItem{id: id, score: normScore})
 		}
 	}
 

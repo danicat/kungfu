@@ -34,11 +34,9 @@ type ItemType string
 const (
 	// ItemTypeSkill represents an Agent Skill (SKILL.md package).
 	ItemTypeSkill ItemType = "skill"
-	// ItemTypeOKF represents an Open Knowledge Format bundle or concept document.
-	ItemTypeOKF ItemType = "okf"
 )
 
-// Item represents a discoverable entity (Agent Skill or OKF Knowledge Concept).
+// Item represents a discoverable Agent Skill in the catalog.
 type Item struct {
 	ID                 string            `json:"id" yaml:"id"`
 	Name               string            `json:"name" yaml:"name"`
@@ -62,6 +60,7 @@ type Item struct {
 	ByteSize           int64             `json:"byteSize,omitempty" yaml:"byteSize,omitempty"`
 	TokenEstimate      int               `json:"tokenEstimate,omitempty" yaml:"tokenEstimate,omitempty"`
 	Source             string            `json:"source,omitempty" yaml:"source,omitempty"` // "remote", "workspace", "global", "embedded"
+	Status             string            `json:"status,omitempty" yaml:"status,omitempty"` // "installed", "online"
 	InstallCmd         string            `json:"install_command,omitempty" yaml:"install_command,omitempty"`
 	InstallCommand     string            `json:"installCommand,omitempty" yaml:"installCommand,omitempty"`
 	NpxInstallCommand  string            `json:"npxInstallCommand,omitempty" yaml:"npxInstallCommand,omitempty"`
@@ -159,7 +158,7 @@ type Frontmatter struct {
 	Metadata      map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 }
 
-// Manifest represents a remote or local discovery catalog (e.g. catalog.json or index.json).
+// Manifest represents a remote or local discovery index (index.json).
 type Manifest struct {
 	Schema      string     `json:"$schema,omitempty" yaml:"$schema,omitempty"`
 	Version     string     `json:"version,omitempty" yaml:"version,omitempty"`

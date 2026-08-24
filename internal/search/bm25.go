@@ -41,7 +41,7 @@ func NewBM25Scorer(k1, b float32) *BM25Scorer {
 	if k1 <= 0 {
 		k1 = DefaultBM25K1
 	}
-	if b <= 0 {
+	if b < 0 {
 		b = DefaultBM25B
 	}
 	return &BM25Scorer{

@@ -15,31 +15,42 @@
 package catalog
 
 import (
-	_ "embed"
+	"io/fs"
+	"path/filepath"
+	"strings"
 )
 
-//go:embed embedded/SKILL.md
-var EmbeddedKungFuSkill []byte
-
-// GetEmbeddedKungFuItem parses and returns the embedded kungfu Skill item.
-func GetEmbeddedKungFuItem() (Item, error) {
-	fm, body, err := ParseFrontmatter(EmbeddedKungFuSkill)
+// ParseSkillFromBytes parses raw SKILL.md bytes and returns a populated Item.
+func ParseSkillFromBytes(data []byte, relPath string) (Item, error) {
+	fm, body, err := ParseFrontmatter(data)
 	if err != nil {
 		return Item{}, err
 	}
-	id := "kungfu"
+	id := ""
 	if fm != nil && fm.Name != "" {
 		id = fm.Name
 	}
-	category := "gateway"
-	if fm != nil && fm.Metadata["category"] != "" {
+	if id == "" && relPath != "" {
+		dir := filepath.Dir(relPath)
+		if dir != "." && dir != "" {
+			id = filepath.Base(dir)
+		} else {
+			id = strings.TrimSuffix(filepath.Base(relPath), filepath.Ext(relPath))
+		}
+	}
+	if id == "" {
+		id = "unknown"
+	}
+
+	category := "general"
+	if fm != nil && fm.Metadata != nil && fm.Metadata["category"] != "" {
 		category = fm.Metadata["category"]
 	}
 	var tags []string
-	if fm != nil && fm.Metadata["tags"] != "" {
+	if fm != nil && fm.Metadata != nil && fm.Metadata["tags"] != "" {
 		tags = ParseTags(fm.Metadata["tags"])
 	} else {
-		tags = []string{"agent-skills", "discovery", "search", "catalog", "okf", "cli", "learn"}
+		tags = []string{"agent-skills"}
 	}
 	description := ""
 	license := ""
@@ -74,7 +85,46 @@ func GetEmbeddedKungFuItem() (Item, error) {
 		AllowedTools: allowedTools,
 		Body:         body,
 		Metadata:     metadata,
-		Digest:       ComputeDigest(EmbeddedKungFuSkill),
+		Digest:       ComputeDigest(data),
 		Source:       "embedded",
 	}, nil
+}
+
+// DiscoverSkillsInFS walks an fs.FS and returns all discovered skill items mapped to their raw content.
+func DiscoverSkillsInFS(fsys fs.FS) ([]Item, map[string]string, error) {
+	if fsys == nil {
+		return nil, nil, nil
+	}
+	var items []Item
+	contents := make(map[string]string)
+
+	err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		base := strings.ToLower(d.Name())
+		if base == "skill.md" || strings.HasSuffix(base, ".md") {
+			data, err := fs.ReadFile(fsys, path)
+			if err != nil {
+				return nil
+			}
+			if strings.HasPrefix(string(data), "---") {
+				item, err := ParseSkillFromBytes(data, path)
+				if err == nil && item.ID != "" {
+					items = append(items, item)
+					contents[strings.ToLower(item.ID)] = string(data)
+					contents[strings.ToLower(item.Name)] = string(data)
+				}
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, nil, err
+	}
+	return items, contents, nil
 }
