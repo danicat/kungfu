@@ -17,6 +17,8 @@ package catalog
 import (
 	"encoding/json"
 	"errors"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -112,6 +114,19 @@ func (it *Item) Normalize() {
 		}
 		if it.DetailURL == "" && it.Metadata["homepage"] != "" {
 			it.DetailURL = it.Metadata["homepage"]
+		}
+	}
+	if it.Category == "" && it.URL != "" {
+		if u, err := url.Parse(it.URL); err == nil {
+			cleanPath := strings.Trim(u.Path, "/")
+			parts := strings.Split(cleanPath, "/")
+			if len(parts) >= 2 && strings.EqualFold(parts[len(parts)-1], "SKILL.md") {
+				if len(parts) == 3 {
+					it.Category = parts[0]
+				} else if len(parts) >= 2 {
+					it.Category = parts[len(parts)-2]
+				}
+			}
 		}
 	}
 }

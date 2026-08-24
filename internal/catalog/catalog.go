@@ -330,9 +330,10 @@ func NewCatalog(opts ...Option) (*Catalog, error) {
 		}
 	}
 
-	// 2. Register built-in embedded kungfu item
+	// 2. Register built-in embedded kungfu item and discover local/installed skills
 	c.mu.Lock()
 	c.discoverEmbeddedLocked()
+	c.discoverLocalSkillsLocked()
 	c.mu.Unlock()
 	return c, nil
 }
@@ -525,6 +526,125 @@ func (c *Catalog) discoverEmbeddedLocked() {
 			for k, v := range contents {
 				c.embeddedData[k] = v
 			}
+		}
+	}
+}
+
+func (c *Catalog) discoverLocalSkillsLocked() {
+	var candidateRoots []string
+
+	// 1. Workspace directories
+	if wd, err := os.Getwd(); err == nil && wd != "" {
+		candidateRoots = append(candidateRoots, filepath.Join(wd, ".agents", "skills"))
+		candidateRoots = append(candidateRoots, filepath.Join(wd, ".gemini", "skills"))
+		candidateRoots = append(candidateRoots, filepath.Join(wd, "skills"))
+	}
+
+	// 2. Global user directories
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		candidateRoots = append(candidateRoots, filepath.Join(home, ".agents", "skills"))
+		candidateRoots = append(candidateRoots, filepath.Join(home, ".gemini", "config", "skills"))
+		candidateRoots = append(candidateRoots, filepath.Join(home, ".cache", "kungfu", "skills"))
+	}
+
+	for _, root := range candidateRoots {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			skillDir := filepath.Join(root, entry.Name())
+			skillFile := filepath.Join(skillDir, "SKILL.md")
+			if _, err := os.Stat(skillFile); err != nil {
+				skillFile = filepath.Join(skillDir, "skill.md")
+				if _, err := os.Stat(skillFile); err != nil {
+					continue
+				}
+			}
+			data, err := os.ReadFile(skillFile)
+			if err != nil || len(data) == 0 {
+				continue
+			}
+			fm, body, err := ParseFrontmatter(data)
+			if err != nil || fm == nil {
+				continue
+			}
+			name := strings.TrimSpace(fm.Name)
+			if name == "" {
+				name = entry.Name()
+			}
+			key := strings.ToLower(name)
+
+			existing, exists := c.items[key]
+			if exists && existing.Source != "local" {
+				// For remote catalog items, only populate category/tags if empty; keep remote version authoritative
+				if existing.Category == "" && fm.Metadata != nil && fm.Metadata["category"] != "" {
+					existing.Category = fm.Metadata["category"]
+				}
+				if len(existing.Tags) == 0 && fm.Metadata != nil && fm.Metadata["tags"] != "" {
+					existing.Tags = ParseTags(fm.Metadata["tags"])
+				}
+				if existing.Path == "" {
+					existing.Path = skillFile
+				}
+				c.items[key] = existing
+				c.items[strings.ToLower(existing.ID)] = existing
+				c.items[strings.ToLower(existing.Name)] = existing
+				continue
+			}
+
+			if !exists {
+				existing = Item{
+					ID:     name,
+					Name:   name,
+					Type:   ItemTypeSkill,
+					Source: "local",
+					Path:   skillFile,
+				}
+			}
+
+			if fm.Description != "" {
+				existing.Description = fm.Description
+			}
+			if fm.License != "" {
+				existing.License = fm.License
+			}
+			if fm.AllowedTools != "" {
+				existing.AllowedTools = fm.AllowedTools
+			}
+			if body != "" && existing.Body == "" {
+				existing.Body = body
+			}
+			if fm.Metadata != nil {
+				if existing.Metadata == nil {
+					existing.Metadata = make(map[string]string)
+				}
+				for mk, mv := range fm.Metadata {
+					existing.Metadata[mk] = mv
+				}
+				if cat, ok := fm.Metadata["category"]; ok && cat != "" {
+					existing.Category = cat
+				}
+				if ver, ok := fm.Metadata["version"]; ok && ver != "" {
+					existing.Version = ver
+				}
+				if auth, ok := fm.Metadata["author"]; ok && auth != "" {
+					existing.Author = auth
+				}
+				if tags, ok := fm.Metadata["tags"]; ok && tags != "" {
+					existing.Tags = ParseTags(tags)
+				}
+			}
+			if existing.Path == "" {
+				existing.Path = skillFile
+			}
+
+			c.items[key] = existing
+			c.items[strings.ToLower(existing.ID)] = existing
+			c.items[strings.ToLower(existing.Name)] = existing
 		}
 	}
 }

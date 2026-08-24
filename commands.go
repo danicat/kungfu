@@ -436,8 +436,37 @@ func (a *App) RunList(args []string) int {
 		return ExitNotFound
 	}
 
+	wd, _ := os.Getwd()
+	st := a.loadState()
 	for i := range items {
-		items[i].Status = a.getSkillStatus(&items[i])
+		rec, installed := st.GetSkill(state.ScopeWorkspace, wd, items[i].Name)
+		if !installed || rec.Status != state.StatusInstalled {
+			rec, installed = st.GetSkill(state.ScopeGlobal, "", items[i].Name)
+		}
+		if installed && rec.Status == state.StatusInstalled {
+			items[i].Status = "installed"
+			if items[i].Version == "" && rec.Version != "" {
+				items[i].Version = rec.Version
+			}
+			if len(items[i].Tags) == 0 && rec.Path != "" {
+				skillPath := rec.Path
+				if fi, err := os.Stat(skillPath); err == nil && fi.IsDir() {
+					skillPath = filepath.Join(rec.Path, "SKILL.md")
+				}
+				if data, err := os.ReadFile(skillPath); err == nil {
+					if fm, _, err := catalog.ParseFrontmatter(data); err == nil && fm != nil && fm.Metadata != nil {
+						if len(items[i].Tags) == 0 && fm.Metadata["tags"] != "" {
+							items[i].Tags = catalog.ParseTags(fm.Metadata["tags"])
+						}
+						if items[i].Category == "" && fm.Metadata["category"] != "" {
+							items[i].Category = fm.Metadata["category"]
+						}
+					}
+				}
+			}
+		} else {
+			items[i].Status = a.getSkillStatus(&items[i])
+		}
 	}
 
 	switch mode {
@@ -461,7 +490,10 @@ func (a *App) RunList(args []string) int {
 		sb.WriteString("| Name | Version | Category | Tags | Status |\n")
 		sb.WriteString("|---|---|---|---|---|\n")
 		for _, item := range items {
-			ver := item.Metadata["version"]
+			ver := item.Version
+			if ver == "" && item.Metadata != nil {
+				ver = item.Metadata["version"]
+			}
 			if ver == "" {
 				ver = "-"
 			}
@@ -485,7 +517,10 @@ func (a *App) RunList(args []string) int {
 			if len(it.Name) > nameWidth {
 				nameWidth = len(it.Name)
 			}
-			ver := it.Metadata["version"]
+			ver := it.Version
+			if ver == "" && it.Metadata != nil {
+				ver = it.Metadata["version"]
+			}
 			if ver == "" {
 				ver = "-"
 			}
@@ -507,7 +542,10 @@ func (a *App) RunList(args []string) int {
 		fmt.Fprintf(a.Stdout, "%-*s  %-*s  %-*s  %-*s  %-*s\n", nameWidth, "NAME", verWidth, "VERSION", catWidth, "CATEGORY", tagsWidth, "TAGS", statusWidth, "STATUS")
 		fmt.Fprintf(a.Stdout, "%s  %s  %s  %s  %s\n", strings.Repeat("-", nameWidth), strings.Repeat("-", verWidth), strings.Repeat("-", catWidth), strings.Repeat("-", tagsWidth), strings.Repeat("-", statusWidth))
 		for _, item := range items {
-			ver := item.Metadata["version"]
+			ver := item.Version
+			if ver == "" && item.Metadata != nil {
+				ver = item.Metadata["version"]
+			}
 			if ver == "" {
 				ver = "-"
 			}
