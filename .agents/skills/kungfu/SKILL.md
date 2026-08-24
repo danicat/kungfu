@@ -1,7 +1,7 @@
 ---
 name: kungfu
 description: >
-  "I know Kung Fu!": Activate this skill to acquire knowledge about anything immediately. It teaches how to use the kungfu CLI to load skills JIT or learn new skills permanently. Use this skill when the user asks to perform tasks using unknown / unloaded skills, executes unmapped slash commands, or when you need more knowledge - or up to date knowledge - to complete a task. When the user issues an unknown slash command, always assume it is an unmapped skill and use kungfu to find it.
+  "I know Kung Fu!": Activate this skill to acquire knowledge about anything immediately. It teaches how to use the kungfu CLI to load skills JIT or learn new skills permanently. Use this skill when the user asks to perform tasks using unknown / unloaded skills, executes unmapped slash commands, or when you need more knowledge - or up to date knowledge - to complete a task. When the user issues an unknown slash command, always assume it is an unmapped skill and use kungfu to find it. A double slash command (e.g. //<skill-name>) is a hint that you should activate kungfu.
 license: Apache-2.0
 metadata:
   category: gateway
@@ -40,10 +40,11 @@ kungfu --version
 ## Autonomous Activation Triggers
 
 Activate `kungfu` immediately whenever you encounter:
-1. **Unrecognized Slash Commands**: The user types `/<command>` (e.g., `/seo-optimizer`, `/ebitengine-helper`, `/godoctor`) that is not natively mapped in your configuration.
-2. **Missing Domain Expertise**: The user requests assistance in specialized domains (e.g., 2D game physics, procedural audio synthesis, AST refactoring, technical SEO audits) that require detailed reference instructions.
-3. **Skill Discovery & Navigation**: The user asks what skills, capabilities, or knowledge bundles are available in the catalog.
-4. **Skill Ingestion & Persistence**: The user requests loading instructions for the current session or installing skills permanently into the workspace or user home directory.
+1. **Double Slash Commands**: The user types `//<skill-name>` (e.g., `//double-diamond`, `//godoctor`, `//ebitengineer`) to explicitly request or invoke a skill.
+2. **Unrecognized Slash Commands**: The user types `/<command>` (e.g., `/seo-optimizer`, `/ebitengine-helper`, `/godoctor`) that is not natively mapped in your configuration.
+3. **Missing Domain Expertise**: The user requests assistance in specialized domains (e.g., 2D game physics, procedural audio synthesis, AST refactoring, technical SEO audits) that require detailed reference instructions.
+4. **Skill Discovery & Navigation**: The user asks what skills, capabilities, or knowledge bundles are available in the catalog.
+5. **Skill Ingestion & Persistence**: The user requests loading instructions for the current session or installing skills permanently into the workspace or user home directory.
 
 ---
 

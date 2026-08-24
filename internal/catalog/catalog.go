@@ -586,30 +586,6 @@ func (c *Catalog) LoadContent(item *Item) (string, error) {
 			}
 		}
 
-		// Enrich item metadata from downloaded SKILL.md frontmatter
-		if fm, _, err := ParseFrontmatter(data); err == nil && fm != nil {
-			if fm.Metadata != nil {
-				if item.Category == "" {
-					item.Category = fm.Metadata["category"]
-				}
-				if item.Version == "" {
-					item.Version = fm.Metadata["version"]
-				}
-				if item.Author == "" {
-					item.Author = fm.Metadata["author"]
-				}
-				if len(item.Tags) == 0 && fm.Metadata["tags"] != "" {
-					item.Tags = ParseTags(fm.Metadata["tags"])
-				}
-				if item.Metadata == nil {
-					item.Metadata = fm.Metadata
-				}
-			}
-			if item.License == "" && fm.License != "" {
-				item.License = fm.License
-			}
-		}
-
 		return string(data), nil
 	}
 

@@ -41,17 +41,18 @@ const (
 
 // SkillRecord represents an installed or soft-deleted skill package.
 type SkillRecord struct {
-	Name          string     `json:"name"`
-	Status        string     `json:"status"`           // "installed" or "uninstalled"
-	Scope         string     `json:"scope"`            // "workspace" or "global"
-	Origin        string     `json:"origin,omitempty"` // "catalog" or "custom"
-	Path          string     `json:"path"`
-	Version       string     `json:"version,omitempty"`
-	Digest        string     `json:"digest,omitempty"`
-	InstalledAt   time.Time  `json:"installed_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
-	UninstalledAt *time.Time `json:"uninstalled_at,omitempty"`
-	Files         []string   `json:"files,omitempty"`
+	Name            string     `json:"name"`
+	Status          string     `json:"status"`                     // "installed" or "uninstalled"
+	Scope           string     `json:"scope"`                      // "workspace" or "global"
+	Origin          string     `json:"origin,omitempty"`           // "catalog" or "custom"
+	Path            string     `json:"path"`
+	Version         string     `json:"version,omitempty"`
+	Digest          string     `json:"digest,omitempty"`           // Current/reconciled digest
+	InstalledDigest string     `json:"installed_digest,omitempty"` // Immutable baseline digest at install time
+	InstalledAt     time.Time  `json:"installed_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	UninstalledAt   *time.Time `json:"uninstalled_at,omitempty"`
+	Files           []string   `json:"files,omitempty"`
 }
 
 // WorkspaceState holds skills installed in a specific workspace directory.
@@ -180,6 +181,9 @@ func (s *State) RecordInstall(scope string, workspaceDir string, record SkillRec
 
 	record.Status = StatusInstalled
 	record.UninstalledAt = nil
+	if record.InstalledDigest == "" && record.Digest != "" {
+		record.InstalledDigest = record.Digest
+	}
 	if record.InstalledAt.IsZero() {
 		record.InstalledAt = time.Now().UTC()
 	}
@@ -414,16 +418,17 @@ func (s *State) ReconcileDisk(workspaceDir string, globalDir string, isCatalogKn
 				if !exists || rec.Status != StatusInstalled {
 					// Adopt/register new skill
 					s.Global.Skills[skillName] = SkillRecord{
-						Name:        skillName,
-						Status:      StatusInstalled,
-						Scope:       ScopeGlobal,
-						Origin:      origin,
-						Path:        skillPath,
-						Version:     version,
-						Digest:      digest,
-						InstalledAt: fi.ModTime().UTC(),
-						UpdatedAt:   time.Now().UTC(),
-						Files:       files,
+						Name:            skillName,
+						Status:          StatusInstalled,
+						Scope:           ScopeGlobal,
+						Origin:          origin,
+						Path:            skillPath,
+						Version:         version,
+						Digest:          digest,
+						InstalledDigest: digest,
+						InstalledAt:     fi.ModTime().UTC(),
+						UpdatedAt:       time.Now().UTC(),
+						Files:           files,
 					}
 					changed = true
 				} else {
@@ -435,6 +440,14 @@ func (s *State) ReconcileDisk(workspaceDir string, globalDir string, isCatalogKn
 					}
 					if rec.Version == "" && version != "" {
 						rec.Version = version
+						updated = true
+					}
+					if rec.InstalledDigest == "" {
+						if rec.Digest != "" {
+							rec.InstalledDigest = rec.Digest
+						} else {
+							rec.InstalledDigest = digest
+						}
 						updated = true
 					}
 					if rec.Digest != digest {
@@ -458,16 +471,17 @@ func (s *State) ReconcileDisk(workspaceDir string, globalDir string, isCatalogKn
 				rec, exists := ws.Skills[skillName]
 				if !exists || rec.Status != StatusInstalled {
 					ws.Skills[skillName] = SkillRecord{
-						Name:        skillName,
-						Status:      StatusInstalled,
-						Scope:       ScopeWorkspace,
-						Origin:      origin,
-						Path:        skillPath,
-						Version:     version,
-						Digest:      digest,
-						InstalledAt: fi.ModTime().UTC(),
-						UpdatedAt:   time.Now().UTC(),
-						Files:       files,
+						Name:            skillName,
+						Status:          StatusInstalled,
+						Scope:           ScopeWorkspace,
+						Origin:          origin,
+						Path:            skillPath,
+						Version:         version,
+						Digest:          digest,
+						InstalledDigest: digest,
+						InstalledAt:     fi.ModTime().UTC(),
+						UpdatedAt:       time.Now().UTC(),
+						Files:           files,
 					}
 					changed = true
 				} else {
@@ -478,6 +492,14 @@ func (s *State) ReconcileDisk(workspaceDir string, globalDir string, isCatalogKn
 					}
 					if rec.Version == "" && version != "" {
 						rec.Version = version
+						updated = true
+					}
+					if rec.InstalledDigest == "" {
+						if rec.Digest != "" {
+							rec.InstalledDigest = rec.Digest
+						} else {
+							rec.InstalledDigest = digest
+						}
 						updated = true
 					}
 					if rec.Digest != digest {

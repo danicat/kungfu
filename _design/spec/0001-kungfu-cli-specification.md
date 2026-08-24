@@ -138,7 +138,7 @@ kungfu find "refactoring" -c coding
 ```
 
 #### Search Scoring Algorithm:
-$$\text{Score} = (4 \times \text{NameMatch}) + (3 \times \text{TagMatch}) + (2 \times \text{CategoryMatch}) + (1 \times \text{DescriptionBM25})$$
+$$\text{Score} = (4.0 \times \text{NameMatch}) + (3.0 \times \text{TagMatch}) + (2.5 \times \text{CategoryMatch}) + (1.5 \times \text{DescriptionBM25}) + (1.0 \times \text{OtherMatch})$$
 
 ---
 
@@ -368,11 +368,12 @@ Tracks package installation provenance, versioning, and origin registry base URL
 | Exit Code | Constant | Meaning |
 |:---:|---|---|
 | **`0`** | `ExitSuccess` | Command completed successfully. |
-| **`1`** | `ExitGeneralError` | Unhandled runtime error or invalid flag. |
-| **`2`** | `ExitSkillNotFound` | Target skill not found in workspace or registry. |
-| **`3`** | `ExitDirtyConflict` | Local skill modified; requires `-f` to overwrite. |
+| **`1`** | `ExitGeneralError` | Unhandled runtime error. |
+| **`2`** | `ExitUsage` | Invalid flag, syntax error, or missing required argument. |
+| **`3`** | `ExitNotFound` | Target skill, file, or category not found. |
 | **`4`** | `ExitNetworkError` | Registry unreachable and no valid offline cache. |
 | **`5`** | `ExitIntegrityMismatch`| SHA-256 digest validation failed (tamper warning). |
+| **`6`** | `ExitDirtyConflict` | Local skill modified; requires `-f` to overwrite. |
 
 ---
 

@@ -167,12 +167,13 @@ Execute companion automation scripts bundled inside skills with automatic runtim
 kungfu run godoctor analyze.sh --json
 ```
 
-### 10. Read Companion References (`read`)
+### 10. Load Companion References (`load <skill>/<path>`)
 
-Read supplementary reference manuals, API guides, and architecture specifications:
+Stream supplementary reference manuals, API guides, and architecture specifications:
 
 ```bash
-kungfu read godoctor architecture
+kungfu load godoctor/references/architecture.md
+kungfu load buffer/assets/schema.sql
 ```
 
 ---

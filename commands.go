@@ -1720,6 +1720,12 @@ func (a *App) RunUpdate(args []string) int {
 			reason = "unversioned skill in catalog (cannot verify if newer or different)"
 		}
 
+		isDirty := rec.InstalledDigest != "" && rec.Digest != "" && rec.Digest != rec.InstalledDigest
+		if isDirty && hasUpdate {
+			requiresYes = true
+			reason = fmt.Sprintf("local files modified since install; %s", reason)
+		}
+
 		if forceFlag && !hasUpdate {
 			reason = fmt.Sprintf("force update requested (%s)", rec.Version)
 		}
@@ -1740,7 +1746,10 @@ func (a *App) RunUpdate(args []string) int {
 		}
 
 		if !dryRun && (hasUpdate || forceFlag) {
-			if requiresYes && !yesFlag && !forceFlag {
+			if isDirty && !forceFlag {
+				check.Status = "conflict"
+				check.Message = "Local skill has been modified since install; pass -f/--force to overwrite local edits"
+			} else if requiresYes && !yesFlag && !forceFlag {
 				check.Status = "blocked"
 				check.Message = "Pass -y/--yes or -f/--force to accept unversioned/drifted update"
 			} else {

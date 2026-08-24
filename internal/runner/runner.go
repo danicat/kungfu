@@ -287,6 +287,7 @@ func RunScriptContext(ctx context.Context, item catalog.Item, scriptName string,
 	allArgs := append(binArgs, args...)
 
 	cmd := exec.CommandContext(ctx, bin, allArgs...)
+	cmd.WaitDelay = 2 * time.Second
 	configureProcessGroup(cmd)
 	cmd.Dir = baseDir
 	cmd.Stdout = stdout
@@ -428,6 +429,9 @@ func InstallSkillContext(ctx context.Context, item catalog.Item, destDir string,
 		}
 		_ = filepath.Walk(cleanBase, func(srcPath string, info os.FileInfo, err error) error {
 			if err != nil || info == nil {
+				return nil
+			}
+			if !isContained(cleanBase, srcPath) {
 				return nil
 			}
 			rel, err := filepath.Rel(cleanBase, srcPath)

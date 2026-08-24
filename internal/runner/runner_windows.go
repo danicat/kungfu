@@ -18,11 +18,13 @@ package runner
 
 import (
 	"os/exec"
+	"strconv"
 )
 
 func configureProcessGroup(cmd *exec.Cmd) {
 	cmd.Cancel = func() error {
-		if cmd.Process != nil {
+		if cmd.Process != nil && cmd.Process.Pid > 0 {
+			_ = exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(cmd.Process.Pid)).Run()
 			return cmd.Process.Kill()
 		}
 		return nil
