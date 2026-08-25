@@ -2,11 +2,25 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/danicat/kungfu.svg)](https://pkg.go.dev/github.com/danicat/kungfu)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.1.0-green.svg)](https://github.com/danicat/kungfu/releases)
+[![Release](https://img.shields.io/badge/release-v0.1.1-green.svg)](https://github.com/danicat/kungfu/releases)
 
-> **Fast, offline-first Agent Skills & Open Knowledge CLI Gateway** for autonomous AI coding agents and developers.
+> **Fast, zero-dependency Agent Skills & Open Knowledge CLI Gateway** for autonomous AI coding agents and developers.
 
-`kungfu` enables AI coding assistants and developers to discover, search, load, and execute specialized **Agent Skills** (`SKILL.md`) and companion tools directly from your terminal or multi-agent workflows.
+`kungfu` enables AI coding assistants and developers to discover, search, load, and execute specialized **Agent Skills** (`SKILL.md`) and companion tools directly from your terminal or multi-agent workflows. Compiling to a single standalone binary with zero runtime dependencies, `kungfu` delivers instant Just-In-Time (JIT) skill ingestion, full compatibility with the `agentskills.io` standard, discovery from trusted catalogs, and single-command provenance-backed updates.
+
+---
+
+## ⚡ Key Features
+
+- **⚡ Just-In-Time (JIT) Skill Loading**: Stream uncompressed `SKILL.md` instructions, companion references, and assets directly into standard output / LLM agent context on the fly (`kungfu load`) with zero disk clutter or persistent workspace pollution.
+- **🔄 Provenance-Tracked Single-Command Updates**: Per-skill provenance tracking records origin catalog endpoints, upstream URLs, versions, and SHA-256 cryptographic digests—allowing you to audit, verify, and update skills with a single command (`kungfu update` / `kungfu update --all`).
+- **📐 `agentskills.io` Catalog Standard Compliant**: 100% compliant with the official [`agentskills.io`](https://agentskills.io) specification, supporting standard RFC 8615 well-known discovery manifests (`/.well-known/agent-skills/index.json`), declarative YAML frontmatter, and canonical taxonomies.
+- **🛡️ Trusted Catalog Discovery**: Seamless, secure discovery and cryptographic verification from trusted catalogs (*Note: currently default and supported: [`skills.danicat.dev`](https://skills.danicat.dev)*).
+- **📦 Zero Dependencies (Single Static Binary)**: Compiles to a self-contained, standalone Go binary with zero external runtime dependencies (no Node.js, Python, npm, or system daemons required for core gateway operations).
+- **🔍 Sub-Millisecond Search Engine**: Embedded pure-Go search engine featuring **BM25**, **TF-IDF**, and **Reciprocal Rank Fusion (RRF) Hybrid Search** with boolean tag expressions (`AND`, `OR`, `NOT`).
+- **💾 Explicit Persistence Lifecycle**: Skills are kept in-memory or persisted to workspace (`.agents/skills/`) or global home (`~/.agents/skills/`) only when explicitly instructed (`kungfu learn`).
+- **🤖 Autonomous Agent Native**: Verbatim markdown streaming for prompt context injection, strict POSIX stream separation (`stdout` machine data, `stderr` diagnostics), and RFC 8259 structured JSON (`--json`).
+- **💡 "Did You Mean?" Fuzzy Suggestion Engine**: Levenshtein-based fuzzy suggestions for misspelled skills, categories, tags, companion scripts, and reference documents.
 
 ---
 
@@ -20,24 +34,12 @@ Install the latest release using Go (1.27+):
 go install github.com/danicat/kungfu@latest
 ```
 
-Verify your installation:
+Because `kungfu` compiles to a single binary with zero runtime dependencies, you can immediately run it anywhere:
 
 ```bash
 kungfu --version
-# Output: kungfu version 0.1.0
+# Output: kungfu version 0.1.1
 ```
-
----
-
-## ⚡ Key Features
-
-- **⚡ Sub-Millisecond Search**: Embedded pure-Go search engine supporting **BM25**, **TF-IDF**, and **Reciprocal Rank Fusion (RRF) Hybrid Search**.
-- **📦 Zero-Dependency Execution**: Single static binary with zero external runtime dependencies (no Node.js or Python required for core gateway operations).
-- **🌐 In-Memory Live Gateway**: Direct in-memory discovery and streaming with zero implicit disk cache clutter.
-- **💾 Explicit Persistence**: Skills are permanently learned and persisted to workspace or global configuration only when explicitly instructed (`kungfu learn`).
-- **🤖 Autonomous Agent Native**: Verbatim markdown streaming for prompt context injection, clean POSIX stream separation (`stdout` machine data, `stderr` diagnostics), and structured JSON (`--json`).
-- **📐 Standards Compliant**: Adheres to the official [`agentskills.io`](https://agentskills.io) metadata specification.
-- **💡 "Did You Mean?" Engine**: Levenshtein-based fuzzy suggestions for misspelled skills, categories, tags, scripts, and references.
 
 ---
 
@@ -45,7 +47,7 @@ kungfu --version
 
 ### 1. Discover Skills (`list`)
 
-List all available skill categories and registered knowledge packages:
+List all available skill categories and registered knowledge packages from trusted `agentskills.io` catalogs:
 
 ```bash
 # List categories and skills in human or raw mode
@@ -63,7 +65,7 @@ kungfu list --json
 
 ### 2. Search Catalog (`find`)
 
-Perform full-text search across skill names, descriptions, categories, and tags:
+Perform sub-millisecond full-text and hybrid search across skill names, descriptions, categories, and tags:
 
 ```bash
 # Hybrid Search (RRF combining BM25, TF-IDF, and keyword matching)
@@ -84,27 +86,31 @@ Inspect comprehensive metadata, tags, author, and documentation paths:
 kungfu show godoctor
 ```
 
-### 4. Load into Context (`load`)
+### 4. Just-In-Time (JIT) Skill Load (`load`)
 
-Stream raw, uncompressed `SKILL.md` directly into standard output for immediate LLM context injection:
+Stream raw, uncompressed `SKILL.md` instructions, companion references, or assets directly into standard output for instant LLM agent context injection with **zero disk footprint**:
 
 ```bash
-# Stream skill content to stdout
+# Stream skill content directly to stdout for immediate context injection
 kungfu load godoctor
 
-# Load multiple skills simultaneously
+# Load multiple skills into context simultaneously
 kungfu load godoctor deslopify
+
+# Load companion reference manuals, API guides, or assets via subpath
+kungfu load godoctor/references/architecture.md
+kungfu load buffer/assets/schema.sql
 ```
 
 ### 5. Install Locally or Globally (`learn`)
 
-Install skills directly into your workspace (`.agents/skills/`) or global home directory (`~/.agents/skills/`):
+Install skills directly into your workspace (`.agents/skills/`) or global home directory (`~/.agents/skills/`) when persistent workspace access is needed:
 
 ```bash
 # Install to current workspace (.agents/skills/<skill>/)
 kungfu learn godoctor
 
-# Install and load instructions into context
+# Install and load instructions into context simultaneously
 kungfu learn godoctor --load
 
 # Install globally to user home (~/.agents/skills/<skill>/)
@@ -129,15 +135,15 @@ kungfu status -g
 kungfu status --json
 ```
 
-### 7. Check & Apply Updates (`update`)
+### 7. Provenance-Aware Single-Command Updates (`update`)
 
-Check for upstream updates or sync latest versions with cryptographic integrity validation:
+KungFu automatically tracks origin catalog provenance, versions, and cryptographic SHA-256 digests in its state manifest. Check for upstream updates or sync latest versions with a single command:
 
 ```bash
-# Preview available updates (dry-run)
+# Preview available updates against origin catalogs (dry-run)
 kungfu update
 
-# Update all installed skills in current workspace
+# Update all installed skills in current workspace in a single command
 kungfu update --all
 
 # Update a specific skill
