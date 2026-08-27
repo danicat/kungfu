@@ -63,7 +63,7 @@ func ParseSkillFromBytes(data []byte, relPath string) (Item, error) {
 		metadata = fm.Metadata
 	}
 	author := ""
-	version := "0.1.0"
+	version := "0.2.0"
 	if metadata != nil {
 		author = metadata["author"]
 		if v := metadata["version"]; v != "" {

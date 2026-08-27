@@ -286,7 +286,7 @@ func TestInstallSkill_Local(t *testing.T) {
 	destDir := filepath.Join(t.TempDir(), "installed_skill")
 
 	// Create source skill structure
-	_ = os.WriteFile(filepath.Join(srcDir, "SKILL.md"), []byte("# Skill Title\nRead [references/playbook.md](references/playbook.md)"), 0644)
+	_ = os.WriteFile(filepath.Join(srcDir, "SKILL.md"), []byte("# Skill Title\nRead [references/playbook.md](references/playbook.md), run `scripts/deploy.sh`, and see [CANONICAL.md](CANONICAL.md)"), 0644)
 	refsDir := filepath.Join(srcDir, "references")
 	_ = os.MkdirAll(refsDir, 0755)
 	_ = os.WriteFile(filepath.Join(refsDir, "playbook.md"), []byte("# Playbook Content"), 0644)
@@ -372,5 +372,73 @@ func TestInstallSkill_Remote(t *testing.T) {
 	}
 	if scriptInfo.Mode()&0111 == 0 {
 		t.Errorf("expected script to be executable, mode: %v", scriptInfo.Mode())
+	}
+}
+
+func TestExtractCandidates(t *testing.T) {
+	md := `# Sample Skill
+Use the companion script ` + "`" + `scripts/analytics.py` + "`" + ` or ` + "`" + `references/schema.md` + "`" + `.
+Run it using:
+kungfu run analytics helper.py --flag
+Or with uv:
+uv run scripts/worker.py
+Or bash:
+bash scripts/setup.sh
+See [Extra Docs](references/extra.md) and ![Diagram](assets/arch.png).
+`
+	candidates := runner.ExtractCandidates(md)
+	expected := []string{
+		"assets/arch.png",
+		"references/extra.md",
+		"references/schema.md",
+		"scripts/analytics.py",
+		"scripts/helper.py",
+		"scripts/setup.sh",
+		"scripts/worker.py",
+	}
+
+	for _, exp := range expected {
+		found := false
+		for _, c := range candidates {
+			if c == exp {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected candidate %q to be extracted, got candidates: %v", exp, candidates)
+		}
+	}
+}
+
+func TestRunScript_JITRemoteFetch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/skills/cloud/scripts/jit_task.sh":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("#!/bin/sh\necho \"JIT_SUCCESS $1\"\n"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	item := catalog.Item{
+		ID:   "cloud-tool",
+		Name: "cloud-tool",
+		URL:  server.URL + "/skills/cloud/SKILL.md",
+	}
+
+	var stdout, stderr bytes.Buffer
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := runner.RunScriptContext(ctx, item, "jit_task.sh", []string{"alpha"}, nil, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("RunScriptContext failed with JIT fetch: %v", err)
+	}
+
+	if !strings.Contains(stdout.String(), "JIT_SUCCESS alpha") {
+		t.Errorf("expected output to contain JIT_SUCCESS alpha, got: %q", stdout.String())
 	}
 }

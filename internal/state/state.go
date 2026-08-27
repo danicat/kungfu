@@ -37,14 +37,18 @@ const (
 
 	OriginCatalog = "catalog"
 	OriginCustom  = "custom"
+	OriginGitHub  = "github"
 )
 
 // SkillRecord represents an installed or soft-deleted skill package.
 type SkillRecord struct {
 	Name            string     `json:"name"`
-	Status          string     `json:"status"`                     // "installed" or "uninstalled"
-	Scope           string     `json:"scope"`                      // "workspace" or "global"
-	Origin          string     `json:"origin,omitempty"`           // "catalog" or "custom"
+	Status          string     `json:"status"`            // "installed" or "uninstalled"
+	Scope           string     `json:"scope"`             // "workspace" or "global"
+	Origin          string     `json:"origin,omitempty"`  // "catalog", "custom", or "github"
+	Repo            string     `json:"repo,omitempty"`    // e.g. "https://github.com/owner/repo" or "owner/repo"
+	Ref             string     `json:"ref,omitempty"`     // e.g. "main", "v1.0.0"
+	RawURL          string     `json:"raw_url,omitempty"` // e.g. "https://raw.githubusercontent.com/owner/repo/main/path/SKILL.md"
 	Path            string     `json:"path"`
 	Version         string     `json:"version,omitempty"`
 	Digest          string     `json:"digest,omitempty"`           // Current/reconciled digest

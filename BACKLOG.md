@@ -4,6 +4,26 @@ This backlog tracks prioritized architectural enhancements, feature requests, an
 
 ---
 
+## ✅ Completed (v0.2.0)
+
+- [x] **Native GitHub Ingestion (`npx skills` replacement)**: Support learning (`kungfu learn` / `kungfu add`) and streaming (`kungfu load`) arbitrary skills directly from GitHub (`owner/repo`, `owner/repo/subpath`, `https://github.com/...`, `@tag`, `#branch`, and `raw.githubusercontent.com/...`) via pure raw HTTP with zero git binary, npm/Node.js, or GitHub API token dependencies.
+- [x] **`kungfu add` Drop-In Alias**: Added `add` as an alias for `learn` to provide full CLI compatibility with `npx skills add`.
+- [x] **Full Provenance & Upstream Drift Tracking**: Enhanced `~/.config/kungfu/state.json` to record GitHub origin (`Origin: "github"`), upstream repository, branch/tag refs, and canonical raw URLs; enhanced `kungfu show` and `kungfu list` to display GitHub provenance.
+- [x] **Remote Update & Drift Detection for GitHub Skills**: `kungfu update` checks remote raw endpoints and package digests, alerting developers to upstream changes and preventing accidental overwriting of local customizations.
+- [x] **Companion File Caching for GitHub Skills**: `kungfu load` downloads companion `scripts/`, `references/`, and `assets/` to `~/.cache/kungfu/skills/<name>/` on-the-fly.
+- [x] **Robust Frontmatter Parsing**: Supports sequence/list format for `allowed-tools` (e.g. `[bash, python]`) as well as string formats.
+
+---
+
+## ✅ Completed (v0.1.1)
+
+- [x] **JIT Remote Script Execution**: Enabled `kungfu run` to execute skill automation scripts immediately after `kungfu load` via on-demand remote caching without requiring permanent installation.
+- [x] **Complete Companion File Ingestion**: Scans and installs referenced scripts, references, and assets from markdown links, codeblocks, and runner invocations when learning skills.
+- [x] **Execution Environment & Runtime Resolution**: Configured runner to execute from user workspace working directory with `PYTHONPATH`/`NODE_PATH` isolation and multi-runtime support (`uv`, `python3`, `bun`, `deno`, `node`, `bash`).
+- [x] **Pure Registry Architecture**: Enforced strict registry ingestion from `skills.danicat.dev` with zero local-to-local copying.
+
+---
+
 ## ✅ Completed (v0.1.0)
 
 - [x] **RFC 8615 Standard Endpoint Resolution**: Auto-expansion of origin to `/.well-known/agent-skills/index.json`.

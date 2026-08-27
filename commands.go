@@ -22,10 +22,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"syscall"
@@ -47,7 +47,7 @@ const (
 	ExitIntegrity = 5
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 type OutputMode string
 
@@ -66,11 +66,19 @@ type GlobalOptions struct {
 }
 
 type App struct {
-	Store    catalog.Store
-	Searcher *search.Engine
-	Stdout   io.Writer
-	Stderr   io.Writer
-	Options  GlobalOptions
+	Store      catalog.Store
+	Searcher   *search.Engine
+	Stdout     io.Writer
+	Stderr     io.Writer
+	Options    GlobalOptions
+	HTTPClient *http.Client
+}
+
+func (a *App) getHTTPClient() *http.Client {
+	if a != nil && a.HTTPClient != nil {
+		return a.HTTPClient
+	}
+	return &http.Client{Timeout: 30 * time.Second}
 }
 
 func NewApp(opts GlobalOptions, stdout, stderr io.Writer) (*App, error) {
@@ -96,11 +104,12 @@ func NewApp(opts GlobalOptions, stdout, stderr io.Writer) (*App, error) {
 
 	engine := search.NewEngine()
 	return &App{
-		Store:    store,
-		Searcher: engine,
-		Stdout:   stdout,
-		Stderr:   stderr,
-		Options:  opts,
+		Store:      store,
+		Searcher:   engine,
+		Stdout:     stdout,
+		Stderr:     stderr,
+		Options:    opts,
+		HTTPClient: &http.Client{Timeout: 30 * time.Second},
 	}, nil
 }
 
@@ -445,6 +454,18 @@ func (a *App) RunList(args []string) int {
 		}
 		if installed && rec.Status == state.StatusInstalled {
 			items[i].Status = "installed"
+			if rec.Origin == state.OriginGitHub || rec.Repo != "" {
+				items[i].Source = "github"
+				if items[i].Metadata == nil {
+					items[i].Metadata = make(map[string]string)
+				}
+				if rec.Repo != "" {
+					items[i].Metadata["repo"] = rec.Repo
+				}
+				if rec.Ref != "" {
+					items[i].Metadata["ref"] = rec.Ref
+				}
+			}
 			if items[i].Version == "" && rec.Version != "" {
 				items[i].Version = rec.Version
 			}
@@ -598,11 +619,70 @@ func (a *App) RunShow(args []string) int {
 	} else if len(posArgs) > 0 {
 		for _, name := range posArgs {
 			item, err := a.Store.Get(name)
-			if err != nil {
-				a.printNotFoundWithSuggestions("show", name)
-				return ExitNotFound
+			if err == nil {
+				targetItems = append(targetItems, *item)
+				continue
 			}
-			targetItems = append(targetItems, *item)
+
+			// Check if installed locally in workspace or global scope
+			st := a.loadState()
+			wd, _ := os.Getwd()
+			var rec *state.SkillRecord
+			if r, ok := st.GetSkill(state.ScopeWorkspace, wd, name); ok && r.Status == state.StatusInstalled {
+				rec = &r
+			} else if r, ok := st.GetSkill(state.ScopeGlobal, "", name); ok && r.Status == state.StatusInstalled {
+				rec = &r
+			}
+
+			if rec != nil {
+				skillMD := filepath.Join(rec.Path, "SKILL.md")
+				if data, rerr := os.ReadFile(skillMD); rerr == nil {
+					if fm, body, perr := catalog.ParseFrontmatter(data); perr == nil && fm != nil {
+						meta := fm.Metadata
+						if meta == nil {
+							meta = make(map[string]string)
+						}
+						source := "catalog"
+						if rec.Origin == state.OriginGitHub {
+							source = "github"
+							meta["origin"] = "github"
+							meta["repo"] = rec.Repo
+							meta["ref"] = rec.Ref
+							meta["canonical"] = rec.RawURL
+						} else if rec.Origin == state.OriginCustom {
+							source = "custom"
+						}
+						targetItems = append(targetItems, catalog.Item{
+							ID:          fm.Name,
+							Name:        fm.Name,
+							Type:        catalog.ItemTypeSkill,
+							Description: fm.Description,
+							Category:    meta["category"],
+							Version:     rec.Version,
+							Path:        skillMD,
+							Source:      source,
+							Metadata:    meta,
+							Body:        body,
+						})
+						continue
+					}
+				}
+			}
+
+			if catalog.IsGitHubTarget(name) {
+				target, ok := catalog.ParseGitHubTarget(name)
+				if ok {
+					ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					ghItem, ghErr := catalog.FetchGitHubSkill(ctx, target, a.getHTTPClient())
+					cancel()
+					if ghErr == nil && ghItem != nil {
+						targetItems = append(targetItems, *ghItem)
+						continue
+					}
+				}
+			}
+			a.printNotFoundWithSuggestions("show", name)
+			return ExitNotFound
 		}
 	} else {
 		fmt.Fprintln(a.Stderr, "error: show requires a skill name, --category, --tags, or --all")
@@ -613,7 +693,29 @@ func (a *App) RunShow(args []string) int {
 }
 
 func (a *App) renderShowItems(items []catalog.Item, mode OutputMode) int {
+	wd, _ := os.Getwd()
+	st := a.loadState()
 	for i := range items {
+		rec, installed := st.GetSkill(state.ScopeWorkspace, wd, items[i].Name)
+		if !installed || rec.Status != state.StatusInstalled {
+			rec, installed = st.GetSkill(state.ScopeGlobal, "", items[i].Name)
+		}
+		if installed && (rec.Origin == state.OriginGitHub || rec.Repo != "") {
+			items[i].Source = "github"
+			if items[i].Metadata == nil {
+				items[i].Metadata = make(map[string]string)
+			}
+			if rec.Repo != "" {
+				items[i].Metadata["repo"] = rec.Repo
+			}
+			if rec.Ref != "" {
+				items[i].Metadata["ref"] = rec.Ref
+			}
+			if rec.Origin != "" {
+				items[i].Metadata["origin"] = rec.Origin
+			}
+		}
+
 		if (items[i].Category == "" || items[i].Version == "") && items[i].URL != "" {
 			if content, err := a.Store.LoadContent(&items[i]); err == nil {
 				if fm, _, err := catalog.ParseFrontmatter([]byte(content)); err == nil && fm != nil {
@@ -658,6 +760,17 @@ func (a *App) renderShowItems(items []catalog.Item, mode OutputMode) int {
 			sb.WriteString(fmt.Sprintf("# %s\n\n", item.Name))
 			sb.WriteString(fmt.Sprintf("- **Category**: `%s`\n", item.Category))
 			sb.WriteString(fmt.Sprintf("- **Type**: `%s`\n", item.Type))
+			if item.Source == "github" || (item.Metadata != nil && item.Metadata["repo"] != "") {
+				repo := item.Metadata["repo"]
+				if repo != "" {
+					sb.WriteString(fmt.Sprintf("- **Origin**: `github` (%s)\n", repo))
+				} else {
+					sb.WriteString("- **Origin**: `github`\n")
+				}
+				if ref := item.Metadata["ref"]; ref != "" {
+					sb.WriteString(fmt.Sprintf("- **Ref**: `%s`\n", ref))
+				}
+			}
 			if len(item.Tags) > 0 {
 				sb.WriteString(fmt.Sprintf("- **Tags**: `%s`\n", strings.Join(item.Tags, ", ")))
 			}
@@ -699,6 +812,17 @@ func (a *App) renderShowItems(items []catalog.Item, mode OutputMode) int {
 				fmt.Fprintf(a.Stdout, "Title:       %s\n", item.Title)
 			}
 			fmt.Fprintf(a.Stdout, "Description: %s\n", item.Description)
+			if item.Source == "github" || (item.Metadata != nil && item.Metadata["repo"] != "") {
+				repo := item.Metadata["repo"]
+				if repo != "" {
+					fmt.Fprintf(a.Stdout, "Origin:      github (%s)\n", repo)
+				} else {
+					fmt.Fprintf(a.Stdout, "Origin:      github\n")
+				}
+				if ref := item.Metadata["ref"]; ref != "" {
+					fmt.Fprintf(a.Stdout, "Ref:         %s\n", ref)
+				}
+			}
 			if len(item.Tags) > 0 {
 				fmt.Fprintf(a.Stdout, "Tags:        %s\n", strings.Join(item.Tags, ", "))
 			}
@@ -793,14 +917,39 @@ func (a *App) RunLoad(args []string) int {
 					skillName := parts[0]
 					subPath := parts[1]
 					item, err := a.Store.Get(skillName)
-					if err != nil {
-						a.printNotFoundWithSuggestions("load", skillName)
-						return ExitNotFound
+					if err == nil {
+						targets = append(targets, loadTarget{item: *item, subPath: subPath})
+						continue
 					}
-					targets = append(targets, loadTarget{item: *item, subPath: subPath})
+					if catalog.IsGitHubTarget(arg) {
+						target, ok := catalog.ParseGitHubTarget(arg)
+						if ok {
+							ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+							ghItem, ghErr := catalog.FetchGitHubSkill(ctx, target, a.getHTTPClient())
+							cancel()
+							if ghErr == nil && ghItem != nil {
+								targets = append(targets, loadTarget{item: *ghItem, subPath: ""})
+								continue
+							}
+						}
+					}
+					a.printNotFoundWithSuggestions("load", skillName)
+					return ExitNotFound
 				} else {
 					item, err := a.Store.Get(arg)
 					if err != nil {
+						if catalog.IsGitHubTarget(arg) {
+							target, ok := catalog.ParseGitHubTarget(arg)
+							if ok {
+								ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+								ghItem, ghErr := catalog.FetchGitHubSkill(ctx, target, a.getHTTPClient())
+								cancel()
+								if ghErr == nil && ghItem != nil {
+									targets = append(targets, loadTarget{item: *ghItem, subPath: ""})
+									continue
+								}
+							}
+						}
 						a.printNotFoundWithSuggestions("load", arg)
 						return ExitNotFound
 					}
@@ -822,6 +971,25 @@ func (a *App) RunLoad(args []string) int {
 
 		if target.subPath == "" || target.subPath == "SKILL.md" {
 			rawContent, err = a.loadItemContent(&target.item)
+			if err == nil && rawContent != "" && target.item.Name != "" {
+				if homeDir, herr := os.UserHomeDir(); herr == nil && homeDir != "" {
+					cacheSkillDir := filepath.Join(homeDir, ".cache", "kungfu", "skills", target.item.Name)
+					_ = os.MkdirAll(cacheSkillDir, 0755)
+					cachePath := filepath.Join(cacheSkillDir, "SKILL.md")
+					_ = os.WriteFile(cachePath, []byte(rawContent), 0644)
+
+					var extraCandidates []string
+					for _, ref := range a.listReferences(target.item) {
+						extraCandidates = append(extraCandidates, "references/"+ref+".md")
+					}
+					for _, scr := range a.listScripts(target.item) {
+						extraCandidates = append(extraCandidates, "scripts/"+scr)
+					}
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					_, _ = runner.InstallSkillContext(ctx, target.item, cacheSkillDir, rawContent, extraCandidates, a.getHTTPClient())
+					cancel()
+				}
+			}
 		} else {
 			rawContent, err = runner.ReadFile(target.item, target.subPath)
 			displayPath = target.subPath
@@ -837,7 +1005,7 @@ func (a *App) RunLoad(args []string) int {
 				fmt.Fprintf(a.Stderr, "error: file %q not found in skill %q.\n", target.subPath, target.item.Name)
 				var files []string
 				files = append(files, "SKILL.md")
-				for _, s := range listScripts(target.item) {
+				for _, s := range a.listScripts(target.item) {
 					files = append(files, "scripts/"+s, s)
 				}
 				for _, r := range a.listReferences(target.item) {
@@ -954,6 +1122,18 @@ func (a *App) RunLearn(args []string) int {
 		for _, name := range posArgs {
 			item, err := a.Store.Get(name)
 			if err != nil {
+				if catalog.IsGitHubTarget(name) {
+					target, ok := catalog.ParseGitHubTarget(name)
+					if ok {
+						ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+						ghItem, ghErr := catalog.FetchGitHubSkill(ctx, target, a.getHTTPClient())
+						cancel()
+						if ghErr == nil && ghItem != nil {
+							targetItems = append(targetItems, *ghItem)
+							continue
+						}
+					}
+				}
 				a.printNotFoundWithSuggestions("learn", name)
 				return ExitNotFound
 			}
@@ -1039,12 +1219,12 @@ func (a *App) RunLearn(args []string) int {
 		for _, ref := range a.listReferences(item) {
 			extraCandidates = append(extraCandidates, "references/"+ref+".md")
 		}
-		for _, scr := range listScripts(item) {
+		for _, scr := range a.listScripts(item) {
 			extraCandidates = append(extraCandidates, "scripts/"+scr)
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		files, err := runner.InstallSkillContext(ctx, item, destDir, content, extraCandidates, nil)
+		files, err := runner.InstallSkillContext(ctx, item, destDir, content, extraCandidates, a.getHTTPClient())
 		cancel()
 		if err != nil {
 			a.logError("installing skill %q: %v", item.Name, err)
@@ -1073,9 +1253,28 @@ func (a *App) RunLearn(args []string) int {
 			}
 		}
 
+		origin := state.OriginCatalog
+		repo := ""
+		ref := ""
+		rawURL := ""
+		if item.Source == "github" || (item.Metadata != nil && item.Metadata["origin"] != "") {
+			origin = state.OriginGitHub
+			if item.Metadata != nil {
+				repo = item.Metadata["repo"]
+				ref = item.Metadata["ref"]
+				rawURL = item.Metadata["canonical"]
+			}
+			if rawURL == "" {
+				rawURL = item.URL
+			}
+		}
+
 		st.RecordInstall(scope, wsDir, state.SkillRecord{
 			Name:    item.Name,
-			Origin:  state.OriginCatalog,
+			Origin:  origin,
+			Repo:    repo,
+			Ref:     ref,
+			RawURL:  rawURL,
 			Path:    destDir,
 			Version: skillVer,
 			Digest:  digest,
@@ -1267,7 +1466,7 @@ func (a *App) RunRun(args []string) int {
 	if err != nil {
 		if errors.Is(err, runner.ErrScriptNotFound) {
 			fmt.Fprintf(a.Stderr, "error: script %q not found in skill %q.\n", scriptName, skillName)
-			scripts := listScripts(*item)
+			scripts := a.listScripts(*item)
 			if len(scripts) > 0 {
 				suggs := search.Suggest(scriptName, scripts, 3)
 				if len(suggs) > 0 {
@@ -1296,8 +1495,6 @@ func (a *App) RunRun(args []string) int {
 	}
 	return ExitSuccess
 }
-
-var refMarkdownLinkRegex = regexp.MustCompile(`\[[^\]]*\]\(([^)#]+)(?:#[^)]+)?\)`)
 
 func (a *App) listReferences(item catalog.Item) []string {
 	var refs []string
@@ -1340,13 +1537,9 @@ func (a *App) listReferences(item catalog.Item) []string {
 		}
 	}
 	if content != "" {
-		matches := refMarkdownLinkRegex.FindAllStringSubmatch(content, -1)
-		for _, m := range matches {
-			if len(m) > 1 {
-				target := strings.TrimSpace(m[1])
-				if target != "" && strings.Contains(target, "references/") && !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") && !strings.HasPrefix(target, "mailto:") && !strings.HasPrefix(target, "#") {
-					add(target)
-				}
+		for _, c := range runner.ExtractCandidates(content) {
+			if strings.HasPrefix(c, "references/") {
+				add(c)
 			}
 		}
 	}
@@ -1355,15 +1548,71 @@ func (a *App) listReferences(item catalog.Item) []string {
 	return refs
 }
 
+func (a *App) listScripts(item catalog.Item) []string {
+	var scripts []string
+	seen := make(map[string]bool)
+
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		clean := filepath.ToSlash(filepath.Clean(s))
+		clean = strings.TrimPrefix(clean, "./")
+		clean = strings.TrimPrefix(clean, "scripts/")
+		if clean != "" && !seen[clean] {
+			seen[clean] = true
+			scripts = append(scripts, clean)
+		}
+	}
+
+	// 1. Check local candidate directories
+	baseDirs := runner.GetCandidateBaseDirs(item)
+	for _, baseDir := range baseDirs {
+		scriptsDir := filepath.Join(baseDir, "scripts")
+		if entries, err := os.ReadDir(scriptsDir); err == nil {
+			for _, e := range entries {
+				if !e.IsDir() {
+					add(e.Name())
+				}
+			}
+		}
+	}
+
+	// 2. Check item body content
+	content := item.Body
+	if content == "" && a.Store != nil {
+		if c, err := a.Store.LoadContent(&item); err == nil {
+			content = c
+		}
+	}
+	if content != "" {
+		for _, c := range runner.ExtractCandidates(content) {
+			if strings.HasPrefix(c, "scripts/") {
+				add(c)
+			}
+		}
+	}
+
+	sort.Strings(scripts)
+	return scripts
+}
+
 func listScripts(item catalog.Item) []string {
 	var scripts []string
 	seen := make(map[string]bool)
 
 	add := func(s string) {
 		s = strings.TrimSpace(s)
-		if s != "" && !seen[s] {
-			seen[s] = true
-			scripts = append(scripts, s)
+		if s == "" {
+			return
+		}
+		clean := filepath.ToSlash(filepath.Clean(s))
+		clean = strings.TrimPrefix(clean, "./")
+		clean = strings.TrimPrefix(clean, "scripts/")
+		if clean != "" && !seen[clean] {
+			seen[clean] = true
+			scripts = append(scripts, clean)
 		}
 	}
 
@@ -1378,6 +1627,16 @@ func listScripts(item catalog.Item) []string {
 			}
 		}
 	}
+
+	if item.Body != "" {
+		for _, c := range runner.ExtractCandidates(item.Body) {
+			if strings.HasPrefix(c, "scripts/") {
+				add(c)
+			}
+		}
+	}
+
+	sort.Strings(scripts)
 	return scripts
 }
 
@@ -1701,13 +1960,38 @@ func (a *App) RunUpdate(args []string) int {
 			continue
 		}
 
-		item, err := a.Store.Get(name)
-		if err != nil {
+		var item *catalog.Item
+		var err error
+
+		if rec.Origin == state.OriginGitHub || rec.RawURL != "" {
+			var target *catalog.GitHubTarget
+			var ok bool
+			if rec.RawURL != "" {
+				target, ok = catalog.ParseGitHubTarget(rec.RawURL)
+			}
+			if !ok && rec.Repo != "" {
+				target, ok = catalog.ParseGitHubTarget(rec.Repo)
+			}
+			if ok {
+				if rec.Ref != "" {
+					target.Ref = rec.Ref
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				item, err = catalog.FetchGitHubSkill(ctx, target, a.getHTTPClient())
+				cancel()
+			} else {
+				err = fmt.Errorf("invalid github repository: %s", rec.Repo)
+			}
+		} else {
+			item, err = a.Store.Get(name)
+		}
+
+		if err != nil || item == nil {
 			checks = append(checks, SkillUpdateCheck{
 				Name:         name,
 				InstalledVer: rec.Version,
 				Status:       "error",
-				Reason:       fmt.Sprintf("not found in catalog: %v", err),
+				Reason:       fmt.Sprintf("not found in upstream source: %v", err),
 			})
 			continue
 		}
@@ -1716,7 +2000,7 @@ func (a *App) RunUpdate(args []string) int {
 		if remoteVer == "" && item.Metadata != nil {
 			remoteVer = item.Metadata["version"]
 		}
-		if remoteVer == "" && item.URL != "" {
+		if remoteVer == "" && item.URL != "" && item.Body == "" {
 			if content, err := a.Store.LoadContent(item); err == nil {
 				if fm, _, err := catalog.ParseFrontmatter([]byte(content)); err == nil && fm != nil {
 					if fm.Metadata != nil && fm.Metadata["version"] != "" {
@@ -1800,12 +2084,12 @@ func (a *App) RunUpdate(args []string) int {
 					for _, ref := range a.listReferences(*item) {
 						extraCandidates = append(extraCandidates, "references/"+ref+".md")
 					}
-					for _, scr := range listScripts(*item) {
+					for _, scr := range a.listScripts(*item) {
 						extraCandidates = append(extraCandidates, "scripts/"+scr)
 					}
 
 					ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-					files, err := runner.InstallSkillContext(ctx, *item, rec.Path, content, extraCandidates, nil)
+					files, err := runner.InstallSkillContext(ctx, *item, rec.Path, content, extraCandidates, a.getHTTPClient())
 					cancel()
 					if err != nil {
 						check.Status = "error"

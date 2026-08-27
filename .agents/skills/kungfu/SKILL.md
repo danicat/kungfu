@@ -7,7 +7,7 @@ metadata:
   category: gateway
   tags: "gateway, agent-skills, discovery, search, catalog, cli, learn"
   author: Daniela Petruzalek (daniela@danicat.dev)
-  version: "0.1.0"
+  version: "0.2.0"
   homepage: https://skills.danicat.dev/
   canonical: https://github.com/danicat/kungfu/blob/main/skills/kungfu/SKILL.md
   repository: https://github.com/danicat/kungfu
@@ -150,6 +150,10 @@ Use `kungfu load` when you need instructions immediately for the current turn wi
 # Load single skill verbatim markdown into context
 kungfu load ebitengineer
 
+# Load skill directly from arbitrary GitHub repository
+kungfu load anthropics/anthropic-quickstarts/evals
+kungfu load https://github.com/danicat/kungfu/tree/main/skills/kungfu
+
 # Load specific companion reference, script, or asset within a skill
 kungfu load buffer/references/pitfalls.md
 kungfu load buffer/scripts/sync.py
@@ -161,17 +165,25 @@ kungfu load ebitengineer procedural-art procedural-composer
 kungfu load --category game-dev
 kungfu load --tags "writing AND seo"
 
-# Load the complete catalog
-kungfu load --all
+# Stream raw unformatted markdown without box formatting
+kungfu load godoctor --raw
 ```
 
-#### B. Persistent Learning (`kungfu learn`) — Workspace & Global Installation
-Use `kungfu learn` when the user wants to install skills permanently for future sessions:
-```bash
-# Install to current project workspace (.agents/skills/<skill>/SKILL.md)
-kungfu learn godoctor
+### Scenario 6: Persisting Skills to Workspace or User Home (`kungfu learn` / `kungfu add`)
 
-# Install AND stream instructions into context in a single step
+Install skill packages permanently into the repository or global configuration (supports `kungfu add` as a drop-in alias):
+
+```bash
+# Install to current workspace (.agents/skills/<skill>/SKILL.md) - silent install
+kungfu learn godoctor
+kungfu learn ebitengineer procedural-art
+
+# Install directly from GitHub repository (replaces npx skills add)
+kungfu learn anthropics/anthropic-quickstarts/evals
+kungfu learn owner/repo@v1.2.0
+kungfu add danicat/kungfu
+
+# Install and stream instructions into context simultaneously
 kungfu learn godoctor --load
 kungfu learn ebitengineer procedural-art -l
 
@@ -183,42 +195,19 @@ kungfu learn -g godoctor --load
 kungfu learn -f godoctor
 ```
 
-#### C. Lifecycle & State Management (`kungfu update`, `kungfu forget`, `kungfu status`)
-Kungfu automatically tracks all installed skills, workspace paths, versions, package digests (SHA-256), and JIT load history in `~/.config/kungfu/state.json`:
+### Scenario 7: Running Bundled Automation Scripts (`kungfu run`)
+
+Skills can bundle executable automation scripts in `scripts/`. Whenever a skill's instructions mention running a companion script (e.g., `scripts/foo.py`, `uv run scripts/foo.py`, `python scripts/...`, `bash scripts/...`):
+
+> [!IMPORTANT]
+> **FIRST INSTINCT: ALWAYS USE `kungfu run`**
+> - **NEVER search the filesystem or look for script files on disk.**
+> - **`kungfu learn` is NOT necessary.** Scripts are fully runnable immediately after `kungfu load` (or on any catalog skill) via automatic Just-In-Time (JIT) remote fetching and caching.
+> - `kungfu run` automatically resolves runtimes (`uv`, `python3`, `bun`, `deno`, `node`, `bash`), fetches companion scripts on demand, sets appropriate execution permissions, configures import paths (`PYTHONPATH`/`NODE_PATH`), and executes the script in your workspace working directory.
 
 ```bash
-# Inspect installed skills, versions, forgotten skills, and JIT load history
-kungfu status
-kungfu status --json
-
-# Check for updates to installed skills (dry-run preview table)
-kungfu update
-
-# Apply updates to all installed skills in current workspace
-kungfu update --all
-
-# Update specific skill
-kungfu update godoctor
-
-# Force update / accept risk for unversioned or modified skills
-kungfu update godoctor -y
-
-# Uninstall and soft-delete a skill from current workspace
-kungfu forget godoctor
-
-# Uninstall and soft-delete a global skill
-kungfu forget -g kungfu
-
-# Uninstall all skills in current workspace
-kungfu forget --all
-```
-
-### Scenario 6: Running Bundled Automation Scripts (`kungfu run`)
-
-Skills can bundle executable automation scripts in `scripts/`. `kungfu run` automatically detects the appropriate runtime (`uv`, `python3`, `bun`, `deno`, `node`, `bash`):
-
-```bash
-# Run script bundled inside a skill
+# Run script bundled inside a skill (e.g., buffer-analytics, godoctor, ebitengineer)
+kungfu run buffer-analytics buffer_analytics.py report overview --db analytics.db
 kungfu run godoctor analyze.sh --json
 kungfu run ebitengineer generate-spritesheet.py --output assets/
 ```
@@ -233,9 +222,10 @@ kungfu run ebitengineer generate-spritesheet.py --output assets/
 | `kungfu find` | `kungfu find <query> [-c <cat>] [-t <tags>] [-s <strat>]` | Search skills with BM25/TF-IDF/Hybrid ranking |
 | `kungfu show` | `kungfu show <skills...> [-c <cat>] [-t <tags>] [--all]` | Display metadata, summary, and allowed tools |
 | `kungfu load` | `kungfu load <skill[/subpath]> [-c <cat>] [-t <tags>] [--all]` | Stream verbatim markdown instructions or subpath files (references, scripts, assets) |
-| `kungfu learn` | `kungfu learn <skills...> [-g] [-f] [--load] [-c <cat>] [-t <tags>]` | Install skill to workspace/global & record in state |
+| `kungfu learn` | `kungfu learn <skills...> [-g] [-f] [--load] [-c <cat>] [-t <tags>]` | Install skill from catalog or GitHub & record in state (`kungfu add` alias supported) |
+| `kungfu add` | `kungfu add <skills...> [-g] [-f] [--load]` | Drop-in alias for `kungfu learn` (compatible with `npx skills add`) |
 | `kungfu forget` | `kungfu forget <skills...> [-g] [-f] [--all]` | Uninstall and soft-delete skills from workspace/global |
-| `kungfu update` | `kungfu update [skills...] [-g] [--all] [-y] [-f] [--refresh]` | Dry-run check or apply updates to installed skills |
+| `kungfu update` | `kungfu update [skills...] [-g] [--all] [-y] [-f] [--refresh]` | Dry-run check or apply updates to catalog & GitHub installed skills |
 | `kungfu status` | `kungfu status [skills...] [-c <cat>] [-t <tags>] [-g] [--json] [--raw]` | Inspect installed skills, paths, versions, and JIT history |
 | `kungfu version` | `kungfu version` (or `kungfu --version`) | Display current kungfu release version |
 | `kungfu run` | `kungfu run <skill> <script> [args...]` | Execute companion skill automation script |
@@ -249,34 +239,37 @@ kungfu run ebitengineer generate-spritesheet.py --output assets/
 
 ## Gotchas & Operational Rules
 
-1. **State Manifest & Zero Contamination**:
+1. **Automation Script Execution First Instinct**:
+   - When a skill references companion automation scripts, **DO NOT** use file search tools or inspect local directories to locate the script. Trigger `kungfu run <skill> <script> [args...]` immediately.
+   - `kungfu run` works out of the box after `kungfu load` without requiring permanent installation (`kungfu learn`).
+2. **State Manifest & Zero Contamination**:
    - KungFu maintains a global state manifest at `~/.config/kungfu/state.json` tracking installed skills, versions, SHA-256 package digests, soft-deletes, and JIT load counts.
    - Remote catalog manifests and downloaded skill packages are cached transparently in `~/.cache/kungfu/` (with TTL validation, ETag/conditional requests, and offline fallbacks).
-2. **Multi-Skill Batch Loading & Tool Runner Buffers**:
+3. **Multi-Skill Batch Loading & Tool Runner Buffers**:
    - `kungfu load` streams complete verbatim Markdown without truncating. However, batch loading multiple large skills simultaneously in an agent environment may exceed synchronous tool output buffers (typically ~8–10 KB / ~200 lines), leading outer execution harnesses to truncate leading output lines.
    - **Recommendation**: Always invoke `run_command` with `WaitMsBeforeAsync: 0` (background execution) when loading multiple or large skills so the full, untruncated content streams into the task log, or load skills individually as needed (`kungfu load <skill>`).
-3. **Network Resilience & Exponential Retries**:
+4. **Network Resilience & Exponential Retries**:
    - Remote catalog discovery and skill downloads automatically retry up to 3 times with exponential backoff on transient network failures or 5xx/429 HTTP status codes.
    - If network access is completely unavailable, `kungfu` gracefully falls back to cached, embedded, and locally installed skills without crashing.
-4. **"There is no spoon — but there is a flag"**:
+5. **"There is no spoon — but there is a flag"**:
    - By default, `kungfu learn` installs silently without dumping the skill body to keep terminal output clean.
    - To install **and** load the skill into context simultaneously, pass `--load` or `-l` (e.g., `kungfu learn godoctor --load`).
-5. **Tag Boolean Syntax**:
+6. **Tag Boolean Syntax**:
    - Always enclose boolean tag queries in quotes to prevent shell splitting: `--tags "golang AND web"` (supports `AND`, `OR`, `NOT`, case-insensitive).
-6. **Workspace vs. Global Scope**:
+7. **Workspace vs. Global Scope**:
    - `kungfu learn` installs to `.agents/skills/<name>/` in the current working directory.
    - `kungfu learn -g` installs to the global user home directory `~/.agents/skills/<name>/`.
-7. **Exit Codes**:
+8. **Exit Codes**:
    - `0`: Success.
    - `1`: General Runtime Error.
    - `2`: Usage / Flag Parsing Error.
    - `3`: Item, Skill, or Category Not Found (inspect "Did You Mean?" suggestions).
    - `4`: Network Error (remote registry unreachable; embedded and local skills remain accessible).
    - `5`: Integrity Error (digest mismatch).
-8. **Overwriting Existing Skills**:
+9. **Overwriting Existing Skills**:
    - If a skill is already installed, `kungfu learn` skips file writes unless `-f` / `--force` is specified.
-9. **Agent Command Execution (`run_command`)**:
-   - When calling `run_command` to execute `kungfu load` or `kungfu learn --load`, always pass `WaitMsBeforeAsync: 0` (or `wait = 0`) to preserve the entire untruncated output in the task log.
+10. **Agent Command Execution (`run_command`)**:
+    - When calling `run_command` to execute `kungfu load` or `kungfu learn --load`, always pass `WaitMsBeforeAsync: 0` (or `wait = 0`) to preserve the entire untruncated output in the task log.
 
 ---
 

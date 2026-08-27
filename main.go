@@ -124,7 +124,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return app.RunShow(cmdArgs)
 	case "load", "get":
 		return app.RunLoad(cmdArgs)
-	case "learn", "install":
+	case "learn", "install", "add":
 		return app.RunLearn(cmdArgs)
 	case "forget", "unlearn":
 		return app.RunForget(cmdArgs)

@@ -87,9 +87,10 @@ func WithManifest(m *Manifest) Option {
 	return func(c *Catalog) {
 		c.manifest = m
 		if m != nil {
-			for _, item := range m.Items {
-				c.items[strings.ToLower(item.ID)] = item
-				c.items[strings.ToLower(item.Name)] = item
+			for i := range m.Items {
+				m.Items[i].Normalize()
+				c.items[strings.ToLower(m.Items[i].ID)] = m.Items[i]
+				c.items[strings.ToLower(m.Items[i].Name)] = m.Items[i]
 			}
 		}
 	}
@@ -107,9 +108,10 @@ func WithRemoteDiscovery(enable bool) Option {
 	return WithRemoteSync(enable)
 }
 
-// WithLocalDiscovery is kept for backward compatibility (no-op).
+// WithLocalDiscovery enables or disables local filesystem skill discovery.
 func WithLocalDiscovery(enable bool) Option {
 	return func(c *Catalog) {
+		c.enableLocal = enable
 	}
 }
 
@@ -162,6 +164,7 @@ type Catalog struct {
 	remoteURL    string
 	httpClient   *http.Client
 	enableRemote bool
+	enableLocal  bool
 	cacheDir     string
 	noCache      bool
 	forceRefresh bool
@@ -253,6 +256,7 @@ func NewCatalog(opts ...Option) (*Catalog, error) {
 		remoteURL:    remote,
 		httpClient:   &http.Client{Timeout: 10 * time.Second},
 		enableRemote: true,
+		enableLocal:  true,
 	}
 
 	for _, opt := range opts {
@@ -261,81 +265,103 @@ func NewCatalog(opts ...Option) (*Catalog, error) {
 
 	// 1. Fetch live remote catalog manifest if enabled with 3 exponential retries and caching
 	if c.enableRemote && c.remoteURL != "" && c.manifest == nil {
-		cachePath := GetCatalogCachePath()
-		if c.cacheDir != "" {
-			cachePath = filepath.Join(c.cacheDir, "index.json")
-		}
-
-		var cached *CachedCatalog
-		if !c.noCache {
-			if loaded, err := LoadCachedCatalog(cachePath); err == nil && loaded != nil && loaded.URL == c.remoteURL {
-				cached = loaded
-			}
-		}
-
-		// If cache is fresh and not forced refresh, use cached manifest immediately
-		if cached != nil && !c.forceRefresh && time.Since(cached.FetchedAt) < DefaultCatalogTTL {
-			c.manifest = &cached.Manifest
-			for _, it := range cached.Manifest.Items {
-				c.items[strings.ToLower(it.ID)] = it
-				c.items[strings.ToLower(it.Name)] = it
-			}
-		} else {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-
-			headers := make(map[string]string)
-			if cached != nil && cached.ETag != "" && !c.forceRefresh {
-				headers["If-None-Match"] = cached.ETag
-			}
-
-			resp, err := fetchWithRetryAndHeaders(ctx, c.httpClient, c.remoteURL, "kungfu/0.1.0", headers, defaultMaxRetries, defaultInitialBackoff)
-			if err == nil && resp != nil {
-				defer resp.Body.Close()
-				if resp.StatusCode == http.StatusNotModified && cached != nil {
-					// 304 Not Modified: refresh fetched timestamp and use cache
-					_ = SaveCachedCatalog(cachePath, c.remoteURL, cached.Manifest, cached.ETag)
-					c.manifest = &cached.Manifest
-					for _, it := range cached.Manifest.Items {
-						c.items[strings.ToLower(it.ID)] = it
-						c.items[strings.ToLower(it.Name)] = it
-					}
-				} else if resp.StatusCode == http.StatusOK {
-					data, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
-					if err == nil {
-						var manifest Manifest
-						if err := json.Unmarshal(data, &manifest); err == nil {
-							c.manifest = &manifest
-							etag := resp.Header.Get("ETag")
-							if !c.noCache {
-								_ = SaveCachedCatalog(cachePath, c.remoteURL, manifest, etag)
-							}
-							for _, it := range manifest.Items {
-								c.items[strings.ToLower(it.ID)] = it
-								c.items[strings.ToLower(it.Name)] = it
-							}
-						}
-					}
-				}
-			}
-
-			if c.manifest == nil && cached != nil {
-				// Offline / non-200 HTTP fallback to cache
-				c.manifest = &cached.Manifest
-				for _, it := range cached.Manifest.Items {
-					c.items[strings.ToLower(it.ID)] = it
-					c.items[strings.ToLower(it.Name)] = it
-				}
-			}
-		}
+		c.fetchRemoteLocked(context.Background())
 	}
 
 	// 2. Register built-in embedded kungfu item and discover local/installed skills
 	c.mu.Lock()
 	c.discoverEmbeddedLocked()
-	c.discoverLocalSkillsLocked()
+	if c.enableLocal {
+		c.discoverLocalSkillsLocked()
+	}
 	c.mu.Unlock()
 	return c, nil
+}
+
+// Sync synchronizes the remote catalog manifest with the local cache.
+func (c *Catalog) Sync(ctx context.Context, force bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.enableRemote || c.remoteURL == "" {
+		return nil
+	}
+
+	c.forceRefresh = force
+	c.fetchRemoteLocked(ctx)
+	c.discoverEmbeddedLocked()
+	c.discoverLocalSkillsLocked()
+	return nil
+}
+
+func (c *Catalog) fetchRemoteLocked(ctx context.Context) {
+	cachePath := GetCatalogCachePath()
+	if c.cacheDir != "" {
+		cachePath = filepath.Join(c.cacheDir, "index.json")
+	}
+
+	var cached *CachedCatalog
+	if !c.noCache {
+		if loaded, err := LoadCachedCatalog(cachePath); err == nil && loaded != nil && loaded.URL == c.remoteURL {
+			cached = loaded
+		}
+	}
+
+	// If cache is fresh and not forced refresh, use cached manifest immediately
+	if cached != nil && !c.forceRefresh && time.Since(cached.FetchedAt) < DefaultCatalogTTL {
+		c.manifest = &cached.Manifest
+		for _, it := range cached.Manifest.Items {
+			c.items[strings.ToLower(it.ID)] = it
+			c.items[strings.ToLower(it.Name)] = it
+		}
+	} else {
+		reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+
+		headers := make(map[string]string)
+		if cached != nil && cached.ETag != "" && !c.forceRefresh {
+			headers["If-None-Match"] = cached.ETag
+		}
+
+		resp, err := fetchWithRetryAndHeaders(reqCtx, c.httpClient, c.remoteURL, "kungfu/0.2.0", headers, defaultMaxRetries, defaultInitialBackoff)
+		if err == nil && resp != nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusNotModified && cached != nil {
+				// 304 Not Modified: refresh fetched timestamp and use cache
+				_ = SaveCachedCatalog(cachePath, c.remoteURL, cached.Manifest, cached.ETag)
+				c.manifest = &cached.Manifest
+				for _, it := range cached.Manifest.Items {
+					c.items[strings.ToLower(it.ID)] = it
+					c.items[strings.ToLower(it.Name)] = it
+				}
+			} else if resp.StatusCode == http.StatusOK {
+				data, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+				if err == nil {
+					var manifest Manifest
+					if err := json.Unmarshal(data, &manifest); err == nil {
+						c.manifest = &manifest
+						etag := resp.Header.Get("ETag")
+						if !c.noCache {
+							_ = SaveCachedCatalog(cachePath, c.remoteURL, manifest, etag)
+						}
+						for _, it := range manifest.Items {
+							c.items[strings.ToLower(it.ID)] = it
+							c.items[strings.ToLower(it.Name)] = it
+						}
+					}
+				}
+			}
+		}
+
+		if c.manifest == nil && cached != nil {
+			// Offline / non-200 HTTP fallback to cache
+			c.manifest = &cached.Manifest
+			for _, it := range cached.Manifest.Items {
+				c.items[strings.ToLower(it.ID)] = it
+				c.items[strings.ToLower(it.Name)] = it
+			}
+		}
+	}
 }
 
 // Get retrieves an item by ID or Name (case-insensitive).
@@ -506,26 +532,17 @@ func (c *Catalog) Categories() []Category {
 }
 
 func (c *Catalog) discoverEmbeddedLocked() {
-	fsys := c.embeddedFS
-	if fsys == nil {
-		if _, err := os.Stat("skills"); err == nil {
-			fsys = os.DirFS(".")
-		} else if _, err := os.Stat("../../skills"); err == nil {
-			fsys = os.DirFS("../..")
-		} else if _, err := os.Stat("../skills"); err == nil {
-			fsys = os.DirFS("..")
-		}
+	if c.embeddedFS == nil {
+		return
 	}
-	if fsys != nil {
-		items, contents, err := DiscoverSkillsInFS(fsys)
-		if err == nil {
-			for _, item := range items {
-				c.items[strings.ToLower(item.ID)] = item
-				c.items[strings.ToLower(item.Name)] = item
-			}
-			for k, v := range contents {
-				c.embeddedData[k] = v
-			}
+	items, contents, err := DiscoverSkillsInFS(c.embeddedFS)
+	if err == nil {
+		for _, item := range items {
+			c.items[strings.ToLower(item.ID)] = item
+			c.items[strings.ToLower(item.Name)] = item
+		}
+		for k, v := range contents {
+			c.embeddedData[k] = v
 		}
 	}
 }
@@ -642,6 +659,8 @@ func (c *Catalog) discoverLocalSkillsLocked() {
 				existing.Path = skillFile
 			}
 
+			existing.Normalize()
+
 			c.items[key] = existing
 			c.items[strings.ToLower(existing.ID)] = existing
 			c.items[strings.ToLower(existing.Name)] = existing
@@ -673,7 +692,11 @@ func (c *Catalog) LoadContent(item *Item) (string, error) {
 	}
 
 	// 3. Remote URL: Stream live over HTTP into memory
-	if item.URL != "" {
+	remoteURL := item.URL
+	if remoteURL == "" && item.Metadata != nil && item.Metadata["canonical"] != "" {
+		remoteURL = item.Metadata["canonical"]
+	}
+	if remoteURL != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
@@ -681,13 +704,13 @@ func (c *Catalog) LoadContent(item *Item) (string, error) {
 		if client == nil {
 			client = &http.Client{Timeout: 15 * time.Second}
 		}
-		resp, err := fetchWithRetry(ctx, client, item.URL, "kungfu/0.1.0", defaultMaxRetries, defaultInitialBackoff)
+		resp, err := fetchWithRetry(ctx, client, remoteURL, "kungfu/0.2.0", defaultMaxRetries, defaultInitialBackoff)
 		if err != nil {
-			return "", fmt.Errorf("failed to download skill %q from %s: network unreachable: %w", item.Name, item.URL, err)
+			return "", fmt.Errorf("failed to download skill %q from %s: network unreachable: %w", item.Name, remoteURL, err)
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("failed to download skill %q from %s: HTTP %d", item.Name, item.URL, resp.StatusCode)
+			return "", fmt.Errorf("failed to download skill %q from %s: HTTP %d", item.Name, remoteURL, resp.StatusCode)
 		}
 		data, err := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
 		if err != nil {

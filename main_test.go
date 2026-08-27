@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -701,11 +702,42 @@ func TestRun_Run(t *testing.T) {
 		}
 	})
 
-	t.Run("run non-existent skill", func(t *testing.T) {
+	t.Run("run JIT remote script execution without learning", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/catalog.json":
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{"version":"1.0","skills":[{"name":"remote-runner-skill","url":"http://` + r.Host + `/skills/remote-runner-skill/SKILL.md","description":"Runner test"}]}`))
+			case "/skills/remote-runner-skill/SKILL.md":
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte("---\nname: remote-runner-skill\ndescription: Runner test\n---\n# Runner\nRun `scripts/action.sh`"))
+			case "/skills/remote-runner-skill/scripts/action.sh":
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte("#!/bin/sh\necho \"JIT_RUNNER_OUTPUT $1\"\n"))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer server.Close()
+
+		cat, err := catalog.NewCatalog(catalog.WithRemoteURL(server.URL + "/catalog.json"))
+		if err != nil {
+			t.Fatalf("catalog init failed: %v", err)
+		}
+
 		var stdout, stderr bytes.Buffer
-		code := Run([]string{"run", "fake-skill-123", "script.sh"}, &stdout, &stderr)
-		if code != ExitNotFound {
-			t.Fatalf("Run(run fake) = %d, want %d", code, ExitNotFound)
+		app, err := NewApp(GlobalOptions{}, &stdout, &stderr)
+		if err != nil {
+			t.Fatalf("NewApp failed: %v", err)
+		}
+		app.Store = cat
+
+		code := app.RunRun([]string{"remote-runner-skill", "action.sh", "matrix"})
+		if code != ExitSuccess {
+			t.Fatalf("RunRun failed with code %d: %s", code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "JIT_RUNNER_OUTPUT matrix") {
+			t.Errorf("expected output to contain JIT_RUNNER_OUTPUT matrix, got: %s", stdout.String())
 		}
 	})
 }
@@ -1253,4 +1285,187 @@ func TestRun_Status_CategoryAndTagFiltering(t *testing.T) {
 	}
 }
 
+type roundTripFunc func(req *http.Request) *http.Response
 
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req), nil
+}
+
+func TestRun_GitHub_Integration(t *testing.T) {
+	tmpDir := t.TempDir()
+	origWd, _ := os.Getwd()
+	_ = os.Chdir(tmpDir)
+	defer os.Chdir(origWd)
+
+	evalsSkillV1 := `---
+name: evals
+description: Evaluation harness for agents
+allowed-tools: [bash, python]
+license: MIT
+metadata:
+  version: 1.0.0
+  category: testing
+  tags: eval, benchmark
+---
+# Evals Skill
+Evaluation harness instructions.
+`
+
+	evalsSkillV2 := `---
+name: evals
+description: Evaluation harness for agents (v2)
+allowed-tools: [bash, python]
+license: MIT
+metadata:
+  version: 1.1.0
+  category: testing
+  tags: eval, benchmark, advanced
+---
+# Evals Skill v2
+Updated evaluation harness instructions.
+`
+
+	currentSkillContent := evalsSkillV1
+
+	mockClient := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) *http.Response {
+			urlStr := req.URL.String()
+			if strings.Contains(urlStr, "evals/SKILL.md") || strings.Contains(urlStr, "evals/skill.md") {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader(currentSkillContent)),
+					Header:     make(http.Header),
+				}
+			}
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(strings.NewReader("404 not found")),
+				Header:     make(http.Header),
+			}
+		}),
+	}
+
+	app, err := NewApp(GlobalOptions{Mode: OutputModeHuman}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewApp failed: %v", err)
+	}
+	app.HTTPClient = mockClient
+
+	// 1. Learn from GitHub shorthand: anthropics/anthropic-quickstarts/evals
+	var stdout, stderr bytes.Buffer
+	app.Stdout = &stdout
+	app.Stderr = &stderr
+
+	code := app.RunLearn([]string{"anthropics/anthropic-quickstarts/evals"})
+	if code != ExitSuccess {
+		t.Fatalf("RunLearn GitHub target = %d, want %d; stderr: %s", code, ExitSuccess, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Learned skill \"evals\"") {
+		t.Errorf("expected learned evals output, got: %s", stdout.String())
+	}
+
+	installedSkill := filepath.Join(tmpDir, ".agents", "skills", "evals", "SKILL.md")
+	data, err := os.ReadFile(installedSkill)
+	if err != nil {
+		t.Fatalf("failed to read installed SKILL.md: %v", err)
+	}
+	if !strings.Contains(string(data), "name: evals") {
+		t.Errorf("unexpected file content: %s", string(data))
+	}
+
+	// 2. Verify state manifest recorded GitHub provenance
+	actualWd, _ := os.Getwd()
+	st := app.loadState()
+	rec, ok := st.GetSkill(state.ScopeWorkspace, actualWd, "evals")
+	if !ok {
+		t.Fatalf("evals skill not recorded in state manifest")
+	}
+	if rec.Origin != state.OriginGitHub {
+		t.Errorf("rec.Origin = %q, want %q", rec.Origin, state.OriginGitHub)
+	}
+	if rec.Repo != "anthropics/anthropic-quickstarts" {
+		t.Errorf("rec.Repo = %q, want %q", rec.Repo, "anthropics/anthropic-quickstarts")
+	}
+	if rec.Version != "1.0.0" {
+		t.Errorf("rec.Version = %q, want 1.0.0", rec.Version)
+	}
+
+	// 3. Test Show displaying GitHub Origin & Ref
+	stdout.Reset()
+	stderr.Reset()
+	code = app.RunShow([]string{"evals"})
+	if code != ExitSuccess {
+		t.Fatalf("RunShow evals = %d, want %d", code, ExitSuccess)
+	}
+	showOut := stdout.String()
+	if !strings.Contains(showOut, "Origin:      github (anthropics/anthropic-quickstarts)") {
+		t.Errorf("expected Show to display GitHub origin, got: %s", showOut)
+	}
+	if !strings.Contains(showOut, "Ref:         main") {
+		t.Errorf("expected Show to display Ref main, got: %s", showOut)
+	}
+
+	// 4. Test List showing installed status
+	stdout.Reset()
+	stderr.Reset()
+	code = app.RunList([]string{})
+	if code != ExitSuccess {
+		t.Fatalf("RunList = %d, want %d", code, ExitSuccess)
+	}
+
+	// 5. Test Update detection & execution
+	// First check dry-run (no changes yet)
+	stdout.Reset()
+	stderr.Reset()
+	code = app.RunUpdate([]string{})
+	if code != ExitSuccess {
+		t.Fatalf("RunUpdate dry-run = %d, want %d; stderr: %s", code, ExitSuccess, stderr.String())
+	}
+
+	// Now bump remote version to 1.1.0
+	currentSkillContent = evalsSkillV2
+
+	// Check update detection
+	stdout.Reset()
+	stderr.Reset()
+	code = app.RunUpdate([]string{})
+	if code != ExitSuccess {
+		t.Fatalf("RunUpdate check = %d, want %d", code, ExitSuccess)
+	}
+	if !strings.Contains(stdout.String(), "new version available") && !strings.Contains(stdout.String(), "1.1.0") {
+		t.Errorf("expected update available notice, got: %s", stdout.String())
+	}
+
+	// Apply update
+	stdout.Reset()
+	stderr.Reset()
+	code = app.RunUpdate([]string{"--yes", "evals"})
+	if code != ExitSuccess {
+		t.Fatalf("RunUpdate --yes = %d, want %d; stderr: %s", code, ExitSuccess, stderr.String())
+	}
+
+	dataV2, _ := os.ReadFile(installedSkill)
+	if !strings.Contains(string(dataV2), "version: 1.1.0") {
+		t.Errorf("expected updated skill content with v1.1.0, got: %s", string(dataV2))
+	}
+
+	// 6. Test Load directly with GitHub URL shorthand
+	stdout.Reset()
+	stderr.Reset()
+	code = app.RunLoad([]string{"anthropics/anthropic-quickstarts/evals"})
+	if code != ExitSuccess {
+		t.Fatalf("RunLoad GitHub target = %d, want %d; stderr: %s", code, ExitSuccess, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Evals Skill v2") {
+		t.Errorf("expected streamed skill body in Load, got: %s", stdout.String())
+	}
+
+	// 7. Test 'add' alias
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{"add", "--force", "anthropics/anthropic-quickstarts/evals"}, &stdout, &stderr)
+	// Run creates a fresh App without the mock HTTP transport, but 'add' command routing should be accepted (not unknown command)
+	if strings.Contains(stderr.String(), "unknown command") {
+		t.Errorf("'add' command not recognized as alias for 'learn': %s", stderr.String())
+	}
+}

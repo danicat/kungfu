@@ -110,14 +110,22 @@ func cacheSkillFile(skillName, relPath string, data []byte) {
 	if skillName == "" || relPath == "" || len(data) == 0 {
 		return
 	}
+	cleanSkillName := filepath.Base(filepath.Clean(skillName))
+	if cleanSkillName == "" || cleanSkillName == "." || cleanSkillName == ".." {
+		return
+	}
+	cleanRel := filepath.ToSlash(filepath.Clean(relPath))
+	if strings.HasPrefix(cleanRel, "../") || strings.Contains(cleanRel, "/../") || strings.HasPrefix(cleanRel, "/") {
+		return
+	}
 	homeDir, err := os.UserHomeDir()
 	if err != nil || homeDir == "" {
 		return
 	}
-	targetPath := filepath.Join(homeDir, ".cache", "kungfu", "skills", skillName, filepath.FromSlash(relPath))
+	targetPath := filepath.Join(homeDir, ".cache", "kungfu", "skills", cleanSkillName, filepath.FromSlash(cleanRel))
 	_ = os.MkdirAll(filepath.Dir(targetPath), 0755)
 	perm := os.FileMode(0644)
-	if strings.HasPrefix(relPath, "scripts/") || strings.HasSuffix(relPath, ".sh") || strings.HasSuffix(relPath, ".py") || strings.HasSuffix(relPath, ".js") {
+	if strings.HasPrefix(cleanRel, "scripts/") || strings.HasSuffix(cleanRel, ".sh") || strings.HasSuffix(cleanRel, ".py") || strings.HasSuffix(cleanRel, ".js") {
 		perm = 0755
 	}
 	if err := os.WriteFile(targetPath, data, perm); err == nil {
@@ -272,15 +280,72 @@ func resolvePythonCommand(scriptPath string) (string, []string) {
 }
 
 // RunScriptContext executes a bundled script for a catalog item with context cancellation and custom I/O.
+// It searches local candidate directories first; if not found, it downloads/caches the script on demand.
 func RunScriptContext(ctx context.Context, item catalog.Item, scriptName string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	baseDir, err := resolveItemDir(item)
-	if err != nil {
-		return fmt.Errorf("runner: %w", err)
+	cleanName := filepath.Clean(strings.TrimSpace(scriptName))
+	if cleanName == "." || cleanName == ".." || strings.HasPrefix(cleanName, "..") {
+		return fmt.Errorf("%w: %s", ErrInvalidPath, scriptName)
 	}
 
-	scriptPath, err := resolveScriptPath(baseDir, scriptName)
-	if err != nil {
-		return fmt.Errorf("runner: %w", err)
+	var scriptPath string
+	var baseDir string
+
+	// 1. Search local candidate directories
+	baseDirs := GetCandidateBaseDirs(item)
+	for _, dir := range baseDirs {
+		candidates := []string{
+			filepath.Join(dir, "scripts", cleanName),
+			filepath.Join(dir, cleanName),
+		}
+		for _, cand := range candidates {
+			candClean := filepath.Clean(cand)
+			if !isContained(dir, candClean) {
+				continue
+			}
+			info, err := os.Stat(candClean)
+			if err == nil && !info.IsDir() {
+				scriptPath = candClean
+				baseDir = dir
+				break
+			}
+		}
+		if scriptPath != "" {
+			break
+		}
+	}
+
+	// 2. If not found locally, fetch JIT via ReadBytesContext and cache it
+	if scriptPath == "" {
+		var fetchTarget string
+		if strings.HasPrefix(cleanName, "scripts/") {
+			fetchTarget = cleanName
+		} else {
+			fetchTarget = "scripts/" + cleanName
+		}
+
+		data, err := ReadBytesContext(ctx, item, fetchTarget, nil)
+		if err != nil && fetchTarget != cleanName {
+			data, err = ReadBytesContext(ctx, item, cleanName, nil)
+			if err == nil {
+				fetchTarget = cleanName
+			}
+		}
+
+		if err == nil && len(data) > 0 {
+			homeDir, herr := os.UserHomeDir()
+			if herr == nil && homeDir != "" {
+				cachedPath := filepath.Join(homeDir, ".cache", "kungfu", "skills", item.Name, filepath.FromSlash(fetchTarget))
+				_ = os.MkdirAll(filepath.Dir(cachedPath), 0755)
+				_ = os.WriteFile(cachedPath, data, 0755)
+				_ = os.Chmod(cachedPath, 0755)
+				scriptPath = cachedPath
+				baseDir = filepath.Join(homeDir, ".cache", "kungfu", "skills", item.Name)
+			}
+		}
+	}
+
+	if scriptPath == "" {
+		return fmt.Errorf("%w: script %q not found in skill %q", ErrScriptNotFound, scriptName, item.Name)
 	}
 
 	bin, binArgs := detectInterpreter(scriptPath)
@@ -289,11 +354,23 @@ func RunScriptContext(ctx context.Context, item catalog.Item, scriptName string,
 	cmd := exec.CommandContext(ctx, bin, allArgs...)
 	cmd.WaitDelay = 2 * time.Second
 	configureProcessGroup(cmd)
-	cmd.Dir = baseDir
+
+	// Set execution working directory: prefer workspace cwd so tools operate on user files
+	if wd, err := os.Getwd(); err == nil && wd != "" {
+		cmd.Dir = wd
+	} else if baseDir != "" {
+		cmd.Dir = baseDir
+	}
+
+	// Build environment variables with PYTHONPATH / NODE_PATH pointing to script and skill dir
+	env := os.Environ()
+	scriptDir := filepath.Dir(scriptPath)
+	env = appendEnvPath(env, "PYTHONPATH", scriptDir, baseDir)
+	env = appendEnvPath(env, "NODE_PATH", scriptDir, baseDir)
+	cmd.Env = env
+
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	cmd.Env = os.Environ()
-
 	if stdin != nil {
 		cmd.Stdin = stdin
 	}
@@ -307,13 +384,83 @@ func RunScriptContext(ctx context.Context, item catalog.Item, scriptName string,
 	return nil
 }
 
+func appendEnvPath(env []string, key string, dirs ...string) []string {
+	var validDirs []string
+	for _, d := range dirs {
+		if d != "" {
+			validDirs = append(validDirs, d)
+		}
+	}
+	if len(validDirs) == 0 {
+		return env
+	}
+	extra := strings.Join(validDirs, string(os.PathListSeparator))
+
+	prefix := key + "="
+	for i, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			current := strings.TrimPrefix(e, prefix)
+			if current != "" {
+				env[i] = prefix + extra + string(os.PathListSeparator) + current
+			} else {
+				env[i] = prefix + extra
+			}
+			return env
+		}
+	}
+	return append(env, prefix+extra)
+}
+
 // RunScript executes a bundled script for a catalog item.
 func RunScript(item catalog.Item, scriptName string, args []string, stdout, stderr io.Writer) error {
 	return RunScriptContext(context.Background(), item, scriptName, args, os.Stdin, stdout, stderr)
 }
 
 func deriveBaseURL(rawURL string) string {
-	if u, err := url.Parse(rawURL); err == nil {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return ""
+	}
+
+	// GitHub blob / tree handling:
+	// https://github.com/owner/repo/blob/branch/path/SKILL.md -> https://raw.githubusercontent.com/owner/repo/branch/path
+	if strings.HasPrefix(trimmed, "https://github.com/") || strings.HasPrefix(trimmed, "http://github.com/") {
+		u, err := url.Parse(trimmed)
+		if err == nil {
+			parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+			if len(parts) >= 4 && (parts[2] == "blob" || parts[2] == "tree") {
+				owner := parts[0]
+				repo := parts[1]
+				branch := parts[3]
+				rest := parts[4:]
+				cleanRest := strings.Join(rest, "/")
+				if strings.HasSuffix(strings.ToLower(cleanRest), ".md") {
+					cleanRest = path.Dir(cleanRest)
+					if cleanRest == "." {
+						cleanRest = ""
+					}
+				}
+				if cleanRest != "" {
+					return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", owner, repo, branch, cleanRest)
+				}
+				return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s", owner, repo, branch)
+			}
+		}
+	}
+
+	// raw.githubusercontent.com handling:
+	if strings.HasPrefix(trimmed, "https://raw.githubusercontent.com/") || strings.HasPrefix(trimmed, "http://raw.githubusercontent.com/") {
+		if u, err := url.Parse(trimmed); err == nil {
+			if strings.HasSuffix(strings.ToLower(u.Path), ".md") {
+				u.Path = path.Dir(u.Path)
+			}
+			u.RawQuery = ""
+			u.Fragment = ""
+			return strings.TrimSuffix(u.String(), "/")
+		}
+	}
+
+	if u, err := url.Parse(trimmed); err == nil {
 		if strings.HasSuffix(strings.ToLower(u.Path), ".md") {
 			u.Path = path.Dir(u.Path)
 		}
@@ -321,64 +468,89 @@ func deriveBaseURL(rawURL string) string {
 		u.Fragment = ""
 		return strings.TrimSuffix(u.String(), "/")
 	}
-	baseURL := strings.TrimSuffix(rawURL, "/SKILL.md")
+	baseURL := strings.TrimSuffix(trimmed, "/SKILL.md")
 	baseURL = strings.TrimSuffix(baseURL, "/skill.md")
 	return strings.TrimSuffix(baseURL, "/")
 }
 
-// ReadFileContext reads any skill file verbatim without magic path resolution.
-func ReadFileContext(ctx context.Context, item catalog.Item, filePath string, client *http.Client) (string, error) {
+// ReadBytesContext reads any skill file (text or binary) from local dirs, cache, or remote URL.
+func ReadBytesContext(ctx context.Context, item catalog.Item, filePath string, client *http.Client) ([]byte, error) {
 	trimmed := strings.TrimSpace(filePath)
 	if trimmed == "" || trimmed == "." || trimmed == ".." {
-		return "", fmt.Errorf("runner: %w: %s", ErrInvalidPath, filePath)
+		return nil, fmt.Errorf("runner: %w: %s", ErrInvalidPath, filePath)
 	}
 
 	cleanPath := filepath.Clean(trimmed)
 	cleanPath = filepath.ToSlash(cleanPath)
 	cleanPath = strings.TrimPrefix(cleanPath, "./")
 	if strings.Contains(cleanPath, "..") || filepath.IsAbs(trimmed) || strings.HasPrefix(cleanPath, "/") || strings.HasPrefix(trimmed, "\\") {
-		return "", fmt.Errorf("runner: %w: %s", ErrInvalidPath, filePath)
+		return nil, fmt.Errorf("runner: %w: %s", ErrInvalidPath, filePath)
 	}
 
-	// 1. Try local directories
+	// 1. Try local candidate base directories
 	baseDirs := GetCandidateBaseDirs(item)
 	for _, baseDir := range baseDirs {
-		candPath := filepath.Join(baseDir, filepath.FromSlash(cleanPath))
-		candClean := filepath.Clean(candPath)
-		if !isContained(baseDir, candClean) {
-			continue
+		candidates := []string{
+			filepath.Join(baseDir, filepath.FromSlash(cleanPath)),
 		}
-		data, err := os.ReadFile(candClean)
-		if err == nil {
-			if !utf8.Valid(data) || bytes.IndexByte(data, 0) != -1 {
-				return "", fmt.Errorf("runner: %w: %s", ErrBinaryFile, filePath)
+		if !strings.HasPrefix(cleanPath, "scripts/") {
+			candidates = append(candidates, filepath.Join(baseDir, "scripts", filepath.FromSlash(cleanPath)))
+		}
+		if !strings.HasPrefix(cleanPath, "references/") {
+			candidates = append(candidates, filepath.Join(baseDir, "references", filepath.FromSlash(cleanPath)))
+		}
+
+		for _, candPath := range candidates {
+			candClean := filepath.Clean(candPath)
+			if !isContained(baseDir, candClean) {
+				continue
 			}
-			return string(data), nil
+			data, err := os.ReadFile(candClean)
+			if err == nil {
+				return data, nil
+			}
 		}
 	}
 
-	// 2. Try remote URL
-	if item.URL != "" {
-		baseURL := deriveBaseURL(item.URL)
-		if client == nil {
-			client = &http.Client{Timeout: 10 * time.Second}
-		}
+	// 2. Try remote URL or canonical metadata URL
+	remoteURL := item.URL
+	if remoteURL == "" && item.Metadata != nil && item.Metadata["canonical"] != "" {
+		remoteURL = item.Metadata["canonical"]
+	}
 
-		targetURL := baseURL + "/" + strings.TrimPrefix(cleanPath, "/")
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
-		if err == nil {
-			req.Header.Set("User-Agent", "kungfu/0.1.0")
-			resp, err := client.Do(req)
-			if err == nil {
+	if remoteURL != "" {
+		baseURL := deriveBaseURL(remoteURL)
+		if baseURL != "" {
+			if client == nil {
+				client = &http.Client{Timeout: 15 * time.Second}
+			}
+
+			remotePaths := []string{cleanPath}
+			if !strings.HasPrefix(cleanPath, "scripts/") && (strings.HasSuffix(cleanPath, ".py") || strings.HasSuffix(cleanPath, ".sh") || strings.HasSuffix(cleanPath, ".js") || strings.HasSuffix(cleanPath, ".ts") || strings.HasSuffix(cleanPath, ".bash")) {
+				remotePaths = append([]string{"scripts/" + cleanPath}, remotePaths...)
+			}
+			if !strings.HasPrefix(cleanPath, "references/") && strings.HasSuffix(cleanPath, ".md") && cleanPath != "SKILL.md" {
+				remotePaths = append([]string{"references/" + cleanPath}, remotePaths...)
+			}
+
+			for _, rp := range remotePaths {
+				targetURL := baseURL + "/" + strings.TrimPrefix(rp, "/")
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+				if err != nil {
+					continue
+				}
+				req.Header.Set("User-Agent", "kungfu/0.2.0")
+
+				resp, err := client.Do(req)
+				if err != nil {
+					continue
+				}
 				if resp.StatusCode == http.StatusOK {
-					data, err := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
+					data, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 					resp.Body.Close()
 					if err == nil && len(data) > 0 {
-						if !utf8.Valid(data) || bytes.IndexByte(data, 0) != -1 {
-							return "", fmt.Errorf("runner: %w: %s", ErrBinaryFile, filePath)
-						}
-						cacheSkillFile(item.Name, cleanPath, data)
-						return string(data), nil
+						cacheSkillFile(item.Name, rp, data)
+						return data, nil
 					}
 				} else {
 					resp.Body.Close()
@@ -387,7 +559,19 @@ func ReadFileContext(ctx context.Context, item catalog.Item, filePath string, cl
 		}
 	}
 
-	return "", fmt.Errorf("runner: %w: %s in skill %s", ErrFileNotFound, filePath, item.Name)
+	return nil, fmt.Errorf("runner: %w: %s in skill %s", ErrFileNotFound, filePath, item.Name)
+}
+
+// ReadFileContext reads any skill file verbatim without magic path resolution.
+func ReadFileContext(ctx context.Context, item catalog.Item, filePath string, client *http.Client) (string, error) {
+	data, err := ReadBytesContext(ctx, item, filePath, client)
+	if err != nil {
+		return "", err
+	}
+	if !utf8.Valid(data) || bytes.IndexByte(data, 0) != -1 {
+		return "", fmt.Errorf("runner: %w: %s", ErrBinaryFile, filePath)
+	}
+	return string(data), nil
 }
 
 // ReadFile reads any skill file verbatim without magic path resolution.
@@ -395,7 +579,83 @@ func ReadFile(item catalog.Item, filePath string) (string, error) {
 	return ReadFileContext(context.Background(), item, filePath, nil)
 }
 
-var markdownLinkPattern = regexp.MustCompile(`\[[^\]]*\]\(([^)#]+)(?:#[^)]+)?\)`)
+var (
+	markdownLinkRegex  = regexp.MustCompile(`\[[^\]]*\]\(([^)#?]+)(?:[#?][^)]*)?\)`)
+	markdownImgRegex   = regexp.MustCompile(`!\[[^\]]*\]\(([^)#?]+)(?:[#?][^)]*)?\)`)
+	backtickPathRegex  = regexp.MustCompile("`((?:scripts|references|assets|evals)/[^`\\s]+)`")
+	prosePathRegex     = regexp.MustCompile(`(?:^|[\s"'` + "`" + `\(\)\[\]])((?:scripts|references|assets|evals)/[a-zA-Z0-9_\-\./]+\.[a-zA-Z0-9_]+)`)
+	kungfuRunRegex     = regexp.MustCompile(`kungfu\s+run\s+[a-zA-Z0-9_\-]+\s+([a-zA-Z0-9_\-\.]+)`)
+	runnerCommandRegex = regexp.MustCompile(`(?:uv\s+run|python3?|bash|sh|node|bun(?:\s+run)?|deno(?:\s+run)?)\s+(?:scripts/)?([a-zA-Z0-9_\-\./]+\.[a-zA-Z0-9_]+)`)
+)
+
+// ExtractCandidates scans markdown text and extracts all referenced script, reference, asset, and evaluation paths.
+func ExtractCandidates(content string) []string {
+	var candidates []string
+	seen := make(map[string]bool)
+
+	add := func(p string) {
+		p = strings.TrimSpace(p)
+		if p == "" || p == "." || p == ".." || strings.HasPrefix(p, "#") || strings.HasPrefix(p, "http://") || strings.HasPrefix(p, "https://") || strings.HasPrefix(p, "mailto:") {
+			return
+		}
+		if idx := strings.IndexAny(p, "?#"); idx != -1 {
+			p = p[:idx]
+		}
+		clean := filepath.ToSlash(filepath.Clean(p))
+		clean = strings.TrimPrefix(clean, "./")
+		if clean == "" || clean == "." || clean == ".." || clean == "SKILL.md" || clean == "skill.md" || strings.HasPrefix(clean, "../") || strings.Contains(clean, "/../") || strings.HasPrefix(clean, "/") {
+			return
+		}
+		if !seen[clean] {
+			seen[clean] = true
+			candidates = append(candidates, clean)
+		}
+	}
+
+	for _, m := range markdownLinkRegex.FindAllStringSubmatch(content, -1) {
+		if len(m) > 1 {
+			add(m[1])
+		}
+	}
+	for _, m := range markdownImgRegex.FindAllStringSubmatch(content, -1) {
+		if len(m) > 1 {
+			add(m[1])
+		}
+	}
+	for _, m := range backtickPathRegex.FindAllStringSubmatch(content, -1) {
+		if len(m) > 1 {
+			add(m[1])
+		}
+	}
+	for _, m := range prosePathRegex.FindAllStringSubmatch(content, -1) {
+		if len(m) > 1 {
+			add(m[1])
+		}
+	}
+	for _, m := range kungfuRunRegex.FindAllStringSubmatch(content, -1) {
+		if len(m) > 1 {
+			scr := m[1]
+			if !strings.HasPrefix(scr, "scripts/") {
+				add("scripts/" + scr)
+			} else {
+				add(scr)
+			}
+		}
+	}
+	for _, m := range runnerCommandRegex.FindAllStringSubmatch(content, -1) {
+		if len(m) > 1 {
+			scr := m[1]
+			if !strings.HasPrefix(scr, "scripts/") {
+				add("scripts/" + scr)
+			} else {
+				add(scr)
+			}
+		}
+	}
+
+	sort.Strings(candidates)
+	return candidates
+}
 
 // InstallSkillContext installs all skill files (SKILL.md, references, scripts, auxiliary docs) into destDir.
 func InstallSkillContext(ctx context.Context, item catalog.Item, destDir string, rawContent string, extraCandidates []string, client *http.Client) ([]string, error) {
@@ -420,62 +680,7 @@ func InstallSkillContext(ctx context.Context, item catalog.Item, destDir string,
 		}
 	}
 
-	// 1. Copy from local candidate directories if one exists and differs from destDir
-	baseDirs := GetCandidateBaseDirs(item)
-	for _, baseDir := range baseDirs {
-		cleanBase := filepath.Clean(baseDir)
-		if cleanBase == cleanDest {
-			continue
-		}
-		_ = filepath.Walk(cleanBase, func(srcPath string, info os.FileInfo, err error) error {
-			if err != nil || info == nil {
-				return nil
-			}
-			if !isContained(cleanBase, srcPath) {
-				return nil
-			}
-			rel, err := filepath.Rel(cleanBase, srcPath)
-			if err != nil || rel == "." {
-				return nil
-			}
-			// Skip .git, .DS_Store, hidden files
-			parts := strings.Split(filepath.ToSlash(rel), "/")
-			for _, p := range parts {
-				if strings.HasPrefix(p, ".") && p != "." && p != ".." {
-					if info.IsDir() {
-						return filepath.SkipDir
-					}
-					return nil
-				}
-			}
-			destPath := filepath.Join(cleanDest, rel)
-			if info.IsDir() {
-				_ = os.MkdirAll(destPath, 0755)
-				return nil
-			}
-			data, err := os.ReadFile(srcPath)
-			if err != nil {
-				return nil
-			}
-			if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-				return nil
-			}
-			perm := info.Mode().Perm()
-			if perm == 0 {
-				perm = 0644
-			}
-			if strings.HasPrefix(rel, "scripts/") || strings.HasSuffix(rel, ".sh") || strings.HasSuffix(rel, ".py") || strings.HasSuffix(rel, ".js") {
-				perm = 0755
-			}
-			if err := os.WriteFile(destPath, data, perm); err == nil {
-				_ = os.Chmod(destPath, perm)
-				recordInstalled(rel)
-			}
-			return nil
-		})
-	}
-
-	// 2. Ensure SKILL.md is written
+	// 1. Ensure SKILL.md is written
 	skillFilePath := filepath.Join(cleanDest, "SKILL.md")
 	if rawContent != "" {
 		if err := os.WriteFile(skillFilePath, []byte(rawContent), 0644); err == nil {
@@ -485,7 +690,7 @@ func InstallSkillContext(ctx context.Context, item catalog.Item, destDir string,
 		if data, err := os.ReadFile(skillFilePath); err == nil {
 			rawContent = string(data)
 			recordInstalled("SKILL.md")
-		} else if item.URL != "" {
+		} else {
 			if content, err := ReadFileContext(ctx, item, "SKILL.md", client); err == nil {
 				rawContent = content
 				if err := os.WriteFile(skillFilePath, []byte(content), 0644); err == nil {
@@ -509,7 +714,7 @@ func InstallSkillContext(ctx context.Context, item catalog.Item, destDir string,
 		}
 		clean := filepath.ToSlash(filepath.Clean(p))
 		clean = strings.TrimPrefix(clean, "./")
-		if clean == "" || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(clean, "/../") || strings.HasPrefix(clean, "/") {
+		if clean == "" || clean == "." || clean == ".." || clean == "SKILL.md" || clean == "skill.md" || strings.HasPrefix(clean, "../") || strings.Contains(clean, "/../") || strings.HasPrefix(clean, "/") {
 			return
 		}
 		if !seenCandidates[clean] {
@@ -518,20 +723,15 @@ func InstallSkillContext(ctx context.Context, item catalog.Item, destDir string,
 		}
 	}
 
-	scanMarkdown := func(md string) {
-		matches := markdownLinkPattern.FindAllStringSubmatch(md, -1)
-		for _, m := range matches {
-			if len(m) > 1 {
-				addCandidate(m[1])
-			}
+	if rawContent != "" {
+		for _, c := range ExtractCandidates(rawContent) {
+			addCandidate(c)
 		}
 	}
-
-	if rawContent != "" {
-		scanMarkdown(rawContent)
-	}
 	if item.Body != "" && item.Body != rawContent {
-		scanMarkdown(item.Body)
+		for _, c := range ExtractCandidates(item.Body) {
+			addCandidate(c)
+		}
 	}
 	for _, cand := range extraCandidates {
 		addCandidate(cand)
@@ -545,7 +745,7 @@ func InstallSkillContext(ctx context.Context, item catalog.Item, destDir string,
 			continue
 		}
 
-		content, err := ReadFileContext(ctx, item, target, client)
+		data, err := ReadBytesContext(ctx, item, target, client)
 		if err != nil {
 			continue
 		}
@@ -556,15 +756,17 @@ func InstallSkillContext(ctx context.Context, item catalog.Item, destDir string,
 		}
 
 		var perm os.FileMode = 0644
-		if strings.HasPrefix(target, "scripts/") || strings.HasSuffix(target, ".sh") || strings.HasSuffix(target, ".py") || strings.HasSuffix(target, ".js") {
+		if strings.HasPrefix(target, "scripts/") || strings.HasSuffix(target, ".sh") || strings.HasSuffix(target, ".py") || strings.HasSuffix(target, ".js") || strings.HasSuffix(target, ".ts") {
 			perm = 0755
 		}
 
-		if err := os.WriteFile(destFilePath, []byte(content), perm); err == nil {
+		if err := os.WriteFile(destFilePath, data, perm); err == nil {
 			_ = os.Chmod(destFilePath, perm)
 			recordInstalled(target)
-			if strings.HasSuffix(strings.ToLower(target), ".md") {
-				scanMarkdown(content)
+			if strings.HasSuffix(strings.ToLower(target), ".md") && utf8.Valid(data) {
+				for _, next := range ExtractCandidates(string(data)) {
+					addCandidate(next)
+				}
 			}
 		}
 	}

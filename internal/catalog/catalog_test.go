@@ -21,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -149,9 +150,9 @@ func TestCatalogStoreOperations(t *testing.T) {
 	if len(tagFiltered) != 1 {
 		t.Errorf("expected 1 tagFiltered item, got %d", len(tagFiltered))
 	}
-	tagFilteredFail := cat.ListByFilter(QueryFilter{TagQuery: "python"})
+	tagFilteredFail := cat.ListByFilter(QueryFilter{TagQuery: "nonexistenttagxyz"})
 	if len(tagFilteredFail) != 0 {
-		t.Errorf("expected 0 tagFiltered items for python, got %d", len(tagFilteredFail))
+		t.Errorf("expected 0 tagFiltered items for nonexistenttagxyz, got %d", len(tagFilteredFail))
 	}
 
 	// Verify embedded kungfu item is present
@@ -231,7 +232,7 @@ func TestManifestNormalization(t *testing.T) {
 }
 
 func TestCatalog_LoadContent_EmbeddedAndBody(t *testing.T) {
-	cat, err := NewCatalog(WithRemoteURL("http://127.0.0.1:0/unused"))
+	cat, err := NewCatalog(WithRemoteURL("http://127.0.0.1:0/unused"), WithEmbeddedFS(os.DirFS("../..")))
 	if err != nil {
 		t.Fatalf("NewCatalog failed: %v", err)
 	}

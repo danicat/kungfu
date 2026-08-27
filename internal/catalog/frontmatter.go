@@ -112,7 +112,7 @@ type rawFrontmatter struct {
 	Description   string         `yaml:"description"`
 	License       string         `yaml:"license"`
 	Compatibility string         `yaml:"compatibility"`
-	AllowedTools  string         `yaml:"allowed-tools"`
+	AllowedTools  any            `yaml:"allowed-tools"`
 	Metadata      map[string]any `yaml:"metadata"`
 }
 
@@ -127,8 +127,24 @@ func parseYAMLFrontmatter(data []byte) (*Frontmatter, error) {
 		Description:   strings.TrimSpace(raw.Description),
 		License:       strings.TrimSpace(raw.License),
 		Compatibility: strings.TrimSpace(raw.Compatibility),
-		AllowedTools:  strings.TrimSpace(raw.AllowedTools),
 		Metadata:      make(map[string]string),
+	}
+
+	switch at := raw.AllowedTools.(type) {
+	case string:
+		fm.AllowedTools = strings.TrimSpace(at)
+	case []any:
+		var tools []string
+		for _, t := range at {
+			if t != nil {
+				tools = append(tools, strings.TrimSpace(fmt.Sprint(t)))
+			}
+		}
+		fm.AllowedTools = strings.Join(tools, ", ")
+	default:
+		if raw.AllowedTools != nil {
+			fm.AllowedTools = strings.TrimSpace(fmt.Sprint(raw.AllowedTools))
+		}
 	}
 
 	for k, v := range raw.Metadata {
