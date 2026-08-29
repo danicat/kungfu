@@ -627,10 +627,9 @@ func TestRun_Learn_With_Companion_Files(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/.well-known/agent-skills/index.json":
+		case "/catalog.json", "/.well-known/agent-skills/index.json":
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(fmt.Sprintf(`{
-				"$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
 				"skills": [
 					{
 						"name": "multi-doc-skill",
@@ -881,7 +880,7 @@ func TestRun_State_Lifecycle(t *testing.T) {
 
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/.well-known/agent-skills/index.json":
+		case "/catalog.json", "/.well-known/agent-skills/index.json":
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(catalogJSON))
 		case "/skills/my-tool/SKILL.md":
@@ -895,7 +894,6 @@ func TestRun_State_Lifecycle(t *testing.T) {
 	defer server.Close()
 
 	catalogJSON = fmt.Sprintf(`{
-		"$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
 		"skills": [
 			{
 				"name": "my-tool",

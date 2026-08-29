@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/danicat/kungfu/internal/search"
+	"github.com/danicat/kungfu/internal/version"
 )
 
 //go:embed all:skills
@@ -89,7 +90,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if showVersion || cmdName == "version" {
-		fmt.Fprintf(stdout, "kungfu version %s\n", version)
+		fmt.Fprintf(stdout, "kungfu version %s\n", version.Get())
 		return ExitSuccess
 	}
 

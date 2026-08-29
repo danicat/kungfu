@@ -47,8 +47,6 @@ const (
 	ExitIntegrity = 5
 )
 
-const version = "0.2.0"
-
 type OutputMode string
 
 const (

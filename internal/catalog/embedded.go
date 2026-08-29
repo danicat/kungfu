@@ -18,6 +18,8 @@ import (
 	"io/fs"
 	"path/filepath"
 	"strings"
+
+	"github.com/danicat/kungfu/internal/version"
 )
 
 // ParseSkillFromBytes parses raw SKILL.md bytes and returns a populated Item.
@@ -63,11 +65,11 @@ func ParseSkillFromBytes(data []byte, relPath string) (Item, error) {
 		metadata = fm.Metadata
 	}
 	author := ""
-	version := "0.2.0"
+	ver := version.Get()
 	if metadata != nil {
 		author = metadata["author"]
 		if v := metadata["version"]; v != "" {
-			version = v
+			ver = v
 		}
 	}
 
@@ -80,7 +82,7 @@ func ParseSkillFromBytes(data []byte, relPath string) (Item, error) {
 		Category:     category,
 		Tags:         tags,
 		Author:       author,
-		Version:      version,
+		Version:      ver,
 		License:      license,
 		AllowedTools: allowedTools,
 		Body:         body,

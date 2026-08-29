@@ -28,14 +28,16 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/danicat/kungfu/internal/version"
 )
 
-// DefaultRemoteURL is the default endpoint for the skills catalog discovery manifest (RFC 8615).
-const DefaultRemoteURL = "https://skills.danicat.dev/.well-known/agent-skills/index.json"
+// DefaultRemoteURL is the default endpoint for the skills catalog manifest.
+const DefaultRemoteURL = "https://skills.danicat.dev/catalog.json"
 
 const defaultRemoteURL = DefaultRemoteURL
 
-// ResolveCatalogURL resolves a catalog base origin or endpoint URL according to RFC 8615.
+// ResolveCatalogURL resolves a catalog base origin or endpoint URL.
 func ResolveCatalogURL(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -48,7 +50,7 @@ func ResolveCatalogURL(raw string) string {
 	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
 		raw = "https://" + raw
 	}
-	return raw + "/.well-known/agent-skills/index.json"
+	return raw + "/catalog.json"
 }
 
 // Option configures the Catalog instance.
@@ -323,7 +325,7 @@ func (c *Catalog) fetchRemoteLocked(ctx context.Context) {
 			headers["If-None-Match"] = cached.ETag
 		}
 
-		resp, err := fetchWithRetryAndHeaders(reqCtx, c.httpClient, c.remoteURL, "kungfu/0.2.0", headers, defaultMaxRetries, defaultInitialBackoff)
+		resp, err := fetchWithRetryAndHeaders(reqCtx, c.httpClient, c.remoteURL, version.UserAgent(), headers, defaultMaxRetries, defaultInitialBackoff)
 		if err == nil && resp != nil {
 			defer resp.Body.Close()
 			if resp.StatusCode == http.StatusNotModified && cached != nil {
@@ -704,7 +706,7 @@ func (c *Catalog) LoadContent(item *Item) (string, error) {
 		if client == nil {
 			client = &http.Client{Timeout: 15 * time.Second}
 		}
-		resp, err := fetchWithRetry(ctx, client, remoteURL, "kungfu/0.2.0", defaultMaxRetries, defaultInitialBackoff)
+		resp, err := fetchWithRetry(ctx, client, remoteURL, version.UserAgent(), defaultMaxRetries, defaultInitialBackoff)
 		if err != nil {
 			return "", fmt.Errorf("failed to download skill %q from %s: network unreachable: %w", item.Name, remoteURL, err)
 		}

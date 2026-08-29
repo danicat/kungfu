@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/danicat/kungfu/internal/version"
 )
 
 // GitHubTarget captures parsed repository and subpath components.
@@ -199,7 +201,7 @@ func probeGitHubRef(ctx context.Context, target *GitHubTarget, ref string, clien
 		if err != nil {
 			continue
 		}
-		req.Header.Set("User-Agent", "kungfu/0.2.0")
+		req.Header.Set("User-Agent", version.UserAgent())
 
 		resp, err := client.Do(req)
 		if err != nil {

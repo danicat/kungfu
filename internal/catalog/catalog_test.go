@@ -312,7 +312,7 @@ func TestCatalog_Options(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCatalog with options failed: %v", err)
 	}
-	if cat.remoteURL != "https://custom.example.com/.well-known/agent-skills/index.json" {
+	if cat.remoteURL != "https://custom.example.com/catalog.json" {
 		t.Errorf("remoteURL option failed: %s", cat.remoteURL)
 	}
 	if cat.enableRemote {

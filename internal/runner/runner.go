@@ -33,6 +33,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/danicat/kungfu/internal/catalog"
+	"github.com/danicat/kungfu/internal/version"
 )
 
 var (
@@ -539,7 +540,7 @@ func ReadBytesContext(ctx context.Context, item catalog.Item, filePath string, c
 				if err != nil {
 					continue
 				}
-				req.Header.Set("User-Agent", "kungfu/0.2.0")
+				req.Header.Set("User-Agent", version.UserAgent())
 
 				resp, err := client.Do(req)
 				if err != nil {

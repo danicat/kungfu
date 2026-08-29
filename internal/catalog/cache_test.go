@@ -119,13 +119,12 @@ func TestCatalogCache_SaveAndLoad(t *testing.T) {
 	cachePath := filepath.Join(tmpDir, "index.json")
 
 	manifest := catalog.Manifest{
-		Schema: "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
 		Items: []catalog.Item{
 			{ID: "skill-1", Name: "skill-1", Description: "Skill One"},
 		},
 	}
 
-	err := catalog.SaveCachedCatalog(cachePath, "https://example.com/.well-known/agent-skills/index.json", manifest, "etag-123")
+	err := catalog.SaveCachedCatalog(cachePath, "https://example.com/catalog.json", manifest, "etag-123")
 	if err != nil {
 		t.Fatalf("SaveCachedCatalog failed: %v", err)
 	}
@@ -137,8 +136,8 @@ func TestCatalogCache_SaveAndLoad(t *testing.T) {
 	if loaded.ETag != "etag-123" {
 		t.Errorf("expected etag-123, got: %s", loaded.ETag)
 	}
-	if loaded.URL != "https://example.com/.well-known/agent-skills/index.json" {
-		t.Errorf("expected url https://example.com/.well-known/agent-skills/index.json, got: %s", loaded.URL)
+	if loaded.URL != "https://example.com/catalog.json" {
+		t.Errorf("expected url https://example.com/catalog.json, got: %s", loaded.URL)
 	}
 	if len(loaded.Manifest.Items) != 1 || loaded.Manifest.Items[0].Name != "skill-1" {
 		t.Errorf("unexpected loaded manifest: %+v", loaded.Manifest)
