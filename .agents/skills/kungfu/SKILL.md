@@ -7,7 +7,7 @@ metadata:
   category: gateway
   tags: "gateway, agent-skills, discovery, search, catalog, cli, learn"
   author: Daniela Petruzalek (daniela@danicat.dev)
-  version: "0.2.0"
+  version: "0.2.1"
   homepage: https://skills.danicat.dev/
   canonical: https://github.com/danicat/kungfu/blob/main/skills/kungfu/SKILL.md
   repository: https://github.com/danicat/kungfu

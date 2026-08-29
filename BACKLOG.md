@@ -4,6 +4,14 @@ This backlog tracks prioritized architectural enhancements, feature requests, an
 
 ---
 
+## ✅ Completed (v0.2.1)
+
+- [x] **Centralized Dynamic Version Resolution**: Implemented `internal/version` package dynamically reading runtime build info from `runtime/debug.ReadBuildInfo()` with fallback default, removing duplicated hardcoded version strings across the codebase.
+- [x] **Strict Discovery Schema & Category Alignment**: Cleaned up `Item` schema and category discovery to strictly align with the canonical specification and eliminate legacy metadata fields.
+- [x] **Clean Show Formatting**: Streamlined `kungfu show` output formatting.
+
+---
+
 ## ✅ Completed (v0.2.0)
 
 - [x] **Native GitHub Ingestion (`npx skills` replacement)**: Support learning (`kungfu learn` / `kungfu add`) and streaming (`kungfu load`) arbitrary skills directly from GitHub (`owner/repo`, `owner/repo/subpath`, `https://github.com/...`, `@tag`, `#branch`, and `raw.githubusercontent.com/...`) via pure raw HTTP with zero git binary, npm/Node.js, or GitHub API token dependencies.

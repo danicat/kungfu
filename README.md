@@ -2,7 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/danicat/kungfu.svg)](https://pkg.go.dev/github.com/danicat/kungfu)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.2.0-green.svg)](https://github.com/danicat/kungfu/releases)
+[![Release](https://img.shields.io/badge/release-v0.2.1-green.svg)](https://github.com/danicat/kungfu/releases)
 
 > **Fast, zero-dependency Agent Skills & Open Knowledge CLI Gateway** for autonomous AI coding agents and developers.
 
@@ -39,7 +39,7 @@ Because `kungfu` compiles to a single binary with zero runtime dependencies, you
 
 ```bash
 kungfu --version
-# Output: kungfu version 0.2.0
+# Output: kungfu version 0.2.1
 ```
 
 ---
