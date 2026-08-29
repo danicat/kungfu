@@ -253,7 +253,6 @@ func probeGitHubRef(ctx context.Context, target *GitHubTarget, ref string, clien
 			License:      fm.License,
 			Body:         string(bodyBytes),
 			URL:          rawURL,
-			GithubURL:    githubTreeURL,
 			RelativePath: relPath,
 			Source:       "github",
 			Metadata: map[string]string{

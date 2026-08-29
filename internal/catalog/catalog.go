@@ -461,8 +461,6 @@ func (c *Catalog) Categories() []Category {
 
 	catCount := make(map[string]int)
 	catNames := make(map[string]string)
-	catEmojis := make(map[string]string)
-	catDescs := make(map[string]string)
 	seen := make(map[string]struct{})
 
 	for _, item := range c.items {
@@ -474,14 +472,7 @@ func (c *Catalog) Categories() []Category {
 			catKey := strings.ToLower(item.Category)
 			catCount[catKey]++
 			if catNames[catKey] == "" {
-				if item.CategoryName != "" {
-					catNames[catKey] = item.CategoryName
-				} else {
-					catNames[catKey] = item.Category
-				}
-			}
-			if catEmojis[catKey] == "" && item.CategoryEmoji != "" {
-				catEmojis[catKey] = item.CategoryEmoji
+				catNames[catKey] = item.Category
 			}
 		}
 	}
@@ -518,11 +509,9 @@ func (c *Catalog) Categories() []Category {
 				name = catKey
 			}
 			result = append(result, Category{
-				ID:          catKey,
-				Name:        name,
-				Emoji:       catEmojis[catKey],
-				Description: catDescs[catKey],
-				Count:       count,
+				ID:    catKey,
+				Name:  name,
+				Count: count,
 			})
 		}
 	}

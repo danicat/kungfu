@@ -42,25 +42,19 @@ const (
 type Item struct {
 	ID                 string            `json:"id" yaml:"id"`
 	Name               string            `json:"name" yaml:"name"`
-	Type               ItemType          `json:"type" yaml:"type"`
+	Type               ItemType          `json:"type,omitempty" yaml:"type,omitempty"`
 	Title              string            `json:"title,omitempty" yaml:"title,omitempty"`
 	Description        string            `json:"description" yaml:"description"`
 	Category           string            `json:"category,omitempty" yaml:"category,omitempty"`
-	CategoryName       string            `json:"categoryName,omitempty" yaml:"categoryName,omitempty"`
-	CategoryEmoji      string            `json:"categoryEmoji,omitempty" yaml:"categoryEmoji,omitempty"`
 	Tags               []string          `json:"tags,omitempty" yaml:"tags,omitempty"`
 	Author             string            `json:"author,omitempty" yaml:"author,omitempty"`
 	Version            string            `json:"version,omitempty" yaml:"version,omitempty"`
 	License            string            `json:"license,omitempty" yaml:"license,omitempty"`
 	URL                string            `json:"url,omitempty" yaml:"url,omitempty"`
-	DetailURL          string            `json:"detailUrl,omitempty" yaml:"detailUrl,omitempty"`
-	GithubURL          string            `json:"githubUrl,omitempty" yaml:"githubUrl,omitempty"`
 	RelativePath       string            `json:"relativePath,omitempty" yaml:"relativePath,omitempty"`
 	Path               string            `json:"path,omitempty" yaml:"path,omitempty"`
 	Digest             string            `json:"digest,omitempty" yaml:"digest,omitempty"`
 	Sha256             string            `json:"sha256,omitempty" yaml:"sha256,omitempty"`
-	ByteSize           int64             `json:"byteSize,omitempty" yaml:"byteSize,omitempty"`
-	TokenEstimate      int               `json:"tokenEstimate,omitempty" yaml:"tokenEstimate,omitempty"`
 	Source             string            `json:"source,omitempty" yaml:"source,omitempty"` // "remote", "workspace", "global", "embedded"
 	Status             string            `json:"status,omitempty" yaml:"status,omitempty"` // "installed", "online"
 	InstallCmd         string            `json:"install_command,omitempty" yaml:"install_command,omitempty"`
@@ -80,9 +74,6 @@ func (it *Item) Normalize() {
 	}
 	if it.Name == "" && it.ID != "" {
 		it.Name = it.ID
-	}
-	if it.Type == "" {
-		it.Type = ItemTypeSkill
 	}
 	if it.Digest == "" && it.Sha256 != "" {
 		it.Digest = it.Sha256
@@ -108,12 +99,6 @@ func (it *Item) Normalize() {
 		}
 		if it.URL == "" && it.Metadata["canonical"] != "" {
 			it.URL = it.Metadata["canonical"]
-		}
-		if it.GithubURL == "" && it.Metadata["repository"] != "" {
-			it.GithubURL = it.Metadata["repository"]
-		}
-		if it.DetailURL == "" && it.Metadata["homepage"] != "" {
-			it.DetailURL = it.Metadata["homepage"]
 		}
 	}
 	if it.Category == "" && it.URL != "" {

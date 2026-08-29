@@ -757,7 +757,6 @@ func (a *App) renderShowItems(items []catalog.Item, mode OutputMode) int {
 			}
 			sb.WriteString(fmt.Sprintf("# %s\n\n", item.Name))
 			sb.WriteString(fmt.Sprintf("- **Category**: `%s`\n", item.Category))
-			sb.WriteString(fmt.Sprintf("- **Type**: `%s`\n", item.Type))
 			if item.Source == "github" || (item.Metadata != nil && item.Metadata["repo"] != "") {
 				repo := item.Metadata["repo"]
 				if repo != "" {
@@ -804,7 +803,6 @@ func (a *App) renderShowItems(items []catalog.Item, mode OutputMode) int {
 				fmt.Fprintln(a.Stdout, "------------------------------------------------------------")
 			}
 			fmt.Fprintf(a.Stdout, "Name:        %s\n", item.Name)
-			fmt.Fprintf(a.Stdout, "Type:        %s\n", item.Type)
 			fmt.Fprintf(a.Stdout, "Category:    %s\n", item.Category)
 			if item.Title != "" {
 				fmt.Fprintf(a.Stdout, "Title:       %s\n", item.Title)
