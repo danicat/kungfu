@@ -222,4 +222,4 @@ Apache License 2.0. See [LICENSE](LICENSE) for details.
 
 ## Disclaimer
 
-This is not an officially supported Google product. It is a community-driven, experimental port created for educational and development purposes.
+This is not an officially supported Google product.
