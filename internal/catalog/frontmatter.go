@@ -93,20 +93,6 @@ func VerifyDigest(data []byte, expected string) error {
 	return nil
 }
 
-// ValidateFrontmatter verifies that required fields per the Agent Skills spec are populated.
-func ValidateFrontmatter(fm *Frontmatter) error {
-	if fm == nil {
-		return fmt.Errorf("%w: frontmatter is nil", ErrInvalidFrontmatter)
-	}
-	if strings.TrimSpace(fm.Name) == "" {
-		return fmt.Errorf("%w: missing name", ErrInvalidFrontmatter)
-	}
-	if strings.TrimSpace(fm.Description) == "" {
-		return fmt.Errorf("%w: missing description", ErrInvalidFrontmatter)
-	}
-	return nil
-}
-
 type rawFrontmatter struct {
 	Name          string         `yaml:"name"`
 	Description   string         `yaml:"description"`

@@ -2,7 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/danicat/kungfu.svg)](https://pkg.go.dev/github.com/danicat/kungfu)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.2.1-green.svg)](https://github.com/danicat/kungfu/releases)
+[![Release](https://img.shields.io/badge/release-v0.3.0-green.svg)](https://github.com/danicat/kungfu/releases)
 
 A command-line tool for discovering, loading, installing, and managing Agent Skills.
 
@@ -163,6 +163,30 @@ kungfu forget --all
 kungfu forget -g kungfu
 ```
 
+### Manage Catalogs (`catalog`)
+
+Register, list, remove, and sync entire catalogs of skills from GitHub repositories, HTTP manifest endpoints, or local directories:
+
+```bash
+# Add a GitHub skills repository (automatically discovers all SKILL.md packages across the tree)
+kungfu catalog add google/skills
+
+# Add a catalog from an HTTP manifest endpoint
+kungfu catalog add https://example.com/catalog.json --name custom-catalog
+
+# Add a local directory containing skills
+kungfu catalog add ./my-team-skills --name team-skills
+
+# List all registered catalogs and default source
+kungfu catalog list
+
+# Synchronize and refresh indexed skills for registered catalogs
+kungfu catalog sync
+
+# Remove a registered catalog
+kungfu catalog remove google/skills
+```
+
 ### Run Companion Scripts (`run`)
 
 Execute companion automation scripts bundled inside a skill:
@@ -197,10 +221,10 @@ Skills in the catalog are organized into canonical categories:
 | `game-dev` | 2D game architecture, Ebitengine, procedural art, audio, WebAssembly |
 | `media` | Audio synthesis, visual generation, asset pipelines |
 | `coding` | Code quality enforcement, AST refactoring, testing |
-| `agents` | Agent skills authoring, evaluation suites, swarms |
+| `agents` | Agent skills authoring, evaluation suites, swarms, discovery gateway |
 | `writing` | Technical writing, review workflows, style guidelines |
+| `analytics` | Search console, analytics data warehousing, SQL querying |
 | `standards` | RFCs, architecture decision records, QA gates |
-| `gateway` | Discovery, search indexing, streaming, batch loading |
 
 ---
 

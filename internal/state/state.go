@@ -38,7 +38,25 @@ const (
 	OriginCatalog = "catalog"
 	OriginCustom  = "custom"
 	OriginGitHub  = "github"
+
+	CatalogTypeDefault = "default"
+	CatalogTypeGitHub  = "github"
+	CatalogTypeHTTP    = "http"
+	CatalogTypeLocal   = "local"
 )
+
+// CatalogRecord represents a configured external or custom catalog source.
+type CatalogRecord struct {
+	Name       string    `json:"name"`              // Unique catalog identifier (e.g. "google/skills", "internal")
+	Type       string    `json:"type"`              // "github", "http", "local", "default"
+	Source     string    `json:"source"`            // "google/skills", "https://...", "/path/to/dir"
+	URL        string    `json:"url,omitempty"`     // Canonical URL or repo URL
+	Ref        string    `json:"ref,omitempty"`     // Branch/tag ref for github (e.g. "main")
+	Subpath    string    `json:"subpath,omitempty"` // Subpath inside repository or directory
+	SkillCount int       `json:"skill_count"`       // Number of indexed skills
+	AddedAt    time.Time `json:"added_at"`          // When catalog was registered
+	UpdatedAt  time.Time `json:"updated_at"`        // When catalog index was last updated
+}
 
 // SkillRecord represents an installed or soft-deleted skill package.
 type SkillRecord struct {
@@ -77,6 +95,7 @@ type State struct {
 	Workspaces    map[string]*WorkspaceState `json:"workspaces,omitempty"`
 	Global        *WorkspaceState            `json:"global,omitempty"`
 	History       map[string]*HistoryRecord  `json:"history,omitempty"`
+	Catalogs      map[string]CatalogRecord   `json:"catalogs,omitempty"`
 
 	mu sync.RWMutex `json:"-"`
 }
@@ -90,12 +109,19 @@ func NewState() *State {
 		Global: &WorkspaceState{
 			Skills: make(map[string]SkillRecord),
 		},
-		History: make(map[string]*HistoryRecord),
+		History:  make(map[string]*HistoryRecord),
+		Catalogs: make(map[string]CatalogRecord),
 	}
 }
 
-// DefaultStateFilePath returns ~/.config/kungfu/state.json.
+// DefaultStateFilePath returns ~/.config/kungfu/state.json, or respects KUNGFU_STATE_PATH / KUNGFU_CONFIG_DIR.
 func DefaultStateFilePath() string {
+	if statePath := os.Getenv("KUNGFU_STATE_PATH"); statePath != "" {
+		return statePath
+	}
+	if configDir := os.Getenv("KUNGFU_CONFIG_DIR"); configDir != "" {
+		return filepath.Join(configDir, "state.json")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		home = "."
@@ -525,6 +551,29 @@ func (s *State) ReconcileDisk(workspaceDir string, globalDir string, isCatalogKn
 	if workspaceDir != "" {
 		wsSkillsDir := filepath.Join(workspaceDir, ".agents", "skills")
 		reconcileScope(wsSkillsDir, ScopeWorkspace, workspaceDir)
+
+		// Check if any tracked workspace skills were deleted on disk
+		cleanWs := filepath.Clean(workspaceDir)
+		if ws, ok := s.Workspaces[cleanWs]; ok && ws != nil {
+			now := time.Now().UTC()
+			for name, rec := range ws.Skills {
+				if rec.Status == StatusInstalled {
+					skillMD := filepath.Join(rec.Path, "SKILL.md")
+					if rec.Path == "" {
+						skillMD = filepath.Join(wsSkillsDir, name, "SKILL.md")
+					}
+					if _, err := os.Stat(skillMD); err != nil {
+						if _, err := os.Stat(rec.Path); err != nil || rec.Path == "" {
+							rec.Status = StatusUninstalled
+							rec.UninstalledAt = &now
+							rec.UpdatedAt = now
+							ws.Skills[name] = rec
+							changed = true
+						}
+					}
+				}
+			}
+		}
 	}
 
 	// 2. Reconcile global
@@ -532,6 +581,28 @@ func (s *State) ReconcileDisk(workspaceDir string, globalDir string, isCatalogKn
 		gSkillsDir := filepath.Join(globalDir, ".agents", "skills")
 		if _, err := os.Stat(gSkillsDir); err == nil {
 			reconcileScope(gSkillsDir, ScopeGlobal, "")
+		}
+
+		// Check if any tracked global skills were deleted on disk
+		if s.Global != nil {
+			now := time.Now().UTC()
+			for name, rec := range s.Global.Skills {
+				if rec.Status == StatusInstalled {
+					skillMD := filepath.Join(rec.Path, "SKILL.md")
+					if rec.Path == "" {
+						skillMD = filepath.Join(gSkillsDir, name, "SKILL.md")
+					}
+					if _, err := os.Stat(skillMD); err != nil {
+						if _, err := os.Stat(rec.Path); err != nil || rec.Path == "" {
+							rec.Status = StatusUninstalled
+							rec.UninstalledAt = &now
+							rec.UpdatedAt = now
+							s.Global.Skills[name] = rec
+							changed = true
+						}
+					}
+				}
+			}
 		}
 	}
 
@@ -577,4 +648,59 @@ func extractVersion(content string) string {
 		}
 	}
 	return ""
+}
+
+// AddCatalog adds or updates a registered catalog source.
+func (s *State) AddCatalog(rec CatalogRecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Catalogs == nil {
+		s.Catalogs = make(map[string]CatalogRecord)
+	}
+	if rec.AddedAt.IsZero() {
+		rec.AddedAt = time.Now().UTC()
+	}
+	rec.UpdatedAt = time.Now().UTC()
+	s.Catalogs[rec.Name] = rec
+	s.UpdatedAt = time.Now().UTC()
+}
+
+// RemoveCatalog removes a registered catalog by name.
+func (s *State) RemoveCatalog(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Catalogs == nil {
+		return false
+	}
+	if _, ok := s.Catalogs[name]; ok {
+		delete(s.Catalogs, name)
+		s.UpdatedAt = time.Now().UTC()
+		return true
+	}
+	return false
+}
+
+// GetCatalog retrieves a registered catalog by name.
+func (s *State) GetCatalog(name string) (CatalogRecord, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.Catalogs == nil {
+		return CatalogRecord{}, false
+	}
+	rec, ok := s.Catalogs[name]
+	return rec, ok
+}
+
+// GetCatalogs returns all registered catalogs sorted by name.
+func (s *State) GetCatalogs() []CatalogRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var list []CatalogRecord
+	for _, rec := range s.Catalogs {
+		list = append(list, rec)
+	}
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].Name < list[j].Name
+	})
+	return list
 }

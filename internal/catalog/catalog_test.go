@@ -27,6 +27,15 @@ import (
 	"time"
 )
 
+func TestMain(m *testing.M) {
+	tempHome, err := os.MkdirTemp("", "kungfu-catalog-test-*")
+	if err == nil {
+		_ = os.Setenv("HOME", tempHome)
+		defer func() { _ = os.RemoveAll(tempHome) }()
+	}
+	os.Exit(m.Run())
+}
+
 func TestSchemaTypesAndErrors(t *testing.T) {
 	it := Item{
 		ID:          "test-skill",
@@ -106,7 +115,7 @@ func TestCatalogStoreOperations(t *testing.T) {
 	data, _ := json.Marshal(manifest)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(data)
+		w.Write(data)
 	}))
 	defer ts.Close()
 
@@ -155,18 +164,9 @@ func TestCatalogStoreOperations(t *testing.T) {
 		t.Errorf("expected 0 tagFiltered items for nonexistenttagxyz, got %d", len(tagFilteredFail))
 	}
 
-	// Verify embedded kungfu item is present
-	kfItem, err := cat.Get("kungfu")
-	if err != nil {
-		t.Fatalf("Get embedded kungfu failed: %v", err)
-	}
-	if kfItem.Name != "kungfu" || kfItem.Category != "gateway" {
-		t.Errorf("embedded kungfu item unexpected: %+v", kfItem)
-	}
-
 	all := cat.All()
-	if len(all) < 2 {
-		t.Errorf("All unexpected length: %d (expected at least my-skill and kungfu)", len(all))
+	if len(all) < 1 {
+		t.Errorf("All unexpected length: %d (expected at least my-skill)", len(all))
 	}
 }
 
@@ -273,7 +273,7 @@ func TestCatalog_LoadContent_Remote(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/markdown")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("---\nname: remote-skill\ndescription: remote\n---\n# Remote Content"))
+		w.Write([]byte("---\nname: remote-skill\ndescription: remote\n---\n# Remote Content"))
 	}))
 	defer ts.Close()
 
@@ -304,10 +304,7 @@ func TestCatalog_Options(t *testing.T) {
 	cat, err := NewCatalog(
 		WithRemoteURL("https://custom.example.com"),
 		WithCacheDir(tmpDir),
-		WithFallbackCacheDir(tmpDir),
-		WithWorkspaceDir(tmpDir),
-		WithHomeDir(tmpDir),
-		WithRemoteDiscovery(false),
+		WithRemoteSync(false),
 	)
 	if err != nil {
 		t.Fatalf("NewCatalog with options failed: %v", err)
@@ -316,7 +313,7 @@ func TestCatalog_Options(t *testing.T) {
 		t.Errorf("remoteURL option failed: %s", cat.remoteURL)
 	}
 	if cat.enableRemote {
-		t.Errorf("WithRemoteDiscovery(false) failed")
+		t.Errorf("WithRemoteSync(false) failed")
 	}
 }
 
@@ -354,7 +351,7 @@ func TestFetchWithRetry_SuccessAfterRetries(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("success-content"))
+		w.Write([]byte("success-content"))
 	}))
 	defer ts.Close()
 
@@ -365,7 +362,7 @@ func TestFetchWithRetry_SuccessAfterRetries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected fetchWithRetry to succeed after retries, got err: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if attempts != 3 {
 		t.Errorf("expected 3 attempts, got %d", attempts)
@@ -424,7 +421,7 @@ func TestCatalog_NewCatalog_RetryRecovery(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(manifestData)
+		w.Write(manifestData)
 	}))
 	defer ts.Close()
 

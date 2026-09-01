@@ -4,6 +4,16 @@ This backlog tracks prioritized architectural enhancements, feature requests, an
 
 ---
 
+## ✅ Completed (v0.3.0)
+
+- [x] **Multi-Catalog Management (`kungfu catalog`)**: Added full catalog lifecycle management (`add`, `list`, `remove`, `sync`) supporting GitHub repos (e.g. `google/skills`), HTTP manifests, and local directories.
+- [x] **Multi-Standard Catalog Discovery**: Discovery hierarchy prioritizing `catalog.json` (skills.danicat.dev standard) -> `index.json` (google/skills format) -> directory crawl / GitHub Git Tree API (agentskills.io standard).
+- [x] **Modular Command Architecture & Codebase Cleanup**: Decomposed monolithic command structure into clean, single-responsibility files under `internal/commands/` without helper anti-patterns or naming stuttering (`internal/catalog/github.go`).
+- [x] **Accurate State & Disk Reconciliation**: Enhanced disk reconciler to detect when installed skills are removed from disk outside kungfu, properly synchronizing global and workspace status.
+- [x] **Accurate JIT Load History & Metrics**: JIT load count and timestamps accurately record only invoked skills.
+
+---
+
 ## ✅ Completed (v0.2.1)
 
 - [x] **Centralized Dynamic Version Resolution**: Implemented `internal/version` package dynamically reading runtime build info from `runtime/debug.ReadBuildInfo()` with fallback default, removing duplicated hardcoded version strings across the codebase.

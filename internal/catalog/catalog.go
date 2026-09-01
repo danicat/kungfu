@@ -105,11 +105,6 @@ func WithRemoteSync(enable bool) Option {
 	}
 }
 
-// WithRemoteDiscovery enables or disables remote catalog fetching (alias for WithRemoteSync).
-func WithRemoteDiscovery(enable bool) Option {
-	return WithRemoteSync(enable)
-}
-
 // WithLocalDiscovery enables or disables local filesystem skill discovery.
 func WithLocalDiscovery(enable bool) Option {
 	return func(c *Catalog) {
@@ -135,24 +130,6 @@ func WithNoCache() Option {
 func WithForceRefresh() Option {
 	return func(c *Catalog) {
 		c.forceRefresh = true
-	}
-}
-
-// WithFallbackCacheDir is kept for backward compatibility (no-op).
-func WithFallbackCacheDir(dir string) Option {
-	return func(c *Catalog) {
-	}
-}
-
-// WithWorkspaceDir is kept for backward compatibility (no-op).
-func WithWorkspaceDir(dir string) Option {
-	return func(c *Catalog) {
-	}
-}
-
-// WithHomeDir is kept for backward compatibility (no-op).
-func WithHomeDir(dir string) Option {
-	return func(c *Catalog) {
 	}
 }
 
@@ -231,7 +208,7 @@ func fetchWithRetryAndHeaders(ctx context.Context, client *http.Client, url stri
 
 		// On retryable HTTP status (429, 5xx), close body and retry
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
 			continue
 		}
@@ -327,7 +304,7 @@ func (c *Catalog) fetchRemoteLocked(ctx context.Context) {
 
 		resp, err := fetchWithRetryAndHeaders(reqCtx, c.httpClient, c.remoteURL, version.UserAgent(), headers, defaultMaxRetries, defaultInitialBackoff)
 		if err == nil && resp != nil {
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode == http.StatusNotModified && cached != nil {
 				// 304 Not Modified: refresh fetched timestamp and use cache
 				_ = SaveCachedCatalog(cachePath, c.remoteURL, cached.Manifest, cached.ETag)
@@ -362,6 +339,63 @@ func (c *Catalog) fetchRemoteLocked(ctx context.Context) {
 				c.items[strings.ToLower(it.ID)] = it
 				c.items[strings.ToLower(it.Name)] = it
 			}
+		}
+	}
+
+	// Also load all registered/named external catalogs from cache
+	c.loadNamedCatalogsLocked()
+}
+
+func (c *Catalog) loadNamedCatalogsLocked() {
+	if c.noCache {
+		return
+	}
+	namedCaches, err := LoadAllNamedCatalogCaches()
+	if err != nil || len(namedCaches) == 0 {
+		return
+	}
+	for catName, cached := range namedCaches {
+		if cached == nil {
+			continue
+		}
+		for _, it := range cached.Manifest.Items {
+			it.Normalize()
+			it.Source = catName
+			lowID := strings.ToLower(it.ID)
+			lowName := strings.ToLower(it.Name)
+			if _, exists := c.items[lowID]; !exists {
+				c.items[lowID] = it
+			}
+			if _, exists := c.items[lowName]; !exists {
+				c.items[lowName] = it
+			}
+		}
+	}
+}
+
+// AddCatalogManifest dynamically registers items from a newly added or updated catalog manifest.
+func (c *Catalog) AddCatalogManifest(name string, manifest *Manifest) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if manifest == nil {
+		return
+	}
+	for _, it := range manifest.Items {
+		it.Normalize()
+		it.Source = name
+		c.items[strings.ToLower(it.ID)] = it
+		c.items[strings.ToLower(it.Name)] = it
+	}
+}
+
+// RemoveCatalogItems removes items belonging to a specified catalog source.
+func (c *Catalog) RemoveCatalogItems(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cleanName := strings.ToLower(name)
+	for k, it := range c.items {
+		if strings.EqualFold(it.Source, name) || strings.EqualFold(it.Source, cleanName) || strings.Contains(strings.ToLower(it.Source), cleanName) {
+			delete(c.items, k)
 		}
 	}
 }
@@ -699,7 +733,7 @@ func (c *Catalog) LoadContent(item *Item) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("failed to download skill %q from %s: network unreachable: %w", item.Name, remoteURL, err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusOK {
 			return "", fmt.Errorf("failed to download skill %q from %s: HTTP %d", item.Name, remoteURL, resp.StatusCode)
 		}

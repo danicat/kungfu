@@ -25,6 +25,15 @@ import (
 	"github.com/danicat/kungfu/internal/state"
 )
 
+func TestMain(m *testing.M) {
+	tempHome, err := os.MkdirTemp("", "kungfu-state-test-*")
+	if err == nil {
+		_ = os.Setenv("HOME", tempHome)
+		defer func() { _ = os.RemoveAll(tempHome) }()
+	}
+	os.Exit(m.Run())
+}
+
 func TestState_LifecycleAndPersistence(t *testing.T) {
 	tmpDir := t.TempDir()
 	stateFile := filepath.Join(tmpDir, "state.json")
@@ -163,7 +172,7 @@ func TestState_ConcurrentAccess(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			_ = s.GetInstalledSkills(state.ScopeWorkspace, "/workspace")
-			_, _ = s.GetSkill(state.ScopeWorkspace, "/workspace", "skill-a")
+			s.GetSkill(state.ScopeWorkspace, "/workspace", "skill-a")
 		}(i)
 	}
 
@@ -235,5 +244,20 @@ version: "2.0.0"
 	goRec := gSkills["godoctor"]
 	if goRec.Origin != state.OriginCatalog || goRec.Version != "2.0.0" {
 		t.Errorf("godoctor global skill incorrect: %+v", goRec)
+	}
+
+	// Now delete godoctor from disk and test reconciliation
+	_ = os.RemoveAll(globalSkillDir)
+	changed = s.ReconcileDisk(wsDir, globalDir, isKnown)
+	if !changed {
+		t.Fatalf("expected ReconcileDisk to return true when skills deleted from disk")
+	}
+	gSkillsAfter := s.GetInstalledSkills(state.ScopeGlobal, "")
+	if len(gSkillsAfter) != 0 {
+		t.Fatalf("expected 0 global skills after deletion, got %d", len(gSkillsAfter))
+	}
+	gForgotten := s.GetForgottenSkills(state.ScopeGlobal, "")
+	if len(gForgotten) != 1 || gForgotten["godoctor"].Status != state.StatusUninstalled {
+		t.Errorf("expected godoctor to be marked uninstalled in forgotten skills: %+v", gForgotten)
 	}
 }

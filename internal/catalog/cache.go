@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -45,11 +46,6 @@ func DefaultCacheDir() string {
 // GetCatalogCachePath returns ~/.cache/kungfu/index.json.
 func GetCatalogCachePath() string {
 	return filepath.Join(DefaultCacheDir(), "index.json")
-}
-
-// GetSkillCacheDir returns ~/.cache/kungfu/skills/<skillName>.
-func GetSkillCacheDir(skillName string) string {
-	return filepath.Join(DefaultCacheDir(), "skills", skillName)
 }
 
 // LoadCachedCatalog reads and parses the cached catalog from cachePath.
@@ -105,4 +101,75 @@ func SaveCachedCatalog(cachePath string, remoteURL string, manifest Manifest, et
 	}
 
 	return nil
+}
+
+// GetCatalogsCacheDir returns ~/.cache/kungfu/catalogs.
+func GetCatalogsCacheDir() string {
+	return filepath.Join(DefaultCacheDir(), "catalogs")
+}
+
+// SafeCatalogFileName converts a catalog name/source into a safe filename.
+func SafeCatalogFileName(name string) string {
+	clean := strings.ToLower(name)
+	clean = strings.ReplaceAll(clean, "https://", "")
+	clean = strings.ReplaceAll(clean, "http://", "")
+	clean = strings.ReplaceAll(clean, "/", "-")
+	clean = strings.ReplaceAll(clean, ":", "-")
+	clean = strings.ReplaceAll(clean, "\\", "-")
+	clean = strings.Trim(clean, "-")
+	if clean == "" {
+		clean = "default"
+	}
+	return clean + ".json"
+}
+
+// SaveNamedCatalogCache saves a named catalog manifest to ~/.cache/kungfu/catalogs/<safe-name>.json.
+func SaveNamedCatalogCache(name string, sourceURL string, manifest Manifest, etag string) error {
+	dir := GetCatalogsCacheDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("catalog: creating catalogs cache dir: %w", err)
+	}
+	cachePath := filepath.Join(dir, SafeCatalogFileName(name))
+	return SaveCachedCatalog(cachePath, sourceURL, manifest, etag)
+}
+
+// LoadNamedCatalogCache loads a named catalog manifest from cache.
+func LoadNamedCatalogCache(name string) (*CachedCatalog, error) {
+	cachePath := filepath.Join(GetCatalogsCacheDir(), SafeCatalogFileName(name))
+	return LoadCachedCatalog(cachePath)
+}
+
+// DeleteNamedCatalogCache removes a named catalog cache file.
+func DeleteNamedCatalogCache(name string) error {
+	cachePath := filepath.Join(GetCatalogsCacheDir(), SafeCatalogFileName(name))
+	if err := os.Remove(cachePath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// LoadAllNamedCatalogCaches loads all cached external catalogs from ~/.cache/kungfu/catalogs/.
+func LoadAllNamedCatalogCaches() (map[string]*CachedCatalog, error) {
+	dir := GetCatalogsCacheDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return make(map[string]*CachedCatalog), nil
+		}
+		return nil, err
+	}
+
+	results := make(map[string]*CachedCatalog)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		cached, err := LoadCachedCatalog(path)
+		if err == nil && cached != nil {
+			catName := strings.TrimSuffix(entry.Name(), ".json")
+			results[catName] = cached
+		}
+	}
+	return results, nil
 }

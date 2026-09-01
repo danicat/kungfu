@@ -71,11 +71,6 @@ func NewTokenizer() *Tokenizer {
 	}
 }
 
-// SetStopwords overrides the active stopword dictionary.
-func (t *Tokenizer) SetStopwords(words map[string]struct{}) {
-	t.stopwords = words
-}
-
 // IsStopword checks if a word is in the active stopword filter.
 func (t *Tokenizer) IsStopword(word string) bool {
 	if t.stopwords == nil {

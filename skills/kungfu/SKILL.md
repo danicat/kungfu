@@ -1,16 +1,21 @@
 ---
 name: kungfu
 description: >
-  "I know Kung Fu!": Activate this skill to acquire knowledge about anything immediately. It teaches how to use the kungfu CLI to load skills JIT or learn new skills permanently. Use this skill when the user asks to perform tasks using unknown / unloaded skills, executes unmapped slash commands, or when you need more knowledge - or up to date knowledge - to complete a task. When the user issues an unknown slash command, always assume it is an unmapped skill and use kungfu to find it. A double slash command (e.g. //<skill-name>) is a hint that you should activate kungfu.
+  "I know Kung Fu!": Activate this skill to acquire knowledge about anything
+  immediately. It teaches how to use the kungfu CLI to load skills JIT or learn
+  new skills permanently. Use this skill when the user asks to perform tasks
+  using unknown / unloaded skills, executes unmapped slash commands, or when you
+  need more knowledge - or up to date knowledge - to complete a task. When the
+  user issues an unknown slash command, always assume it is an unmapped skill
+  and use kungfu to find it. A double slash command (e.g. //<skill-name>) is a
+  hint that you should activate kungfu.
 license: Apache-2.0
 metadata:
-  category: gateway
+  category: agents
   tags: "gateway, agent-skills, discovery, search, catalog, cli, learn"
   author: Daniela Petruzalek (daniela@danicat.dev)
-  version: "0.2.1"
-  homepage: https://skills.danicat.dev/
-  canonical: https://github.com/danicat/kungfu/blob/main/skills/kungfu/SKILL.md
-  repository: https://github.com/danicat/kungfu
+  version: "0.3.0"
+  catalog: https://skills.danicat.dev
 ---
 
 # KungFu: Agent Skills Gateway
@@ -205,11 +210,28 @@ Skills can bundle executable automation scripts in `scripts/`. Whenever a skill'
 > - **`kungfu learn` is NOT necessary.** Scripts are fully runnable immediately after `kungfu load` (or on any catalog skill) via automatic Just-In-Time (JIT) remote fetching and caching.
 > - `kungfu run` automatically resolves runtimes (`uv`, `python3`, `bun`, `deno`, `node`, `bash`), fetches companion scripts on demand, sets appropriate execution permissions, configures import paths (`PYTHONPATH`/`NODE_PATH`), and executes the script in your workspace working directory.
 
+### Scenario 8: Managing Skill Catalogs (`kungfu catalog`)
+
+When you want to register entire catalogs of skills from external sources (such as GitHub repositories like `google/skills`, HTTP manifest endpoints, or local directories):
+
 ```bash
-# Run script bundled inside a skill (e.g., buffer-analytics, godoctor, ebitengineer)
-kungfu run buffer-analytics buffer_analytics.py report overview --db analytics.db
-kungfu run godoctor analyze.sh --json
-kungfu run ebitengineer generate-spritesheet.py --output assets/
+# Add a GitHub skill repository (automatically discovers all SKILL.md packages across the tree)
+kungfu catalog add google/skills
+
+# Add a catalog from an HTTP manifest endpoint
+kungfu catalog add https://example.com/catalog.json --name custom-catalog
+
+# Add a local directory containing skills
+kungfu catalog add ./my-team-skills --name team-skills
+
+# List all registered catalogs
+kungfu catalog list
+
+# Synchronize and refresh indexed skills across all catalogs
+kungfu catalog sync
+
+# Remove a registered catalog
+kungfu catalog remove google/skills
 ```
 
 ---
@@ -224,6 +246,7 @@ kungfu run ebitengineer generate-spritesheet.py --output assets/
 | `kungfu load` | `kungfu load <skill[/subpath]> [-c <cat>] [-t <tags>] [--all]` | Stream verbatim markdown instructions or subpath files (references, scripts, assets) |
 | `kungfu learn` | `kungfu learn <skills...> [-g] [-f] [--load] [-c <cat>] [-t <tags>]` | Install skill from catalog or GitHub & record in state (`kungfu add` alias supported) |
 | `kungfu add` | `kungfu add <skills...> [-g] [-f] [--load]` | Drop-in alias for `kungfu learn` (compatible with `npx skills add`) |
+| `kungfu catalog` | `kungfu catalog <add\|list\|remove\|sync>` | Register, list, remove, or sync entire external skill catalogs |
 | `kungfu forget` | `kungfu forget <skills...> [-g] [-f] [--all]` | Uninstall and soft-delete skills from workspace/global |
 | `kungfu update` | `kungfu update [skills...] [-g] [--all] [-y] [-f] [--refresh]` | Dry-run check or apply updates to catalog & GitHub installed skills |
 | `kungfu status` | `kungfu status [skills...] [-c <cat>] [-t <tags>] [-g] [--json] [--raw]` | Inspect installed skills, paths, versions, and JIT history |

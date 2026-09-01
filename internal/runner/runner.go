@@ -134,14 +134,6 @@ func cacheSkillFile(skillName, relPath string, data []byte) {
 	}
 }
 
-func resolveItemDir(item catalog.Item) (string, error) {
-	dirs := GetCandidateBaseDirs(item)
-	if len(dirs) > 0 {
-		return dirs[0], nil
-	}
-	return "", fmt.Errorf("%w: path is empty", ErrInvalidItemPath)
-}
-
 func isContained(baseDir, targetPath string) bool {
 	realBase, err := filepath.EvalSymlinks(baseDir)
 	if err != nil {
@@ -159,29 +151,6 @@ func isContained(baseDir, targetPath string) bool {
 		return false
 	}
 	return true
-}
-
-func resolveScriptPath(baseDir, scriptName string) (string, error) {
-	cleanName := filepath.Clean(strings.TrimSpace(scriptName))
-	if cleanName == "." || cleanName == ".." || strings.HasPrefix(cleanName, "..") {
-		return "", fmt.Errorf("%w: %s", ErrInvalidPath, scriptName)
-	}
-
-	candidates := []string{
-		filepath.Join(baseDir, "scripts", cleanName),
-		filepath.Join(baseDir, cleanName),
-	}
-	for _, cand := range candidates {
-		candClean := filepath.Clean(cand)
-		if !isContained(baseDir, candClean) {
-			continue
-		}
-		info, err := os.Stat(candClean)
-		if err == nil && !info.IsDir() {
-			return candClean, nil
-		}
-	}
-	return "", fmt.Errorf("%w: %s (searched in %s)", ErrScriptNotFound, scriptName, baseDir)
 }
 
 func detectInterpreter(scriptPath string) (string, []string) {
@@ -548,13 +517,13 @@ func ReadBytesContext(ctx context.Context, item catalog.Item, filePath string, c
 				}
 				if resp.StatusCode == http.StatusOK {
 					data, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
-					resp.Body.Close()
+					_ = resp.Body.Close()
 					if err == nil && len(data) > 0 {
 						cacheSkillFile(item.Name, rp, data)
 						return data, nil
 					}
 				} else {
-					resp.Body.Close()
+					_ = resp.Body.Close()
 				}
 			}
 		}

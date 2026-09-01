@@ -51,6 +51,7 @@ type Item struct {
 	Version            string            `json:"version,omitempty" yaml:"version,omitempty"`
 	License            string            `json:"license,omitempty" yaml:"license,omitempty"`
 	URL                string            `json:"url,omitempty" yaml:"url,omitempty"`
+	Entrypoint         string            `json:"entrypoint,omitempty" yaml:"entrypoint,omitempty"`
 	RelativePath       string            `json:"relativePath,omitempty" yaml:"relativePath,omitempty"`
 	Path               string            `json:"path,omitempty" yaml:"path,omitempty"`
 	Digest             string            `json:"digest,omitempty" yaml:"digest,omitempty"`
@@ -75,6 +76,9 @@ func (it *Item) Normalize() {
 	if it.Name == "" && it.ID != "" {
 		it.Name = it.ID
 	}
+	if it.Type == "" {
+		it.Type = ItemTypeSkill
+	}
 	if it.Digest == "" && it.Sha256 != "" {
 		it.Digest = it.Sha256
 	}
@@ -84,35 +88,71 @@ func (it *Item) Normalize() {
 	if it.InstallCommand == "" && it.InstallCmd != "" {
 		it.InstallCommand = it.InstallCmd
 	}
-	if it.Metadata != nil {
-		if it.Category == "" {
-			it.Category = it.Metadata["category"]
-		}
-		if it.Author == "" {
-			it.Author = it.Metadata["author"]
-		}
-		if it.Version == "" {
-			it.Version = it.Metadata["version"]
-		}
-		if len(it.Tags) == 0 && it.Metadata["tags"] != "" {
-			it.Tags = ParseTags(it.Metadata["tags"])
-		}
-		if it.URL == "" && it.Metadata["canonical"] != "" {
-			it.URL = it.Metadata["canonical"]
-		}
+	if it.URL == "" && it.Entrypoint != "" {
+		it.URL = it.Entrypoint
 	}
-	if it.Category == "" && it.URL != "" {
-		if u, err := url.Parse(it.URL); err == nil {
+	if it.Entrypoint == "" && it.URL != "" {
+		it.Entrypoint = it.URL
+	}
+	if it.Metadata == nil {
+		it.Metadata = make(map[string]string)
+	}
+	if it.Entrypoint != "" && it.Metadata["canonical"] == "" {
+		it.Metadata["canonical"] = it.Entrypoint
+	}
+	if it.Category == "" {
+		it.Category = it.Metadata["category"]
+	}
+	if it.Author == "" {
+		it.Author = it.Metadata["author"]
+	}
+	if it.Version == "" {
+		it.Version = it.Metadata["version"]
+	}
+	if len(it.Tags) == 0 && it.Metadata["tags"] != "" {
+		it.Tags = ParseTags(it.Metadata["tags"])
+	}
+	if it.URL == "" && it.Metadata["canonical"] != "" {
+		it.URL = it.Metadata["canonical"]
+	}
+
+	targetURL := it.Entrypoint
+	if targetURL == "" {
+		targetURL = it.URL
+	}
+	if targetURL != "" {
+		if idx := strings.LastIndex(targetURL, "/skills/"); idx != -1 {
+			rel := targetURL[idx+len("/skills/"):]
+			parts := strings.Split(rel, "/")
+			if len(parts) >= 3 {
+				if it.Category == "" {
+					it.Category = parts[0]
+				}
+				if it.RelativePath == "" {
+					it.RelativePath = "skills/" + strings.Join(parts[:len(parts)-1], "/")
+				}
+			} else if len(parts) == 2 {
+				if it.Category == "" {
+					it.Category = "agents"
+				}
+				if it.RelativePath == "" {
+					it.RelativePath = "skills/" + parts[0]
+				}
+			}
+		} else if u, err := url.Parse(targetURL); err == nil {
 			cleanPath := strings.Trim(u.Path, "/")
 			parts := strings.Split(cleanPath, "/")
 			if len(parts) >= 2 && strings.EqualFold(parts[len(parts)-1], "SKILL.md") {
-				if len(parts) == 3 {
+				if len(parts) == 3 && it.Category == "" {
 					it.Category = parts[0]
-				} else if len(parts) >= 2 {
+				} else if len(parts) >= 2 && it.Category == "" {
 					it.Category = parts[len(parts)-2]
 				}
 			}
 		}
+	}
+	if it.Category == "" {
+		it.Category = "agents"
 	}
 }
 
@@ -158,12 +198,13 @@ type Frontmatter struct {
 	Metadata      map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 }
 
-// Manifest represents a remote or local discovery index (index.json).
+// Manifest represents a remote or local discovery index (catalog.json / index.json).
 type Manifest struct {
 	Schema      string     `json:"$schema,omitempty" yaml:"$schema,omitempty"`
 	Version     string     `json:"version,omitempty" yaml:"version,omitempty"`
 	Name        string     `json:"name,omitempty" yaml:"name,omitempty"`
 	Title       string     `json:"title,omitempty" yaml:"title,omitempty"`
+	Generator   string     `json:"generator,omitempty" yaml:"generator,omitempty"`
 	URL         string     `json:"url,omitempty" yaml:"url,omitempty"`
 	Repository  string     `json:"repository,omitempty" yaml:"repository,omitempty"`
 	TotalSkills int        `json:"totalSkills,omitempty" yaml:"totalSkills,omitempty"`
@@ -234,4 +275,6 @@ type Store interface {
 	All() []Item
 	Categories() []Category
 	LoadContent(item *Item) (string, error)
+	AddCatalogManifest(name string, manifest *Manifest)
+	RemoveCatalogItems(name string)
 }
