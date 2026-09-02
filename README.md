@@ -187,9 +187,16 @@ kungfu catalog sync
 kungfu catalog remove google/skills
 ```
 
+#### Catalog Discovery Order
+
+When discovering skills in a repository or remote host, `kungfu` automatically queries formats in the following precedence order:
+1. **`catalog.json`** (`skills.danicat.dev` standard): Explicit manifest containing items, tags, and category metadata.
+2. **`index.json`** (`google/skills` standard): Discovery envelope indexing available skills.
+3. **Directory Crawl** (`agentskills.io` standard): Recursive file-tree discovery searching for all valid `SKILL.md` bundles.
+
 ### Run Companion Scripts (`run`)
 
-Execute companion automation scripts bundled inside a skill:
+Execute companion automation scripts bundled inside a skill (supports Python/uv, Node/Bun/Deno, Shell):
 
 ```bash
 kungfu run godoctor analyze.sh --json
@@ -220,7 +227,7 @@ Skills in the catalog are organized into canonical categories:
 |---|---|
 | `game-dev` | 2D game architecture, Ebitengine, procedural art, audio, WebAssembly |
 | `media` | Audio synthesis, visual generation, asset pipelines |
-| `coding` | Code quality enforcement, AST refactoring, testing |
+| `coding` | Code quality enforcement, AST refactoring, testing, static analysis |
 | `agents` | Agent skills authoring, evaluation suites, swarms, discovery gateway |
 | `writing` | Technical writing, review workflows, style guidelines |
 | `analytics` | Search console, analytics data warehousing, SQL querying |
