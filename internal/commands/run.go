@@ -28,11 +28,11 @@ import (
 
 func (a *App) RunRun(args []string) int {
 	if len(args) == 0 || (len(args) == 1 && (args[0] == "--help" || args[0] == "-h")) {
-		fmt.Fprintln(a.Stderr, "USAGE:\n  kungfu run <skill> <script> [args...]\n\nExecute bundled skill scripts (supports Python/uv, Node/Bun/Deno, Shell).")
+		_, _ = fmt.Fprintln(a.Stderr, "USAGE:\n  kungfu run <skill> <script> [args...]\n\nExecute bundled skill scripts (supports Python/uv, Node/Bun/Deno, Shell).")
 		return ExitUsage
 	}
 	if len(args) < 2 {
-		fmt.Fprintln(a.Stderr, "error: run requires <skill> <script> [args...]")
+		_, _ = fmt.Fprintln(a.Stderr, "error: run requires <skill> <script> [args...]")
 		return ExitUsage
 	}
 	skillName := args[0]
@@ -51,32 +51,32 @@ func (a *App) RunRun(args []string) int {
 	err = runner.RunScriptContext(ctx, *item, scriptName, scriptArgs, os.Stdin, a.Stdout, a.Stderr)
 	if err != nil {
 		if errors.Is(err, runner.ErrScriptNotFound) {
-			fmt.Fprintf(a.Stderr, "error: script %q not found in skill %q.\n", scriptName, skillName)
+			_, _ = fmt.Fprintf(a.Stderr, "error: script %q not found in skill %q.\n", scriptName, skillName)
 			scripts := a.listScripts(*item)
 			if len(scripts) > 0 {
 				suggs := search.Suggest(scriptName, scripts, 3)
 				if len(suggs) > 0 {
-					fmt.Fprintln(a.Stderr, "\nDid you mean:")
+					_, _ = fmt.Fprintln(a.Stderr, "\nDid you mean:")
 					for _, s := range suggs {
-						fmt.Fprintf(a.Stderr, "  - kungfu run %s %s\n", skillName, s)
+						_, _ = fmt.Fprintf(a.Stderr, "  - kungfu run %s %s\n", skillName, s)
 					}
 				}
 			}
 			return ExitNotFound
 		}
 		if errors.Is(err, runner.ErrInvalidPath) {
-			fmt.Fprintf(a.Stderr, "error: %v\n", err)
+			_, _ = fmt.Fprintf(a.Stderr, "error: %v\n", err)
 			return ExitUsage
 		}
 		if errors.Is(err, runner.ErrExecutionTimeout) {
-			fmt.Fprintf(a.Stderr, "error: %v\n", err)
+			_, _ = fmt.Fprintf(a.Stderr, "error: %v\n", err)
 			return ExitGeneral
 		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			return exitErr.ExitCode()
 		}
-		fmt.Fprintf(a.Stderr, "error: running script %q: %v\n", scriptName, err)
+		_, _ = fmt.Fprintf(a.Stderr, "error: running script %q: %v\n", scriptName, err)
 		return MapErrorToExitCode(err)
 	}
 	return ExitSuccess

@@ -563,8 +563,15 @@ func (c *Catalog) discoverEmbeddedLocked() {
 	items, contents, err := DiscoverSkillsInFS(c.embeddedFS)
 	if err == nil {
 		for _, item := range items {
-			c.items[strings.ToLower(item.ID)] = item
-			c.items[strings.ToLower(item.Name)] = item
+			idKey := strings.ToLower(item.ID)
+			nameKey := strings.ToLower(item.Name)
+			// Only populate c.items if not already present from remote manifest or cache
+			if _, exists := c.items[idKey]; !exists {
+				c.items[idKey] = item
+			}
+			if _, exists := c.items[nameKey]; !exists {
+				c.items[nameKey] = item
+			}
 		}
 		for k, v := range contents {
 			c.embeddedData[k] = v
@@ -760,6 +767,14 @@ func (c *Catalog) LoadContent(item *Item) (string, error) {
 	// 4. If item has raw body, return it
 	if item.Body != "" {
 		return item.Body, nil
+	}
+
+	// 5. Offline fallback to embedded content if available
+	if content, ok := c.embeddedData[strings.ToLower(item.ID)]; ok && content != "" {
+		return content, nil
+	}
+	if content, ok := c.embeddedData[strings.ToLower(item.Name)]; ok && content != "" {
+		return content, nil
 	}
 
 	return "", fmt.Errorf("content unavailable for skill %q (remote URL or embedded content required)", item.Name)

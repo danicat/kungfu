@@ -169,7 +169,7 @@ Instructions here.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/testowner/testrepo/main/skills/evals/SKILL.md" {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(mockContent))
+			_, _ = w.Write([]byte(mockContent))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -301,7 +301,7 @@ func TestFetchHTTPCatalog(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("ETag", "etag-12345")
-		w.Write(data)
+		_, _ = w.Write(data)
 	}))
 	defer server.Close()
 
@@ -401,7 +401,7 @@ func TestFetchGitHubCatalog_StaticCatalog(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "catalog.json") {
 			w.Header().Set("Content-Type", "application/json")
-			w.Write(data)
+			_, _ = w.Write(data)
 			return
 		}
 		http.NotFound(w, r)
@@ -467,11 +467,11 @@ metadata:
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/git/trees/") {
 			w.Header().Set("Content-Type", "application/json")
-			w.Write(treeData)
+			_, _ = w.Write(treeData)
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, "SKILL.md") {
-			w.Write([]byte(skillContent))
+			_, _ = w.Write([]byte(skillContent))
 			return
 		}
 		http.NotFound(w, r)
@@ -526,7 +526,7 @@ func TestFetchGitHubCatalog_GoogleIndexJSON(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "index.json") {
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(googleIndexJSON))
+			_, _ = w.Write([]byte(googleIndexJSON))
 			return
 		}
 		http.NotFound(w, r)

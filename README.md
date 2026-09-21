@@ -2,7 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/danicat/kungfu.svg)](https://pkg.go.dev/github.com/danicat/kungfu)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.3.0-green.svg)](https://github.com/danicat/kungfu/releases)
+[![Release](https://img.shields.io/badge/release-v0.4.0-green.svg)](https://github.com/danicat/kungfu/releases)
 
 A command-line tool for discovering, loading, installing, and managing Agent Skills.
 
@@ -89,6 +89,15 @@ kungfu load godoctor
 
 # Stream directly from a GitHub repository
 kungfu load anthropics/anthropic-quickstarts/evals
+
+# Load from local cache or workspace without remote check
+kungfu load godoctor --local
+
+# Force checking remote upstream and updating local cache
+kungfu load godoctor --update
+
+# Bypass integrity verification if needed
+kungfu load godoctor --update --force
 
 # Stream multiple skills simultaneously
 kungfu load godoctor deslopify
@@ -201,6 +210,40 @@ Execute companion automation scripts bundled inside a skill (supports Python/uv,
 ```bash
 kungfu run godoctor analyze.sh --json
 ```
+
+---
+
+## User Configuration
+
+KungFu supports user-level configuration stored at `~/.config/kungfu/config.yaml` (or `.json`):
+
+```yaml
+version: 1
+catalogs:
+  default: https://skills.danicat.dev/catalog.json
+load:
+  auto_update: true
+```
+
+- **`catalogs.default`**: Default catalog URL (defaults to `https://skills.danicat.dev/catalog.json`).
+- **`load.auto_update`**: Automatically update cached catalog metadata and downloaded skills when an upstream digest change is detected (default `true`).
+
+---
+
+## User Configuration
+
+KungFu supports user-level configuration stored at `~/.config/kungfu/config.yaml` (or `.json`):
+
+```yaml
+version: 1
+catalogs:
+  default: https://skills.danicat.dev/catalog.json
+load:
+  auto_update: true
+```
+
+- **`catalogs.default`**: Default catalog URL (defaults to `https://skills.danicat.dev/catalog.json`).
+- **`load.auto_update`**: Automatically update cached catalog metadata and downloaded skills when an upstream digest change is detected (default `true`).
 
 ---
 

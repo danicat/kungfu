@@ -50,7 +50,7 @@ func (a *App) RunFind(args []string) int {
 	}
 
 	if len(posArgs) == 0 {
-		fmt.Fprintln(a.Stderr, "error: find requires search terms")
+		_, _ = fmt.Fprintln(a.Stderr, "error: find requires search terms")
 		return ExitUsage
 	}
 
@@ -58,7 +58,7 @@ func (a *App) RunFind(args []string) int {
 	allItems := a.Store.All()
 
 	if len(allItems) == 0 {
-		fmt.Fprintln(a.Stderr, "error: no skills loaded in catalog to search")
+		_, _ = fmt.Fprintln(a.Stderr, "error: no skills loaded in catalog to search")
 		return ExitNotFound
 	}
 
@@ -83,7 +83,7 @@ func (a *App) RunFind(args []string) int {
 
 	if len(results) == 0 {
 		if mode == OutputModeJSON {
-			fmt.Fprintln(a.Stdout, "[]")
+			_, _ = fmt.Fprintln(a.Stdout, "[]")
 			return ExitSuccess
 		}
 		if mode == OutputModeRaw {
@@ -126,20 +126,20 @@ func (a *App) RunFind(args []string) int {
 		return ExitSuccess
 	case OutputModeRaw:
 		for _, o := range outputItems {
-			fmt.Fprintf(a.Stdout, "%s\t%s\t%.4f\t%s\t%s\n", o.Name, o.Category, o.Score, o.Status, o.Description)
+			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%.4f\t%s\t%s\n", o.Name, o.Category, o.Score, o.Status, o.Description)
 		}
 		return ExitSuccess
 	default: // OutputModeHuman
-		fmt.Fprintf(a.Stdout, "SEARCH RESULTS FOR %q (%s, %d matches):\n\n", query, strategy, len(outputItems))
-		fmt.Fprintf(a.Stdout, "%-22s %-14s %-8s %-12s %s\n", "NAME", "CATEGORY", "SCORE", "STATUS", "DESCRIPTION")
-		fmt.Fprintf(a.Stdout, "%-22s %-14s %-8s %-12s %s\n", "----------------------", "--------------", "--------", "------------", "--------------------------------------------------")
+		_, _ = fmt.Fprintf(a.Stdout, "SEARCH RESULTS FOR %q (%s, %d matches):\n\n", query, strategy, len(outputItems))
+		_, _ = fmt.Fprintf(a.Stdout, "%-22s %-14s %-8s %-12s %s\n", "NAME", "CATEGORY", "SCORE", "STATUS", "DESCRIPTION")
+		_, _ = fmt.Fprintf(a.Stdout, "%-22s %-14s %-8s %-12s %s\n", "----------------------", "--------------", "--------", "------------", "--------------------------------------------------")
 		for _, o := range outputItems {
 			statusBadge := "[" + o.Status + "]"
 			desc := o.Description
 			if len(desc) > 50 {
 				desc = desc[:47] + "..."
 			}
-			fmt.Fprintf(a.Stdout, "%-22s %-14s %-8.3f %-12s %s\n", o.Name, o.Category, o.Score, statusBadge, desc)
+			_, _ = fmt.Fprintf(a.Stdout, "%-22s %-14s %-8.3f %-12s %s\n", o.Name, o.Category, o.Score, statusBadge, desc)
 		}
 		return ExitSuccess
 	}

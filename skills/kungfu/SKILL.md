@@ -14,7 +14,7 @@ metadata:
   category: agents
   tags: "gateway, agent-skills, discovery, search, catalog, cli, learn"
   author: Daniela Petruzalek (daniela@danicat.dev)
-  version: "0.3.0"
+  version: "0.4.0"
   catalog: https://skills.danicat.dev
 ---
 
@@ -243,7 +243,7 @@ kungfu catalog remove google/skills
 | `kungfu list` | `kungfu list [-c <cat>] [-t <tags>] [--all]` | List skills (Name, Category, Tags, Status) |
 | `kungfu find` | `kungfu find <query> [-c <cat>] [-t <tags>] [-s <strat>]` | Search skills with BM25/TF-IDF/Hybrid ranking |
 | `kungfu show` | `kungfu show <skills...> [-c <cat>] [-t <tags>] [--all]` | Display metadata, summary, and allowed tools |
-| `kungfu load` | `kungfu load <skill[/subpath]> [-c <cat>] [-t <tags>] [--all]` | Stream verbatim markdown instructions or subpath files (references, scripts, assets) |
+| `kungfu load` | `kungfu load <skill[/subpath]> [--local] [--update] [--force] [-c <cat>] [-t <tags>] [--all]` | Stream verbatim markdown instructions or subpath files with resilient caching |
 | `kungfu learn` | `kungfu learn <skills...> [-g] [-f] [--load] [-c <cat>] [-t <tags>]` | Install skill from catalog or GitHub & record in state (`kungfu add` alias supported) |
 | `kungfu add` | `kungfu add <skills...> [-g] [-f] [--load]` | Drop-in alias for `kungfu learn` (compatible with `npx skills add`) |
 | `kungfu catalog` | `kungfu catalog <add\|list\|remove\|sync>` | Register, list, remove, or sync entire external skill catalogs |
@@ -252,6 +252,34 @@ kungfu catalog remove google/skills
 | `kungfu status` | `kungfu status [skills...] [-c <cat>] [-t <tags>] [-g] [--json] [--raw]` | Inspect installed skills, paths, versions, and JIT history |
 | `kungfu version` | `kungfu version` (or `kungfu --version`) | Display current kungfu release version |
 | `kungfu run` | `kungfu run <skill> <script> [args...]` | Execute companion skill automation script |
+
+### Notation Shortcuts (Agent & User Dialect)
+
+KungFu defines a high-density notation for interactive pair programming:
+
+| Notation | Equivalent Command | Purpose |
+|---|---|---|
+| `::skill` | `kungfu load skill` | Stream skill markdown into context |
+| `::skill@catalog` | `kungfu load skill` (from catalog) | Load skill from a specific catalog |
+| `::skill:category` | `kungfu load skill -c category` | Load skill filtered by category |
+| `:::category` | `kungfu load -c category` | Batch load all skills in category |
+| `::*skill` | `kungfu load -u -f skill` | Force upstream update check and load |
+| `::+skill` | `kungfu learn skill` | Persist skill to workspace |
+| `::++skill` | `kungfu learn -g skill` | Persist skill globally to user home |
+| `::+*skill` | `kungfu learn -f skill` | Force overwrite install to workspace |
+| `::++*skill` | `kungfu learn -g -f skill` | Force overwrite install globally |
+| `:::+category` | `kungfu learn -c category` | Learn all skills in category |
+| `:::++category` | `kungfu learn -g -c category` | Learn all skills in category globally |
+| `::-skill` | `kungfu forget skill` | Remove skill from workspace |
+| `::--skill` | `kungfu forget -g skill` | Remove skill globally |
+| `::skill!script [args]` | `kungfu run skill script [args]` | Run companion script |
+| `::?keyword` | `kungfu find keyword` | Search catalog with hybrid ranking |
+| `::>skill` | `kungfu show skill` | Inspect skill metadata |
+| `:::>category` | `kungfu show -c category` | Inspect all skills in category |
+| `::@` | `kungfu catalog list` | List registered catalogs |
+| `::@^` | `kungfu catalog sync` | Synchronize all catalogs |
+| `::@^catalog` | `kungfu catalog sync catalog` | Synchronize specific catalog |
+| `::^` or `::^_^` | `kungfu update` | Check/apply installed skill updates |
 
 ### Output Modes
 - **Default (Human-Readable)**: Clean tabular or formatted terminal output designed for human and agent interaction.

@@ -100,11 +100,14 @@ type State struct {
 	mu sync.RWMutex `json:"-"`
 }
 
+const DefaultRemoteCatalogURL = "https://skills.danicat.dev/catalog.json"
+
 // NewState creates an initialized State struct.
 func NewState() *State {
-	return &State{
+	now := time.Now().UTC()
+	s := &State{
 		SchemaVersion: SchemaVersion,
-		UpdatedAt:     time.Now().UTC(),
+		UpdatedAt:     now,
 		Workspaces:    make(map[string]*WorkspaceState),
 		Global: &WorkspaceState{
 			Skills: make(map[string]SkillRecord),
@@ -112,6 +115,15 @@ func NewState() *State {
 		History:  make(map[string]*HistoryRecord),
 		Catalogs: make(map[string]CatalogRecord),
 	}
+	s.Catalogs[CatalogTypeDefault] = CatalogRecord{
+		Name:      CatalogTypeDefault,
+		Type:      CatalogTypeDefault,
+		Source:    DefaultRemoteCatalogURL,
+		URL:       DefaultRemoteCatalogURL,
+		AddedAt:   now,
+		UpdatedAt: now,
+	}
+	return s
 }
 
 // DefaultStateFilePath returns ~/.config/kungfu/state.json, or respects KUNGFU_STATE_PATH / KUNGFU_CONFIG_DIR.
@@ -158,6 +170,20 @@ func LoadState(filePath string) (*State, error) {
 	}
 	if s.History == nil {
 		s.History = make(map[string]*HistoryRecord)
+	}
+	if s.Catalogs == nil {
+		s.Catalogs = make(map[string]CatalogRecord)
+	}
+	if _, ok := s.Catalogs[CatalogTypeDefault]; !ok {
+		now := time.Now().UTC()
+		s.Catalogs[CatalogTypeDefault] = CatalogRecord{
+			Name:      CatalogTypeDefault,
+			Type:      CatalogTypeDefault,
+			Source:    DefaultRemoteCatalogURL,
+			URL:       DefaultRemoteCatalogURL,
+			AddedAt:   now,
+			UpdatedAt: now,
+		}
 	}
 
 	return &s, nil

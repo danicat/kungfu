@@ -35,7 +35,7 @@ func TestRunCatalog(t *testing.T) {
 	// Create mock HTTP server for custom catalog
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{
+		_, _ = w.Write([]byte(`{
 			"name": "mycatalog",
 			"skills": [
 				{
@@ -97,5 +97,24 @@ func TestRunCatalog(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "Removed catalog \"mock-cat\"") {
 		t.Errorf("expected removed confirmation, got: %s", stdout.String())
+	}
+
+	// 5. Attempt to remove default catalog should fail
+	stdout.Reset()
+	stderr.Reset()
+	code = app.RunCatalog([]string{"remove", "default"})
+	if code == ExitSuccess || strings.Contains(stdout.String(), "Removed catalog \"default\"") {
+		t.Errorf("expected default catalog removal to be prevented")
+	}
+
+	// 6. Sync default catalog
+	stdout.Reset()
+	stderr.Reset()
+	code = app.RunCatalog([]string{"sync", "default"})
+	if code != ExitSuccess {
+		t.Fatalf("RunCatalog sync default = %d; stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Synchronized") {
+		t.Errorf("expected synchronized confirmation for default, got: %s", stdout.String())
 	}
 }

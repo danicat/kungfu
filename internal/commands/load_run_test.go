@@ -33,6 +33,9 @@ func TestRunLoad(t *testing.T) {
 	}{
 		{"load missing arg", []string{"load"}, ExitUsage, ""},
 		{"load embedded kungfu raw default", []string{"load", "kungfu"}, ExitSuccess, "# KungFu: Agent Skills Gateway"},
+		{"load embedded kungfu with --local", []string{"load", "kungfu", "--local"}, ExitSuccess, "# KungFu: Agent Skills Gateway"},
+		{"load embedded kungfu with -u", []string{"load", "kungfu", "-u"}, ExitSuccess, "# KungFu: Agent Skills Gateway"},
+		{"load embedded kungfu with -f", []string{"load", "kungfu", "-f"}, ExitSuccess, "# KungFu: Agent Skills Gateway"},
 		{"load by category flag", []string{"load", "-c", "agents"}, ExitSuccess, "# KungFu: Agent Skills Gateway"},
 		{"load by tags flag", []string{"load", "-t", "agent-skills AND cli"}, ExitSuccess, "# KungFu: Agent Skills Gateway"},
 		{"load all flag", []string{"load", "--all"}, ExitSuccess, "# KungFu: Agent Skills Gateway"},
@@ -50,6 +53,46 @@ func TestRunLoad(t *testing.T) {
 				t.Errorf("Run(%v) output %q does not contain %q; stderr: %s", tt.args, stdout.String(), tt.wantSub, stderr.String())
 			}
 		})
+	}
+}
+
+func TestRunLoad_Resilience(t *testing.T) {
+	tmpDir := t.TempDir()
+	skillDir := filepath.Join(tmpDir, "local-skill")
+	_ = os.MkdirAll(skillDir, 0755)
+	_ = os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: local-skill\n---\n# Local Skill Content"), 0644)
+
+	var stdout, stderr bytes.Buffer
+	app, err := NewApp(GlobalOptions{}, &stdout, &stderr, testEmbeddedFS)
+	if err != nil {
+		t.Fatalf("NewApp failed: %v", err)
+	}
+	if cat, ok := app.Store.(*catalog.Catalog); ok {
+		cat.AddItem(catalog.Item{
+			ID:       "local-skill",
+			Name:     "local-skill",
+			Category: "test",
+			Path:     skillDir,
+		})
+	}
+
+	// 1. Load with --local
+	stdout.Reset()
+	stderr.Reset()
+	code := app.RunLoad([]string{"local-skill", "--local"})
+	if code != ExitSuccess {
+		t.Fatalf("RunLoad(--local) = %d; stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Local Skill Content") {
+		t.Errorf("expected Local Skill Content, got: %s", stdout.String())
+	}
+
+	// 2. Load missing item with --local returns error
+	stdout.Reset()
+	stderr.Reset()
+	code = app.RunLoad([]string{"nonexistent-skill", "--local"})
+	if code == ExitSuccess {
+		t.Errorf("expected error when loading nonexistent-skill with --local, got success")
 	}
 }
 

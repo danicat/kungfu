@@ -107,6 +107,11 @@ func GetCandidateBaseDirs(item catalog.Item) []string {
 	return dirs
 }
 
+// CacheSkillFile saves a skill file to ~/.cache/kungfu/skills/<skill>/<relPath>.
+func CacheSkillFile(skillName, relPath string, data []byte) {
+	cacheSkillFile(skillName, relPath, data)
+}
+
 func cacheSkillFile(skillName, relPath string, data []byte) {
 	if skillName == "" || relPath == "" || len(data) == 0 {
 		return

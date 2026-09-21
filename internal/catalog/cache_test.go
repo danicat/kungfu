@@ -35,7 +35,7 @@ func TestCatalogCache_ETagAndOfflineFallback(t *testing.T) {
 		}
 		w.Header().Set("ETag", "v1-etag")
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{
+		_, _ = w.Write([]byte(`{
 			"$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
 			"skills": [
 				{

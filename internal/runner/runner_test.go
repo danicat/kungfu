@@ -212,13 +212,13 @@ func TestReadFile_Remote(t *testing.T) {
 		switch r.URL.Path {
 		case "/writing/mock-skill/references/linkedin_playbook.md":
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("# LinkedIn Playbook Remote Content"))
+			_, _ = w.Write([]byte("# LinkedIn Playbook Remote Content"))
 		case "/writing/mock-skill/references/twitter_playbook.md":
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("# Twitter Playbook Remote Content"))
+			_, _ = w.Write([]byte("# Twitter Playbook Remote Content"))
 		case "/writing/mock-skill/CANONICAL.md":
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("# Remote Canonical"))
+			_, _ = w.Write([]byte("# Remote Canonical"))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -324,16 +324,16 @@ func TestInstallSkill_Remote(t *testing.T) {
 		switch r.URL.Path {
 		case "/skills/writer/SKILL.md":
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("# Writer Skill\nSee [references/guide.md](references/guide.md) and [scripts/run.py](scripts/run.py)"))
+			_, _ = w.Write([]byte("# Writer Skill\nSee [references/guide.md](references/guide.md) and [scripts/run.py](scripts/run.py)"))
 		case "/skills/writer/references/guide.md":
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("# Remote Guide Document\nCheck [references/subguide.md](references/subguide.md)"))
+			_, _ = w.Write([]byte("# Remote Guide Document\nCheck [references/subguide.md](references/subguide.md)"))
 		case "/skills/writer/references/subguide.md":
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("# Nested Subguide"))
+			_, _ = w.Write([]byte("# Nested Subguide"))
 		case "/skills/writer/scripts/run.py":
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("print('running')"))
+			_, _ = w.Write([]byte("print('running')"))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -416,7 +416,7 @@ func TestRunScript_JITRemoteFetch(t *testing.T) {
 		switch r.URL.Path {
 		case "/skills/cloud/scripts/jit_task.sh":
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("#!/bin/sh\necho \"JIT_SUCCESS $1\"\n"))
+			_, _ = w.Write([]byte("#!/bin/sh\necho \"JIT_SUCCESS $1\"\n"))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}

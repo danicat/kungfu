@@ -81,7 +81,7 @@ func (a *App) RunUpdate(args []string) int {
 		case OutputModeRaw:
 			// empty output
 		default:
-			fmt.Fprintf(a.Stdout, "No installed skills found in %s scope.\n", scope)
+			_, _ = fmt.Fprintf(a.Stdout, "No installed skills found in %s scope.\n", scope)
 		}
 		return ExitSuccess
 	}
@@ -133,7 +133,7 @@ func (a *App) RunUpdate(args []string) int {
 
 		if rec.Origin == state.OriginCustom {
 			if !dryRun && len(posArgs) > 0 {
-				fmt.Fprintf(a.Stderr, "error: skill %q is a custom/external skill (not learned from catalog). Kungfu cannot update custom skills.\n", name)
+				_, _ = fmt.Fprintf(a.Stderr, "error: skill %q is a custom/external skill (not learned from catalog). Kungfu cannot update custom skills.\n", name)
 				return ExitUsage
 			}
 			checks = append(checks, SkillUpdateCheck{
@@ -309,78 +309,78 @@ func (a *App) RunUpdate(args []string) int {
 	case OutputModeRaw:
 		for _, c := range checks {
 			if dryRun {
-				fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%s\n", c.Name, c.InstalledVer, c.RemoteVer, c.Status, c.Reason)
+				_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%s\n", c.Name, c.InstalledVer, c.RemoteVer, c.Status, c.Reason)
 			} else {
 				if c.Status == "updated" {
-					fmt.Fprintf(a.Stdout, "updated\t%s\t%s\n", c.Name, c.Reason)
+					_, _ = fmt.Fprintf(a.Stdout, "updated\t%s\t%s\n", c.Name, c.Reason)
 				} else {
 					msg := c.Reason
 					if c.Message != "" {
 						msg = c.Message
 					}
-					fmt.Fprintf(a.Stdout, "%s\t%s\t%s\n", c.Status, c.Name, msg)
+					_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\n", c.Status, c.Name, msg)
 				}
 			}
 		}
 	default: // OutputModeHuman
 		if dryRun {
 			hasAnyUpdates := false
-			fmt.Fprintf(a.Stdout, "Checking for skill updates (%s scope)...\n\n", scope)
+			_, _ = fmt.Fprintf(a.Stdout, "Checking for skill updates (%s scope)...\n\n", scope)
 			for _, c := range checks {
 				if c.Status == "custom" {
-					fmt.Fprintf(a.Stdout, "  • %-20s [Custom skill] %s\n", c.Name, c.Reason)
+					_, _ = fmt.Fprintf(a.Stdout, "  • %-20s [Custom skill] %s\n", c.Name, c.Reason)
 				} else if c.Status == "not_found" {
-					fmt.Fprintf(a.Stderr, "  ⚠ %-20s %s\n", c.Name, c.Reason)
+					_, _ = fmt.Fprintf(a.Stderr, "  ⚠ %-20s %s\n", c.Name, c.Reason)
 					if len(installedNames) > 0 {
 						suggs := search.Suggest(c.Name, installedNames, 3)
 						if len(suggs) > 0 {
-							fmt.Fprintln(a.Stderr, "    Did you mean:")
+							_, _ = fmt.Fprintln(a.Stderr, "    Did you mean:")
 							for _, s := range suggs {
-								fmt.Fprintf(a.Stderr, "      - %s\n", s)
+								_, _ = fmt.Fprintf(a.Stderr, "      - %s\n", s)
 							}
 						}
 					}
 				} else if c.HasUpdate {
 					hasAnyUpdates = true
 					if c.RequiresYes {
-						fmt.Fprintf(a.Stdout, "  ⚠ %-20s [Update available with -y] %s\n", c.Name, c.Reason)
+						_, _ = fmt.Fprintf(a.Stdout, "  ⚠ %-20s [Update available with -y] %s\n", c.Name, c.Reason)
 					} else {
-						fmt.Fprintf(a.Stdout, "  ↑ %-20s [Update available] %s\n", c.Name, c.Reason)
+						_, _ = fmt.Fprintf(a.Stdout, "  ↑ %-20s [Update available] %s\n", c.Name, c.Reason)
 					}
 				} else {
-					fmt.Fprintf(a.Stdout, "  ✓ %-20s %s\n", c.Name, c.Reason)
+					_, _ = fmt.Fprintf(a.Stdout, "  ✓ %-20s %s\n", c.Name, c.Reason)
 				}
 			}
 
 			if hasAnyUpdates {
-				fmt.Fprintln(a.Stdout, "\nRun 'kungfu update <skill>' or 'kungfu update --all' to apply updates.")
+				_, _ = fmt.Fprintln(a.Stdout, "\nRun 'kungfu update <skill>' or 'kungfu update --all' to apply updates.")
 			} else {
-				fmt.Fprintln(a.Stdout, "\nAll installed skills are up to date.")
+				_, _ = fmt.Fprintln(a.Stdout, "\nAll installed skills are up to date.")
 			}
 		} else {
 			for _, c := range checks {
 				switch c.Status {
 				case "updated":
-					fmt.Fprintf(a.Stdout, "✓ Updated skill %q (%s, %d files)\n", c.Name, c.Reason, len(c.Files))
+					_, _ = fmt.Fprintf(a.Stdout, "✓ Updated skill %q (%s, %d files)\n", c.Name, c.Reason, len(c.Files))
 				case "up_to_date":
-					fmt.Fprintf(a.Stdout, "✓ Skill %q is up to date (%s)\n", c.Name, c.Reason)
+					_, _ = fmt.Fprintf(a.Stdout, "✓ Skill %q is up to date (%s)\n", c.Name, c.Reason)
 				case "custom":
-					fmt.Fprintf(a.Stdout, "• Skipped custom skill %q (%s)\n", c.Name, c.Reason)
+					_, _ = fmt.Fprintf(a.Stdout, "• Skipped custom skill %q (%s)\n", c.Name, c.Reason)
 				case "not_found":
-					fmt.Fprintf(a.Stderr, "⚠ Skill %q is not installed in %s scope.\n", c.Name, scope)
+					_, _ = fmt.Fprintf(a.Stderr, "⚠ Skill %q is not installed in %s scope.\n", c.Name, scope)
 					if len(installedNames) > 0 {
 						suggs := search.Suggest(c.Name, installedNames, 3)
 						if len(suggs) > 0 {
-							fmt.Fprintln(a.Stderr, "\nDid you mean:")
+							_, _ = fmt.Fprintln(a.Stderr, "\nDid you mean:")
 							for _, s := range suggs {
-								fmt.Fprintf(a.Stderr, "  - kungfu update %s\n", s)
+								_, _ = fmt.Fprintf(a.Stderr, "  - kungfu update %s\n", s)
 							}
 						}
 					}
 				case "blocked":
-					fmt.Fprintf(a.Stderr, "⚠ Skill %q was not updated: %s\n", c.Name, c.Message)
+					_, _ = fmt.Fprintf(a.Stderr, "⚠ Skill %q was not updated: %s\n", c.Name, c.Message)
 				case "error":
-					fmt.Fprintf(a.Stderr, "✗ Failed to update skill %q: %s\n", c.Name, c.Message)
+					_, _ = fmt.Fprintf(a.Stderr, "✗ Failed to update skill %q: %s\n", c.Name, c.Message)
 				}
 			}
 		}

@@ -54,7 +54,7 @@ func (a *App) RunShow(args []string) int {
 		})
 		if len(items) == 0 {
 			if mode == OutputModeJSON {
-				fmt.Fprintln(a.Stdout, "[]")
+				_, _ = fmt.Fprintln(a.Stdout, "[]")
 				return ExitSuccess
 			}
 			if mode == OutputModeRaw {
@@ -70,7 +70,7 @@ func (a *App) RunShow(args []string) int {
 	}
 
 	if len(posArgs) == 0 {
-		fmt.Fprintln(a.Stderr, "error: show requires at least one skill name, or use --all / -c / -t")
+		_, _ = fmt.Fprintln(a.Stderr, "error: show requires at least one skill name, or use --all / -c / -t")
 		return ExitUsage
 	}
 
@@ -168,50 +168,50 @@ func (a *App) renderShowItems(items []catalog.Item, mode OutputMode) int {
 			tagsStr := strings.Join(d.Tags, ",")
 			refsStr := strings.Join(d.References, ",")
 			scriptsStr := strings.Join(d.Scripts, ",")
-			fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", d.Name, d.Category, d.Version, d.Status, tagsStr, d.AllowedTools, refsStr, scriptsStr, d.Description)
+			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", d.Name, d.Category, d.Version, d.Status, tagsStr, d.AllowedTools, refsStr, scriptsStr, d.Description)
 		}
 		return ExitSuccess
 	default: // OutputModeHuman
 		for i, d := range details {
 			if i > 0 {
-				fmt.Fprintln(a.Stdout)
-				fmt.Fprintln(a.Stdout, "--------------------------------------------------------------------------------")
-				fmt.Fprintln(a.Stdout)
+				_, _ = fmt.Fprintln(a.Stdout)
+				_, _ = fmt.Fprintln(a.Stdout, "--------------------------------------------------------------------------------")
+				_, _ = fmt.Fprintln(a.Stdout)
 			}
-			fmt.Fprintf(a.Stdout, "SKILL: %s\n", d.Name)
+			_, _ = fmt.Fprintf(a.Stdout, "SKILL: %s\n", d.Name)
 			if d.Title != "" && d.Title != d.Name {
-				fmt.Fprintf(a.Stdout, "Title:        %s\n", d.Title)
+				_, _ = fmt.Fprintf(a.Stdout, "Title:        %s\n", d.Title)
 			}
-			fmt.Fprintf(a.Stdout, "Category:     %s\n", d.Category)
+			_, _ = fmt.Fprintf(a.Stdout, "Category:     %s\n", d.Category)
 			if d.Version != "" {
-				fmt.Fprintf(a.Stdout, "Version:      %s\n", d.Version)
+				_, _ = fmt.Fprintf(a.Stdout, "Version:      %s\n", d.Version)
 			}
-			fmt.Fprintf(a.Stdout, "Status:       [%s]\n", d.Status)
+			_, _ = fmt.Fprintf(a.Stdout, "Status:       [%s]\n", d.Status)
 			if d.Author != "" {
-				fmt.Fprintf(a.Stdout, "Author:       %s\n", d.Author)
+				_, _ = fmt.Fprintf(a.Stdout, "Author:       %s\n", d.Author)
 			}
 			if d.License != "" {
-				fmt.Fprintf(a.Stdout, "License:      %s\n", d.License)
+				_, _ = fmt.Fprintf(a.Stdout, "License:      %s\n", d.License)
 			}
 			if len(d.Tags) > 0 {
-				fmt.Fprintf(a.Stdout, "Tags:         %s\n", strings.Join(d.Tags, ", "))
+				_, _ = fmt.Fprintf(a.Stdout, "Tags:         %s\n", strings.Join(d.Tags, ", "))
 			}
 			if d.AllowedTools != "" {
-				fmt.Fprintf(a.Stdout, "Tools:        %s\n", d.AllowedTools)
+				_, _ = fmt.Fprintf(a.Stdout, "Tools:        %s\n", d.AllowedTools)
 			}
 			if len(d.References) > 0 {
-				fmt.Fprintf(a.Stdout, "References:   %s\n", strings.Join(d.References, ", "))
+				_, _ = fmt.Fprintf(a.Stdout, "References:   %s\n", strings.Join(d.References, ", "))
 			}
 			if len(d.Scripts) > 0 {
-				fmt.Fprintf(a.Stdout, "Scripts:      %s\n", strings.Join(d.Scripts, ", "))
+				_, _ = fmt.Fprintf(a.Stdout, "Scripts:      %s\n", strings.Join(d.Scripts, ", "))
 			}
 			if d.URL != "" {
-				fmt.Fprintf(a.Stdout, "URL:          %s\n", d.URL)
+				_, _ = fmt.Fprintf(a.Stdout, "URL:          %s\n", d.URL)
 			}
 			if d.Digest != "" {
-				fmt.Fprintf(a.Stdout, "Digest:       %s\n", d.Digest)
+				_, _ = fmt.Fprintf(a.Stdout, "Digest:       %s\n", d.Digest)
 			}
-			fmt.Fprintf(a.Stdout, "Description:\n  %s\n", d.Description)
+			_, _ = fmt.Fprintf(a.Stdout, "Description:\n  %s\n", d.Description)
 		}
 		return ExitSuccess
 	}

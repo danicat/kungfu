@@ -128,10 +128,10 @@ func (a *App) RunStatus(args []string) int {
 			sort.Strings(wsNames)
 			for _, n := range wsNames {
 				rec := wsInstalled[n]
-				fmt.Fprintf(a.Stdout, "workspace\t%s\t%s\tinstalled\t%s\n", rec.Name, rec.Version, rec.Origin)
+				_, _ = fmt.Fprintf(a.Stdout, "workspace\t%s\t%s\tinstalled\t%s\n", rec.Name, rec.Version, rec.Origin)
 			}
 			for _, rec := range wsForgotten {
-				fmt.Fprintf(a.Stdout, "workspace\t%s\t%s\tforgotten\t%s\n", rec.Name, rec.Version, rec.Origin)
+				_, _ = fmt.Fprintf(a.Stdout, "workspace\t%s\t%s\tforgotten\t%s\n", rec.Name, rec.Version, rec.Origin)
 			}
 		}
 		var gNames []string
@@ -141,21 +141,21 @@ func (a *App) RunStatus(args []string) int {
 		sort.Strings(gNames)
 		for _, n := range gNames {
 			rec := globalInstalled[n]
-			fmt.Fprintf(a.Stdout, "global\t%s\t%s\tinstalled\t%s\n", rec.Name, rec.Version, rec.Origin)
+			_, _ = fmt.Fprintf(a.Stdout, "global\t%s\t%s\tinstalled\t%s\n", rec.Name, rec.Version, rec.Origin)
 		}
 		for _, rec := range globalForgotten {
-			fmt.Fprintf(a.Stdout, "global\t%s\t%s\tforgotten\t%s\n", rec.Name, rec.Version, rec.Origin)
+			_, _ = fmt.Fprintf(a.Stdout, "global\t%s\t%s\tforgotten\t%s\n", rec.Name, rec.Version, rec.Origin)
 		}
 		return ExitSuccess
 	default: // OutputModeHuman
-		fmt.Fprintf(a.Stdout, "KungFu Status\n")
+		_, _ = fmt.Fprintf(a.Stdout, "KungFu Status\n")
 		if !globalFlag {
-			fmt.Fprintf(a.Stdout, "Workspace: %s\n\n", wsDir)
+			_, _ = fmt.Fprintf(a.Stdout, "Workspace: %s\n\n", wsDir)
 
 			// Workspace Installed
-			fmt.Fprintf(a.Stdout, "Workspace Skills (%d):\n", len(wsInstalled))
+			_, _ = fmt.Fprintf(a.Stdout, "Workspace Skills (%d):\n", len(wsInstalled))
 			if len(wsInstalled) == 0 {
-				fmt.Fprintf(a.Stdout, "  (none)\n")
+				_, _ = fmt.Fprintf(a.Stdout, "  (none)\n")
 			} else {
 				var names []string
 				for n := range wsInstalled {
@@ -169,18 +169,18 @@ func (a *App) RunStatus(args []string) int {
 						ver = "unversioned"
 					}
 					if rec.Origin == state.OriginCustom {
-						fmt.Fprintf(a.Stdout, "  • %-20s %-12s (%d files, custom - read-only to kungfu)\n", rec.Name, ver, len(rec.Files))
+						_, _ = fmt.Fprintf(a.Stdout, "  • %-20s %-12s (%d files, custom - read-only to kungfu)\n", rec.Name, ver, len(rec.Files))
 					} else {
-						fmt.Fprintf(a.Stdout, "  ✓ %-20s %-12s (%d files, installed %s)\n", rec.Name, ver, len(rec.Files), rec.InstalledAt.Format("2006-01-02"))
+						_, _ = fmt.Fprintf(a.Stdout, "  ✓ %-20s %-12s (%d files, installed %s)\n", rec.Name, ver, len(rec.Files), rec.InstalledAt.Format("2006-01-02"))
 					}
 				}
 			}
 		}
 
 		// Global Installed
-		fmt.Fprintf(a.Stdout, "\nGlobal Skills (%d):\n", len(globalInstalled))
+		_, _ = fmt.Fprintf(a.Stdout, "\nGlobal Skills (%d):\n", len(globalInstalled))
 		if len(globalInstalled) == 0 {
-			fmt.Fprintf(a.Stdout, "  (none)\n")
+			_, _ = fmt.Fprintf(a.Stdout, "  (none)\n")
 		} else {
 			var names []string
 			for n := range globalInstalled {
@@ -194,9 +194,9 @@ func (a *App) RunStatus(args []string) int {
 					ver = "unversioned"
 				}
 				if rec.Origin == state.OriginCustom {
-					fmt.Fprintf(a.Stdout, "  • %-20s %-12s (%d files, custom - read-only to kungfu)\n", rec.Name, ver, len(rec.Files))
+					_, _ = fmt.Fprintf(a.Stdout, "  • %-20s %-12s (%d files, custom - read-only to kungfu)\n", rec.Name, ver, len(rec.Files))
 				} else {
-					fmt.Fprintf(a.Stdout, "  ✓ %-20s %-12s (%d files, installed %s)\n", rec.Name, ver, len(rec.Files), rec.InstalledAt.Format("2006-01-02"))
+					_, _ = fmt.Fprintf(a.Stdout, "  ✓ %-20s %-12s (%d files, installed %s)\n", rec.Name, ver, len(rec.Files), rec.InstalledAt.Format("2006-01-02"))
 				}
 			}
 		}
@@ -207,14 +207,14 @@ func (a *App) RunStatus(args []string) int {
 			forgottenCount += len(wsForgotten)
 		}
 		if forgottenCount > 0 {
-			fmt.Fprintf(a.Stdout, "\nForgotten Skills:\n")
+			_, _ = fmt.Fprintf(a.Stdout, "\nForgotten Skills:\n")
 			if !globalFlag {
 				for _, rec := range wsForgotten {
 					uninst := ""
 					if rec.UninstalledAt != nil {
 						uninst = rec.UninstalledAt.Format("2006-01-02")
 					}
-					fmt.Fprintf(a.Stdout, "  ✗ %-20s (workspace, uninstalled %s)\n", rec.Name, uninst)
+					_, _ = fmt.Fprintf(a.Stdout, "  ✗ %-20s (workspace, uninstalled %s)\n", rec.Name, uninst)
 				}
 			}
 			for _, rec := range globalForgotten {
@@ -222,13 +222,13 @@ func (a *App) RunStatus(args []string) int {
 				if rec.UninstalledAt != nil {
 					uninst = rec.UninstalledAt.Format("2006-01-02")
 				}
-				fmt.Fprintf(a.Stdout, "  ✗ %-20s (global, uninstalled %s)\n", rec.Name, uninst)
+				_, _ = fmt.Fprintf(a.Stdout, "  ✗ %-20s (global, uninstalled %s)\n", rec.Name, uninst)
 			}
 		}
 
 		// Recent JIT Loads
 		if len(st.History) > 0 {
-			fmt.Fprintf(a.Stdout, "\nRecent JIT Loads:\n")
+			_, _ = fmt.Fprintf(a.Stdout, "\nRecent JIT Loads:\n")
 			var histNames []string
 			for n := range st.History {
 				histNames = append(histNames, n)
@@ -236,7 +236,7 @@ func (a *App) RunStatus(args []string) int {
 			sort.Strings(histNames)
 			for _, n := range histNames {
 				h := st.History[n]
-				fmt.Fprintf(a.Stdout, "  • %-20s (last seen %s, loaded %d times)\n", n, h.LastSeenAt.Format("2006-01-02 15:04"), h.LoadCount)
+				_, _ = fmt.Fprintf(a.Stdout, "  • %-20s (last seen %s, loaded %d times)\n", n, h.LastSeenAt.Format("2006-01-02 15:04"), h.LoadCount)
 			}
 		}
 

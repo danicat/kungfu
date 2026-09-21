@@ -25,12 +25,13 @@ import (
 	"time"
 
 	"github.com/danicat/kungfu/internal/catalog"
+	"github.com/danicat/kungfu/internal/config"
 	"github.com/danicat/kungfu/internal/state"
 )
 
 func (a *App) RunCatalog(args []string) int {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
-		fmt.Fprintln(a.Stdout, `USAGE:
+		_, _ = fmt.Fprintln(a.Stdout, `USAGE:
   kungfu catalog <subcommand> [flags] [arguments...]
 
 SUBCOMMANDS:
@@ -61,7 +62,7 @@ ALIASES:
 	case "sync", "refresh", "update":
 		return a.runCatalogSync(subArgs)
 	default:
-		fmt.Fprintf(a.Stderr, "error: unknown catalog subcommand %q. Run 'kungfu catalog --help' for usage.\n", subcmd)
+		_, _ = fmt.Fprintf(a.Stderr, "error: unknown catalog subcommand %q. Run 'kungfu catalog --help' for usage.\n", subcmd)
 		return ExitUsage
 	}
 }
@@ -89,7 +90,7 @@ func (a *App) runCatalogAdd(args []string) int {
 		return ExitUsage
 	}
 	if len(posArgs) == 0 {
-		fmt.Fprintln(a.Stderr, "error: catalog add requires a source (GitHub repository 'owner/repo', HTTP URL, or local directory)")
+		_, _ = fmt.Fprintln(a.Stderr, "error: catalog add requires a source (GitHub repository 'owner/repo', HTTP URL, or local directory)")
 		return ExitUsage
 	}
 
@@ -141,7 +142,7 @@ func (a *App) runCatalogAdd(args []string) int {
 		// 3. GitHub repository
 		target, ok := catalog.ParseGitHubTarget(source)
 		if !ok {
-			fmt.Fprintf(a.Stderr, "error: invalid catalog source %q. Expected GitHub repository (e.g. google/skills), HTTP URL, or local directory path.\n", source)
+			_, _ = fmt.Fprintf(a.Stderr, "error: invalid catalog source %q. Expected GitHub repository (e.g. google/skills), HTTP URL, or local directory path.\n", source)
 			return ExitUsage
 		}
 		if refFlag != "main" && refFlag != "" {
@@ -169,7 +170,7 @@ func (a *App) runCatalogAdd(args []string) int {
 	}
 
 	if manifest == nil || len(manifest.Items) == 0 {
-		fmt.Fprintf(a.Stderr, "error: no skills found in catalog %q\n", source)
+		_, _ = fmt.Fprintf(a.Stderr, "error: no skills found in catalog %q\n", source)
 		return ExitNotFound
 	}
 
@@ -220,12 +221,12 @@ func (a *App) runCatalogAdd(args []string) int {
 		_ = enc.Encode(res)
 		return ExitSuccess
 	case OutputModeRaw:
-		fmt.Fprintf(a.Stdout, "added\t%s\t%s\t%d\n", catName, catType, len(manifest.Items))
+		_, _ = fmt.Fprintf(a.Stdout, "added\t%s\t%s\t%d\n", catName, catType, len(manifest.Items))
 		return ExitSuccess
 	default:
-		fmt.Fprintf(a.Stdout, "✓ Added catalog %q (%s, %d skills indexed)\n", catName, catType, len(manifest.Items))
+		_, _ = fmt.Fprintf(a.Stdout, "✓ Added catalog %q (%s, %d skills indexed)\n", catName, catType, len(manifest.Items))
 		for _, it := range manifest.Items {
-			fmt.Fprintf(a.Stdout, "  • %-20s [%s] %s\n", it.Name, it.Category, it.Description)
+			_, _ = fmt.Fprintf(a.Stdout, "  • %-20s [%s] %s\n", it.Name, it.Category, it.Description)
 		}
 		return ExitSuccess
 	}
@@ -257,31 +258,43 @@ func (a *App) runCatalogList(args []string) int {
 
 	var views []CatalogView
 
-	// Default catalog
-	defSkills := 0
-	if all := a.Store.All(); len(all) > 0 {
-		for _, it := range all {
-			if it.Source == "remote" || it.Source == "" || strings.Contains(it.Source, "skills.danicat.dev") {
-				defSkills++
-			}
-		}
+	defaultURL := config.DefaultCatalogURL
+	if a.Config != nil && a.Config.GetCatalogURL("default") != "" {
+		defaultURL = a.Config.GetCatalogURL("default")
 	}
-	views = append(views, CatalogView{
-		Name:       "default",
-		Type:       state.CatalogTypeDefault,
-		Source:     "https://skills.danicat.dev/catalog.json",
-		URL:        "https://skills.danicat.dev/catalog.json",
-		SkillCount: defSkills,
-	})
 
 	for _, c := range registered {
+		src := c.Source
+		if src == "" {
+			src = c.URL
+		}
+		if c.Name == "default" {
+			src = defaultURL
+			// Count skills in default catalog
+			defSkills := 0
+			if all := a.Store.All(); len(all) > 0 {
+				for _, it := range all {
+					if it.Source == "remote" || it.Source == "" || strings.Contains(it.Source, "skills.danicat.dev") || it.Source == "default" {
+						defSkills++
+					}
+				}
+			}
+			if defSkills > 0 {
+				c.SkillCount = defSkills
+			}
+		}
+
+		upStr := ""
+		if !c.UpdatedAt.IsZero() {
+			upStr = c.UpdatedAt.Format("2006-01-02 15:04")
+		}
 		views = append(views, CatalogView{
 			Name:       c.Name,
 			Type:       c.Type,
-			Source:     c.Source,
+			Source:     src,
 			URL:        c.URL,
 			SkillCount: c.SkillCount,
-			UpdatedAt:  c.UpdatedAt.Format("2006-01-02 15:04"),
+			UpdatedAt:  upStr,
 		})
 	}
 
@@ -293,19 +306,19 @@ func (a *App) runCatalogList(args []string) int {
 		return ExitSuccess
 	case OutputModeRaw:
 		for _, v := range views {
-			fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%d\t%s\n", v.Name, v.Type, v.Source, v.SkillCount, v.UpdatedAt)
+			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%d\t%s\n", v.Name, v.Type, v.Source, v.SkillCount, v.UpdatedAt)
 		}
 		return ExitSuccess
 	default:
-		fmt.Fprintf(a.Stdout, "CONFIGURED CATALOGS (%d total):\n\n", len(views))
-		fmt.Fprintf(a.Stdout, "%-22s %-10s %-42s %-8s %s\n", "NAME", "TYPE", "SOURCE", "SKILLS", "UPDATED")
-		fmt.Fprintf(a.Stdout, "%-22s %-10s %-42s %-8s %s\n", "----------------------", "----------", "------------------------------------------", "--------", "-------------------")
+		_, _ = fmt.Fprintf(a.Stdout, "CONFIGURED CATALOGS (%d total):\n\n", len(views))
+		_, _ = fmt.Fprintf(a.Stdout, "%-22s %-10s %-42s %-8s %s\n", "NAME", "TYPE", "SOURCE", "SKILLS", "UPDATED")
+		_, _ = fmt.Fprintf(a.Stdout, "%-22s %-10s %-42s %-8s %s\n", "----------------------", "----------", "------------------------------------------", "--------", "-------------------")
 		for _, v := range views {
 			up := v.UpdatedAt
 			if up == "" {
 				up = "built-in"
 			}
-			fmt.Fprintf(a.Stdout, "%-22s %-10s %-42s %-8d %s\n", v.Name, v.Type, v.Source, v.SkillCount, up)
+			_, _ = fmt.Fprintf(a.Stdout, "%-22s %-10s %-42s %-8d %s\n", v.Name, v.Type, v.Source, v.SkillCount, up)
 		}
 		return ExitSuccess
 	}
@@ -323,7 +336,7 @@ func (a *App) runCatalogRemove(args []string) int {
 		return ExitUsage
 	}
 	if len(posArgs) == 0 {
-		fmt.Fprintln(a.Stderr, "error: catalog remove requires catalog name(s)")
+		_, _ = fmt.Fprintln(a.Stderr, "error: catalog remove requires catalog name(s)")
 		return ExitUsage
 	}
 
@@ -336,8 +349,10 @@ func (a *App) runCatalogRemove(args []string) int {
 	}
 
 	hasNotFound := false
+	hasError := false
 	for _, name := range posArgs {
 		if strings.EqualFold(name, "default") {
+			hasError = true
 			results = append(results, struct {
 				Name    string `json:"name"`
 				Status  string `json:"status"`
@@ -382,13 +397,19 @@ func (a *App) runCatalogRemove(args []string) int {
 		enc := json.NewEncoder(a.Stdout)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(results)
+		if hasError {
+			return ExitUsage
+		}
 		if hasNotFound {
 			return ExitNotFound
 		}
 		return ExitSuccess
 	case OutputModeRaw:
 		for _, r := range results {
-			fmt.Fprintf(a.Stdout, "%s\t%s\t%s\n", r.Status, r.Name, r.Message)
+			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\n", r.Status, r.Name, r.Message)
+		}
+		if hasError {
+			return ExitUsage
 		}
 		if hasNotFound {
 			return ExitNotFound
@@ -398,12 +419,15 @@ func (a *App) runCatalogRemove(args []string) int {
 		for _, r := range results {
 			switch r.Status {
 			case "removed":
-				fmt.Fprintf(a.Stdout, "✓ Removed catalog %q\n", r.Name)
+				_, _ = fmt.Fprintf(a.Stdout, "✓ Removed catalog %q\n", r.Name)
 			case "not_found":
-				fmt.Fprintf(a.Stderr, "⚠ Catalog %q not found.\n", r.Name)
+				_, _ = fmt.Fprintf(a.Stderr, "⚠ Catalog %q not found.\n", r.Name)
 			default:
-				fmt.Fprintf(a.Stderr, "✗ Failed to remove catalog %q: %s\n", r.Name, r.Message)
+				_, _ = fmt.Fprintf(a.Stderr, "✗ Failed to remove catalog %q: %s\n", r.Name, r.Message)
 			}
+		}
+		if hasError {
+			return ExitUsage
 		}
 		if hasNotFound {
 			return ExitNotFound
@@ -443,7 +467,7 @@ func (a *App) runCatalogSync(args []string) int {
 	}
 
 	if len(targets) == 0 && len(posArgs) > 0 {
-		fmt.Fprintf(a.Stderr, "error: none of the specified catalogs were found in registry\n")
+		_, _ = fmt.Fprintf(a.Stderr, "error: none of the specified catalogs were found in registry\n")
 		return ExitNotFound
 	}
 
@@ -465,6 +489,25 @@ func (a *App) runCatalogSync(args []string) int {
 		var err error
 
 		switch cat.Type {
+		case state.CatalogTypeDefault:
+			defaultURL := config.DefaultCatalogURL
+			if a.Config != nil && a.Config.GetCatalogURL("default") != "" {
+				defaultURL = a.Config.GetCatalogURL("default")
+			}
+			m, etag, err = catalog.FetchHTTPCatalog(ctx, defaultURL, a.getHTTPClient())
+			if err == nil && m != nil {
+				// Save to index.json cache
+				cachePath := catalog.GetCatalogCachePath()
+				if a.Options.CacheDir != "" {
+					cachePath = filepath.Join(a.Options.CacheDir, "index.json")
+				}
+				_ = catalog.SaveCachedCatalog(cachePath, defaultURL, *m, etag)
+				if syncer, ok := a.Store.(interface {
+					Sync(context.Context, bool) error
+				}); ok {
+					_ = syncer.Sync(ctx, true)
+				}
+			}
 		case state.CatalogTypeGitHub:
 			target, ok := catalog.ParseGitHubTarget(cat.Source)
 			if ok {
@@ -492,11 +535,13 @@ func (a *App) runCatalogSync(args []string) int {
 			continue
 		}
 
-		_ = catalog.SaveNamedCatalogCache(cat.Name, cat.URL, *m, etag)
+		if cat.Type != state.CatalogTypeDefault {
+			_ = catalog.SaveNamedCatalogCache(cat.Name, cat.URL, *m, etag)
+			a.Store.AddCatalogManifest(cat.Name, m)
+		}
 		cat.SkillCount = len(m.Items)
 		cat.UpdatedAt = time.Now().UTC()
 		st.AddCatalog(cat)
-		a.Store.AddCatalogManifest(cat.Name, m)
 
 		results = append(results, SyncResult{
 			Name:       cat.Name,
@@ -516,16 +561,16 @@ func (a *App) runCatalogSync(args []string) int {
 		return ExitSuccess
 	case OutputModeRaw:
 		for _, r := range results {
-			fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%d\n", r.Status, r.Name, r.Type, r.SkillCount)
+			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%d\n", r.Status, r.Name, r.Type, r.SkillCount)
 		}
 		return ExitSuccess
 	default:
-		fmt.Fprintf(a.Stdout, "Synchronized %d catalogs:\n", len(results))
+		_, _ = fmt.Fprintf(a.Stdout, "Synchronized %d catalogs:\n", len(results))
 		for _, r := range results {
 			if r.Status == "synced" {
-				fmt.Fprintf(a.Stdout, "  ✓ %-22s (%s, %d skills indexed)\n", r.Name, r.Type, r.SkillCount)
+				_, _ = fmt.Fprintf(a.Stdout, "  ✓ %-22s (%s, %d skills indexed)\n", r.Name, r.Type, r.SkillCount)
 			} else {
-				fmt.Fprintf(a.Stderr, "  ✗ %-22s (%s: %s)\n", r.Name, r.Type, r.Message)
+				_, _ = fmt.Fprintf(a.Stderr, "  ✗ %-22s (%s: %s)\n", r.Name, r.Type, r.Message)
 			}
 		}
 		return ExitSuccess

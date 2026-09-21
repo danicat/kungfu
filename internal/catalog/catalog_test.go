@@ -115,7 +115,7 @@ func TestCatalogStoreOperations(t *testing.T) {
 	data, _ := json.Marshal(manifest)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(data)
+		_, _ = w.Write(data)
 	}))
 	defer ts.Close()
 
@@ -273,7 +273,7 @@ func TestCatalog_LoadContent_Remote(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/markdown")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("---\nname: remote-skill\ndescription: remote\n---\n# Remote Content"))
+		_, _ = w.Write([]byte("---\nname: remote-skill\ndescription: remote\n---\n# Remote Content"))
 	}))
 	defer ts.Close()
 
@@ -351,7 +351,7 @@ func TestFetchWithRetry_SuccessAfterRetries(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("success-content"))
+		_, _ = w.Write([]byte("success-content"))
 	}))
 	defer ts.Close()
 
@@ -421,7 +421,7 @@ func TestCatalog_NewCatalog_RetryRecovery(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write(manifestData)
+		_, _ = w.Write(manifestData)
 	}))
 	defer ts.Close()
 

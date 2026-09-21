@@ -66,19 +66,19 @@ func (a *App) RunList(args []string) int {
 			return ExitSuccess
 		case OutputModeRaw:
 			for _, cat := range categories {
-				fmt.Fprintf(a.Stdout, "%s\t%d\t%s\n", cat.ID, cat.Count, cat.Description)
+				_, _ = fmt.Fprintf(a.Stdout, "%s\t%d\t%s\n", cat.ID, cat.Count, cat.Description)
 			}
 			return ExitSuccess
 		default: // OutputModeHuman
-			fmt.Fprintln(a.Stdout, "AVAILABLE SKILL CATEGORIES:")
-			fmt.Fprintln(a.Stdout)
-			fmt.Fprintf(a.Stdout, "%-16s %-8s %s\n", "CATEGORY", "COUNT", "DESCRIPTION")
-			fmt.Fprintf(a.Stdout, "%-16s %-8s %s\n", "----------------", "--------", "--------------------------------------------------")
+			_, _ = fmt.Fprintln(a.Stdout, "AVAILABLE SKILL CATEGORIES:")
+			_, _ = fmt.Fprintln(a.Stdout)
+			_, _ = fmt.Fprintf(a.Stdout, "%-16s %-8s %s\n", "CATEGORY", "COUNT", "DESCRIPTION")
+			_, _ = fmt.Fprintf(a.Stdout, "%-16s %-8s %s\n", "----------------", "--------", "--------------------------------------------------")
 			for _, cat := range categories {
-				fmt.Fprintf(a.Stdout, "%-16s %-8d %s\n", cat.ID, cat.Count, cat.Description)
+				_, _ = fmt.Fprintf(a.Stdout, "%-16s %-8d %s\n", cat.ID, cat.Count, cat.Description)
 			}
-			fmt.Fprintln(a.Stdout)
-			fmt.Fprintln(a.Stdout, "Use 'kungfu list <category>' or 'kungfu list --all' to inspect skills.")
+			_, _ = fmt.Fprintln(a.Stdout)
+			_, _ = fmt.Fprintln(a.Stdout, "Use 'kungfu list <category>' or 'kungfu list --all' to inspect skills.")
 			return ExitSuccess
 		}
 	}
@@ -91,7 +91,7 @@ func (a *App) RunList(args []string) int {
 
 	if len(items) == 0 {
 		if mode == OutputModeJSON {
-			fmt.Fprintln(a.Stdout, "[]")
+			_, _ = fmt.Fprintln(a.Stdout, "[]")
 			return ExitSuccess
 		}
 		if mode == OutputModeRaw {
@@ -137,7 +137,7 @@ func (a *App) RunList(args []string) int {
 	case OutputModeRaw:
 		for _, l := range listings {
 			tagsStr := strings.Join(l.Tags, ",")
-			fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%s\n", l.Name, l.Category, l.Status, tagsStr, l.Description)
+			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%s\n", l.Name, l.Category, l.Status, tagsStr, l.Description)
 		}
 		return ExitSuccess
 	default: // OutputModeHuman
@@ -148,16 +148,16 @@ func (a *App) RunList(args []string) int {
 		if tagQuery != "" {
 			title += fmt.Sprintf(" (tags: %s)", tagQuery)
 		}
-		fmt.Fprintf(a.Stdout, "%s (%d total):\n\n", title, len(listings))
-		fmt.Fprintf(a.Stdout, "%-22s %-14s %-12s %s\n", "NAME", "CATEGORY", "STATUS", "DESCRIPTION")
-		fmt.Fprintf(a.Stdout, "%-22s %-14s %-12s %s\n", "----------------------", "--------------", "------------", "--------------------------------------------------")
+		_, _ = fmt.Fprintf(a.Stdout, "%s (%d total):\n\n", title, len(listings))
+		_, _ = fmt.Fprintf(a.Stdout, "%-22s %-14s %-12s %s\n", "NAME", "CATEGORY", "STATUS", "DESCRIPTION")
+		_, _ = fmt.Fprintf(a.Stdout, "%-22s %-14s %-12s %s\n", "----------------------", "--------------", "------------", "--------------------------------------------------")
 		for _, l := range listings {
 			statusBadge := "[" + l.Status + "]"
 			desc := l.Description
 			if len(desc) > 60 {
 				desc = desc[:57] + "..."
 			}
-			fmt.Fprintf(a.Stdout, "%-22s %-14s %-12s %s\n", l.Name, l.Category, statusBadge, desc)
+			_, _ = fmt.Fprintf(a.Stdout, "%-22s %-14s %-12s %s\n", l.Name, l.Category, statusBadge, desc)
 		}
 		return ExitSuccess
 	}

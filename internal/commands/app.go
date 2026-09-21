@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/danicat/kungfu/internal/catalog"
+	"github.com/danicat/kungfu/internal/config"
 	"github.com/danicat/kungfu/internal/runner"
 	"github.com/danicat/kungfu/internal/search"
 	"github.com/danicat/kungfu/internal/state"
@@ -103,6 +104,7 @@ type App struct {
 	Options    GlobalOptions
 	HTTPClient *http.Client
 	EmbeddedFS fs.FS
+	Config     *config.Config
 }
 
 func (a *App) getHTTPClient() *http.Client {
@@ -120,10 +122,23 @@ func NewApp(opts GlobalOptions, stdout, stderr io.Writer, embeddedFS fs.FS) (*Ap
 		stderr = os.Stderr
 	}
 
-	cat, err := catalog.NewCatalog(
+	cfg, err := config.Load(opts.Config)
+	if err != nil {
+		cfg = config.DefaultConfig()
+	}
+
+	catOpts := []catalog.Option{
 		catalog.WithEmbeddedFS(embeddedFS),
 		catalog.WithLocalDiscovery(true),
-	)
+	}
+	if defURL := cfg.GetCatalogURL("default"); defURL != "" && defURL != config.DefaultCatalogURL {
+		catOpts = append(catOpts, catalog.WithRemoteURL(defURL))
+	}
+	if opts.CacheDir != "" {
+		catOpts = append(catOpts, catalog.WithCacheDir(opts.CacheDir))
+	}
+
+	cat, err := catalog.NewCatalog(catOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("initializing catalog: %w", err)
 	}
@@ -137,6 +152,7 @@ func NewApp(opts GlobalOptions, stdout, stderr io.Writer, embeddedFS fs.FS) (*Ap
 		Options:    opts,
 		HTTPClient: &http.Client{Timeout: 30 * time.Second},
 		EmbeddedFS: embeddedFS,
+		Config:     cfg,
 	}, nil
 }
 
@@ -147,7 +163,7 @@ func (a *App) loadState() *state.State {
 		if data, rerr := os.ReadFile(path); rerr == nil && len(data) > 0 {
 			backupPath := fmt.Sprintf("%s.corrupted.%d", path, time.Now().Unix())
 			_ = os.WriteFile(backupPath, data, 0644)
-			fmt.Fprintf(a.Stderr, "warning: state file corrupted; backed up to %s\n", backupPath)
+			_, _ = fmt.Fprintf(a.Stderr, "warning: state file corrupted; backed up to %s\n", backupPath)
 		}
 		s = state.NewState()
 	}
@@ -229,12 +245,12 @@ func (a *App) resolveMode(jsonFlag, rawFlag bool) OutputMode {
 
 func (a *App) logError(format string, args ...any) {
 	if a.Options.Verbose {
-		fmt.Fprintf(a.Stderr, "error: "+format+"\n", args...)
+		_, _ = fmt.Fprintf(a.Stderr, "error: "+format+"\n", args...)
 	}
 }
 
 func (a *App) printNotFoundWithSuggestions(cmd, query string) {
-	fmt.Fprintf(a.Stderr, "error: skill %q not found.\n", query)
+	_, _ = fmt.Fprintf(a.Stderr, "error: skill %q not found.\n", query)
 
 	var suggestions []string
 
@@ -282,22 +298,22 @@ func (a *App) printNotFoundWithSuggestions(cmd, query string) {
 	}
 
 	if len(suggestions) > 0 {
-		fmt.Fprintln(a.Stderr, "\nDid you mean:")
+		_, _ = fmt.Fprintln(a.Stderr, "\nDid you mean:")
 		for _, sug := range suggestions {
-			fmt.Fprintln(a.Stderr, sug)
+			_, _ = fmt.Fprintln(a.Stderr, sug)
 		}
 	} else {
-		fmt.Fprintln(a.Stderr, "\nRun 'kungfu find <term>' to search for relevant skills across descriptions and keywords.")
+		_, _ = fmt.Fprintln(a.Stderr, "\nRun 'kungfu find <term>' to search for relevant skills across descriptions and keywords.")
 	}
 }
 
 func (a *App) printFilterNotFoundWithSuggestions(cmd, category, tagQuery string) {
 	if category != "" && tagQuery != "" {
-		fmt.Fprintf(a.Stderr, "error: no skills found matching category %q and tags %q\n", category, tagQuery)
+		_, _ = fmt.Fprintf(a.Stderr, "error: no skills found matching category %q and tags %q\n", category, tagQuery)
 	} else if category != "" {
-		fmt.Fprintf(a.Stderr, "error: no skills found matching category %q\n", category)
+		_, _ = fmt.Fprintf(a.Stderr, "error: no skills found matching category %q\n", category)
 	} else if tagQuery != "" {
-		fmt.Fprintf(a.Stderr, "error: no skills found matching tags %q\n", tagQuery)
+		_, _ = fmt.Fprintf(a.Stderr, "error: no skills found matching tags %q\n", tagQuery)
 	}
 
 	var suggestions []string
@@ -361,12 +377,12 @@ func (a *App) printFilterNotFoundWithSuggestions(cmd, category, tagQuery string)
 	}
 
 	if len(suggestions) > 0 {
-		fmt.Fprintln(a.Stderr, "\nDid you mean:")
+		_, _ = fmt.Fprintln(a.Stderr, "\nDid you mean:")
 		for _, sug := range suggestions {
-			fmt.Fprintln(a.Stderr, sug)
+			_, _ = fmt.Fprintln(a.Stderr, sug)
 		}
 	} else {
-		fmt.Fprintln(a.Stderr, "\nRun 'kungfu list' to see all available skills and categories.")
+		_, _ = fmt.Fprintln(a.Stderr, "\nRun 'kungfu list' to see all available skills and categories.")
 	}
 }
 
@@ -475,7 +491,7 @@ func Run(args []string, stdout, stderr io.Writer, embeddedFS fs.FS) int {
 	}
 
 	if showVersion || cmdName == "version" {
-		fmt.Fprintf(stdout, "kungfu version %s\n", version.Get())
+		_, _ = fmt.Fprintf(stdout, "kungfu version %s\n", version.Get())
 		return ExitSuccess
 	}
 
@@ -495,7 +511,7 @@ func Run(args []string, stdout, stderr io.Writer, embeddedFS fs.FS) int {
 
 	app, err := NewApp(opts, stdout, stderr, embeddedFS)
 	if err != nil {
-		fmt.Fprintf(stderr, "error: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 		return MapErrorToExitCode(err)
 	}
 
@@ -524,21 +540,21 @@ func Run(args []string, stdout, stderr io.Writer, embeddedFS fs.FS) int {
 		validCommands := []string{
 			"list", "find", "show", "load", "learn", "forget", "update", "status", "catalog", "run", "version", "help",
 		}
-		fmt.Fprintf(stderr, "error: unknown command %q.\n", cmdName)
+		_, _ = fmt.Fprintf(stderr, "error: unknown command %q.\n", cmdName)
 		suggs := search.Suggest(cmdName, validCommands, 2)
 		if len(suggs) > 0 {
-			fmt.Fprintln(stderr, "\nDid you mean:")
+			_, _ = fmt.Fprintln(stderr, "\nDid you mean:")
 			for _, s := range suggs {
-				fmt.Fprintf(stderr, "  - kungfu %s\n", s)
+				_, _ = fmt.Fprintf(stderr, "  - kungfu %s\n", s)
 			}
 		}
-		fmt.Fprintln(stderr, "\nRun 'kungfu --help' for available commands and usage.")
+		_, _ = fmt.Fprintln(stderr, "\nRun 'kungfu --help' for available commands and usage.")
 		return ExitUsage
 	}
 }
 
 func PrintGlobalHelp(w io.Writer) {
-	fmt.Fprintln(w, `kungfu - Agent Skills Gateway
+	_, _ = fmt.Fprintln(w, `kungfu - Agent Skills Gateway
 
 USAGE:
   kungfu [global flags] <command> [flags] [arguments...]

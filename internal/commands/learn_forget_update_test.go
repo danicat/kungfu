@@ -46,6 +46,9 @@ func TestRunLearnAndForget(t *testing.T) {
 	if !strings.Contains(stdout.String(), "Learned skill \"kungfu\"") {
 		t.Errorf("expected learned confirmation, got: %s", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "🕶️  \"I know kungfu.\"") {
+		t.Errorf("expected Neo easter egg in stdout, got: %s", stdout.String())
+	}
 
 	// Verify file exists on disk
 	installedMD := filepath.Join(tmpDir, ".agents", "skills", "kungfu", "SKILL.md")

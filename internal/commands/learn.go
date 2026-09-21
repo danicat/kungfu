@@ -78,7 +78,7 @@ func (a *App) RunLearn(args []string) int {
 		})
 		if len(items) == 0 {
 			if mode == OutputModeJSON {
-				fmt.Fprintln(a.Stdout, "[]")
+				_, _ = fmt.Fprintln(a.Stdout, "[]")
 				return ExitSuccess
 			}
 			if mode == OutputModeRaw {
@@ -93,7 +93,7 @@ func (a *App) RunLearn(args []string) int {
 		itemsToInstall = items
 	} else {
 		if len(posArgs) == 0 {
-			fmt.Fprintln(a.Stderr, "error: learn requires at least one skill name or repository (e.g. 'github:owner/repo'), or use --all / -c / -t")
+			_, _ = fmt.Fprintln(a.Stderr, "error: learn requires at least one skill name or repository (e.g. 'github:owner/repo'), or use --all / -c / -t")
 			return ExitUsage
 		}
 
@@ -101,14 +101,14 @@ func (a *App) RunLearn(args []string) int {
 			if strings.HasPrefix(spec, "github:") || strings.Contains(spec, "github.com") || (strings.Count(spec, "/") == 1 && !strings.HasPrefix(spec, ".") && !strings.HasPrefix(spec, "/")) {
 				target, ok := catalog.ParseGitHubTarget(spec)
 				if !ok {
-					fmt.Fprintf(a.Stderr, "error: invalid github skill target %q\n", spec)
+					_, _ = fmt.Fprintf(a.Stderr, "error: invalid github skill target %q\n", spec)
 					return ExitUsage
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				item, err := catalog.FetchGitHubSkill(ctx, target, a.getHTTPClient())
 				cancel()
 				if err != nil {
-					fmt.Fprintf(a.Stderr, "error: fetching skill from github %q: %v\n", spec, err)
+					_, _ = fmt.Fprintf(a.Stderr, "error: fetching skill from github %q: %v\n", spec, err)
 					return MapErrorToExitCode(err)
 				}
 				itemsToInstall = append(itemsToInstall, *item)
@@ -263,33 +263,34 @@ func (a *App) RunLearn(args []string) int {
 	case OutputModeRaw:
 		for _, r := range results {
 			if r.Status == "installed" {
-				fmt.Fprintf(a.Stdout, "installed\t%s\t%s\t%s\t%d\n", r.Name, r.Version, r.Path, len(r.Files))
+				_, _ = fmt.Fprintf(a.Stdout, "installed\t%s\t%s\t%s\t%d\n", r.Name, r.Version, r.Path, len(r.Files))
 				if loadFlag && r.Content != "" {
-					fmt.Fprint(a.Stdout, r.Content)
+					_, _ = fmt.Fprint(a.Stdout, r.Content)
 					if !strings.HasSuffix(r.Content, "\n") {
-						fmt.Fprintln(a.Stdout)
+						_, _ = fmt.Fprintln(a.Stdout)
 					}
 				}
 			} else {
-				fmt.Fprintf(a.Stdout, "%s\t%s\t%s\n", r.Status, r.Name, r.Message)
+				_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\n", r.Status, r.Name, r.Message)
 			}
 		}
 	default: // OutputModeHuman
 		for _, r := range results {
 			switch r.Status {
 			case "installed":
-				fmt.Fprintf(a.Stdout, "✓ Learned skill %q into %s scope (%d files in %s)\n", r.Name, scope, len(r.Files), r.Path)
+				_, _ = fmt.Fprintf(a.Stdout, "✓ Learned skill %q into %s scope (%d files in %s)\n", r.Name, scope, len(r.Files), r.Path)
+				_, _ = fmt.Fprintf(a.Stdout, "🕶️  \"I know %s.\"\n", r.Name)
 				if loadFlag && r.Content != "" {
-					fmt.Fprintln(a.Stdout, "\n--- Skill Content ---")
-					fmt.Fprint(a.Stdout, r.Content)
+					_, _ = fmt.Fprintln(a.Stdout, "\n--- Skill Content ---")
+					_, _ = fmt.Fprint(a.Stdout, r.Content)
 					if !strings.HasSuffix(r.Content, "\n") {
-						fmt.Fprintln(a.Stdout)
+						_, _ = fmt.Fprintln(a.Stdout)
 					}
 				}
 			case "already_installed":
-				fmt.Fprintf(a.Stderr, "• %s\n", r.Message)
+				_, _ = fmt.Fprintf(a.Stderr, "• %s\n", r.Message)
 			default:
-				fmt.Fprintf(a.Stderr, "✗ Failed to learn skill %q: %s\n", r.Name, r.Message)
+				_, _ = fmt.Fprintf(a.Stderr, "✗ Failed to learn skill %q: %s\n", r.Name, r.Message)
 			}
 		}
 	}

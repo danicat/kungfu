@@ -66,7 +66,7 @@ func (a *App) RunForget(args []string) int {
 	} else if len(posArgs) > 0 {
 		targets = posArgs
 	} else {
-		fmt.Fprintln(a.Stderr, "error: forget requires skill name(s) or --all")
+		_, _ = fmt.Fprintln(a.Stderr, "error: forget requires skill name(s) or --all")
 		return ExitUsage
 	}
 
@@ -133,9 +133,9 @@ func (a *App) RunForget(args []string) int {
 	case OutputModeRaw:
 		for _, r := range results {
 			if r.Status == "forgotten" {
-				fmt.Fprintf(a.Stdout, "forgot\t%s\t%s\n", r.Name, r.Path)
+				_, _ = fmt.Fprintf(a.Stdout, "forgot\t%s\t%s\n", r.Name, r.Path)
 			} else {
-				fmt.Fprintf(a.Stdout, "%s\t%s\t%s\n", r.Status, r.Name, r.Message)
+				_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\n", r.Status, r.Name, r.Message)
 			}
 		}
 	default: // OutputModeHuman
@@ -143,23 +143,23 @@ func (a *App) RunForget(args []string) int {
 			switch r.Status {
 			case "forgotten":
 				if len(r.Files) > 0 {
-					fmt.Fprintf(a.Stdout, "✓ Forgot skill %q (removed %d files from %s)\n", r.Name, len(r.Files), r.Path)
+					_, _ = fmt.Fprintf(a.Stdout, "✓ Forgot skill %q (removed %d files from %s)\n", r.Name, len(r.Files), r.Path)
 				} else {
-					fmt.Fprintf(a.Stdout, "✓ Forgot skill %q\n", r.Name)
+					_, _ = fmt.Fprintf(a.Stdout, "✓ Forgot skill %q\n", r.Name)
 				}
 			case "not_found":
-				fmt.Fprintf(a.Stderr, "⚠ Skill %q is not installed in %s scope.\n", r.Name, scope)
+				_, _ = fmt.Fprintf(a.Stderr, "⚠ Skill %q is not installed in %s scope.\n", r.Name, scope)
 				if len(installedNames) > 0 {
 					suggs := search.Suggest(r.Name, installedNames, 3)
 					if len(suggs) > 0 {
-						fmt.Fprintln(a.Stderr, "\nDid you mean:")
+						_, _ = fmt.Fprintln(a.Stderr, "\nDid you mean:")
 						for _, s := range suggs {
-							fmt.Fprintf(a.Stderr, "  - kungfu forget %s\n", s)
+							_, _ = fmt.Fprintf(a.Stderr, "  - kungfu forget %s\n", s)
 						}
 					}
 				}
 			default:
-				fmt.Fprintf(a.Stderr, "✗ Failed to forget skill %q: %s\n", r.Name, r.Message)
+				_, _ = fmt.Fprintf(a.Stderr, "✗ Failed to forget skill %q: %s\n", r.Name, r.Message)
 			}
 		}
 	}
