@@ -279,7 +279,6 @@ func (a *App) RunLearn(args []string) int {
 			switch r.Status {
 			case "installed":
 				_, _ = fmt.Fprintf(a.Stdout, "✓ Learned skill %q into %s scope (%d files in %s)\n", r.Name, scope, len(r.Files), r.Path)
-				_, _ = fmt.Fprintf(a.Stdout, "🕶️  \"I know %s.\"\n", r.Name)
 				if loadFlag && r.Content != "" {
 					_, _ = fmt.Fprintln(a.Stdout, "\n--- Skill Content ---")
 					_, _ = fmt.Fprint(a.Stdout, r.Content)

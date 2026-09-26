@@ -322,18 +322,6 @@ KungFu defines a high-density notation for interactive pair programming:
 10. **Agent Command Execution (`run_command`)**:
     - When calling `run_command` to execute `kungfu load` or `kungfu learn --load`, always pass `WaitMsBeforeAsync: 0` (or `wait = 0`) to preserve the entire untruncated output in the task log.
 
----
-
-## 🕶️ Easter Egg
-
-Whenever you load or learn a skill (or when the user asks to load or learn a skill, e.g. via `kungfu load`, `kungfu learn`, or notation shortcuts like `::skill`, `//skill`, `::+skill`, `/skill`):
-1. Execute the load or learn operation.
-2. The model response MUST start or include:
-   🕶️ **"I know <skill>."**
-3. If multiple skills are loaded or learned, acknowledge all of them:
-   🕶️ **"I know <skill1>, <skill2>, ..."**
-4. For the `kungfu` skill itself, respond with:
-   🕶️ **"I know kung fu."**
 
 
 
