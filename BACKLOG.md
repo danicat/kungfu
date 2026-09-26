@@ -9,18 +9,7 @@ This backlog tracks prioritized architectural enhancements, feature requests, an
 - [x] **User Configuration System (`~/.config/kungfu/config.yaml`)**: Added structured configuration (`internal/config`) supporting custom default catalog URLs and `load.auto_update` policy.
 - [x] **Default Catalog Tracking in State & Unified Sync**: Registered default catalog into state with clean unified `kungfu catalog sync` across all catalogs (including `default`).
 - [x] **Resilient JIT Loading & Refresh Modes**: Enhanced `kungfu load` with `--local`, `-u`/`--update`, and `-f`/`--force` flags, supporting two-phase upstream drift detection and graceful offline cache fallback.
-- [x] **Neo Easter Egg**: Output `🕶️  "I know <skill-name>."` upon successful skill installation via `kungfu learn`.
-- [x] **Catalog Decoupling**: Decoupled embedded fallback catalog from overriding live or cached catalog items.
-- [x] **Standard Notation Dialect**: Formalized pair-programming notation shortcuts (`::skill`, `::skill@catalog`, `::skill:category`, `:::category`, `::*skill`, `::+skill`, `::-skill`, `::skill!script`, `::?`, `::@`, `::^`) in `SKILL.md` and documentation.
-
----
-
-## ✅ Completed (v0.4.0)
-
-- [x] **User Configuration System (`~/.config/kungfu/config.yaml`)**: Added structured configuration (`internal/config`) supporting custom default catalog URLs and `load.auto_update` policy.
-- [x] **Default Catalog Tracking in State & Unified Sync**: Registered default catalog into state with clean unified `kungfu catalog sync` across all catalogs (including `default`).
-- [x] **Resilient JIT Loading & Refresh Modes**: Enhanced `kungfu load` with `--local`, `-u`/`--update`, and `-f`/`--force` flags, supporting two-phase upstream drift detection and graceful offline cache fallback.
-- [x] **Neo Easter Egg**: Output `🕶️  "I know <skill-name>."` upon successful skill installation via `kungfu learn`.
+- [x] **Neo Easter Egg**: Model response outputs `🕶️ "I know <skill>."` whenever loading or learning a skill (and CLI outputs it upon successful installation via `kungfu learn`).
 - [x] **Catalog Decoupling**: Decoupled embedded fallback catalog from overriding live or cached catalog items.
 - [x] **Standard Notation Dialect**: Formalized pair-programming notation shortcuts (`::skill`, `::skill@catalog`, `::skill:category`, `:::category`, `::*skill`, `::+skill`, `::-skill`, `::skill!script`, `::?`, `::@`, `::^`) in `SKILL.md` and documentation.
 

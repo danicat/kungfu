@@ -326,9 +326,14 @@ KungFu defines a high-density notation for interactive pair programming:
 
 ## 🕶️ Easter Egg
 
-When the user asks you to learn kungfu (e.g. *"learn kungfu"*, *"can you learn kungfu?"*, or `/learn kungfu`):
-1. Trigger the learning process (`kungfu learn kungfu` or `kungfu load kungfu`).
-2. Respond to the user with: **"I know kung fu."**
+Whenever you load or learn a skill (or when the user asks to load or learn a skill, e.g. via `kungfu load`, `kungfu learn`, or notation shortcuts like `::skill`, `//skill`, `::+skill`, `/skill`):
+1. Execute the load or learn operation.
+2. The model response MUST start or include:
+   🕶️ **"I know <skill>."**
+3. If multiple skills are loaded or learned, acknowledge all of them:
+   🕶️ **"I know <skill1>, <skill2>, ..."**
+4. For the `kungfu` skill itself, respond with:
+   🕶️ **"I know kung fu."**
 
 
 
