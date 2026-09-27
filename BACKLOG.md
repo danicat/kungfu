@@ -10,7 +10,8 @@ This backlog tracks prioritized architectural enhancements, feature requests, an
 - [x] **Default Catalog Tracking in State & Unified Sync**: Registered default catalog into state with clean unified `kungfu catalog sync` across all catalogs (including `default`).
 - [x] **Resilient JIT Loading & Refresh Modes**: Enhanced `kungfu load` with `--local`, `-u`/`--update`, and `-f`/`--force` flags, supporting two-phase upstream drift detection and graceful offline cache fallback.
 - [x] **Catalog Decoupling**: Decoupled embedded fallback catalog from overriding live or cached catalog items.
-- [x] **Standard Notation Dialect**: Formalized pair-programming notation shortcuts (`::skill`, `::skill@catalog`, `::skill:category`, `:::category`, `::*skill`, `::+skill`, `::-skill`, `::skill!script`, `::?`, `::@`, `::^`) in `SKILL.md` and documentation.
+- [x] **CLI Simplification & Uno-Reversal**: Removed category filter flags across commands, collapsed `kungfu list` hierarchy to display skills directly, pruned search strategy/threshold flags, removed boolean tag query DSL in favor of keyword ranking, and eliminated redundant `--no-strip` and mass `--all` flags on `load`/`learn`.
+- [x] **Streamlined Skill Architecture & Inverted Pyramid**: Restructured `SKILL.md` following high-value JIT workflows (Overview → Search → Load → Reference → Run Script → Shortcut Language → Utilities) with `@catalog` notation support.
 
 ---
 
