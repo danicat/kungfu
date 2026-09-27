@@ -265,36 +265,8 @@ func (a *App) printNotFoundWithSuggestions(cmd, query string) {
 		suggestions = append(suggestions, fmt.Sprintf("  - kungfu %s %s", cmd, s))
 	}
 
-	// 2. Exact or fuzzy match against categories
-	categories := a.Store.Categories()
-	var catCandidates []string
-	for _, cat := range categories {
-		if cat.ID != "" {
-			catCandidates = append(catCandidates, cat.ID)
-		}
-		if cat.Name != "" && !strings.EqualFold(cat.Name, cat.ID) {
-			catCandidates = append(catCandidates, cat.Name)
-		}
-	}
-	catMatches := a.Store.ListByFilter(catalog.QueryFilter{Category: query})
-	if len(catMatches) > 0 {
-		suggestions = append(suggestions, fmt.Sprintf("  - kungfu %s --category %s (%d matching skills)", cmd, query, len(catMatches)))
-	} else {
-		fuzzyCats := search.Suggest(query, catCandidates, 2)
-		for _, fc := range fuzzyCats {
-			items := a.Store.ListByFilter(catalog.QueryFilter{Category: fc})
-			if len(items) > 0 {
-				suggestions = append(suggestions, fmt.Sprintf("  - kungfu %s --category %s (%d matching skills)", cmd, fc, len(items)))
-			} else {
-				suggestions = append(suggestions, fmt.Sprintf("  - kungfu %s --category %s", cmd, fc))
-			}
-		}
-	}
-
-	// 3. Exact or fuzzy match against tags
-	tagMatches := a.Store.ListByFilter(catalog.QueryFilter{TagQuery: query})
-	if len(tagMatches) > 0 {
-		suggestions = append(suggestions, fmt.Sprintf("  - kungfu %s --tags %s (%d matching skills)", cmd, query, len(tagMatches)))
+	if cmd != "find" {
+		suggestions = append(suggestions, fmt.Sprintf("  - kungfu find %s", query))
 	}
 
 	if len(suggestions) > 0 {
@@ -307,84 +279,7 @@ func (a *App) printNotFoundWithSuggestions(cmd, query string) {
 	}
 }
 
-func (a *App) printFilterNotFoundWithSuggestions(cmd, category, tagQuery string) {
-	if category != "" && tagQuery != "" {
-		_, _ = fmt.Fprintf(a.Stderr, "error: no skills found matching category %q and tags %q\n", category, tagQuery)
-	} else if category != "" {
-		_, _ = fmt.Fprintf(a.Stderr, "error: no skills found matching category %q\n", category)
-	} else if tagQuery != "" {
-		_, _ = fmt.Fprintf(a.Stderr, "error: no skills found matching tags %q\n", tagQuery)
-	}
 
-	var suggestions []string
-
-	if category != "" {
-		categories := a.Store.Categories()
-		var catCandidates []string
-		for _, cat := range categories {
-			if cat.ID != "" {
-				catCandidates = append(catCandidates, cat.ID)
-			}
-			if cat.Name != "" && !strings.EqualFold(cat.Name, cat.ID) {
-				catCandidates = append(catCandidates, cat.Name)
-			}
-		}
-		fuzzyCats := search.Suggest(category, catCandidates, 3)
-		for _, fc := range fuzzyCats {
-			items := a.Store.ListByFilter(catalog.QueryFilter{Category: fc})
-			if len(items) > 0 {
-				suggestions = append(suggestions, fmt.Sprintf("  - kungfu %s --category %s (%d matching skills)", cmd, fc, len(items)))
-			} else {
-				suggestions = append(suggestions, fmt.Sprintf("  - kungfu %s --category %s", cmd, fc))
-			}
-		}
-
-		if item, err := a.Store.Get(category); err == nil && item != nil {
-			suggestions = append(suggestions, fmt.Sprintf("  - kungfu %s %s (is a skill name, not a category)", cmd, item.Name))
-		} else {
-			allItems := a.Store.All()
-			var skillNames []string
-			for _, it := range allItems {
-				skillNames = append(skillNames, it.Name)
-			}
-			fuzzySkills := search.Suggest(category, skillNames, 2)
-			for _, fs := range fuzzySkills {
-				suggestions = append(suggestions, fmt.Sprintf("  - kungfu %s %s", cmd, fs))
-			}
-		}
-	}
-
-	if tagQuery != "" {
-		allItems := a.Store.All()
-		var allTags []string
-		tagSet := make(map[string]struct{})
-		for _, it := range allItems {
-			for _, t := range it.Tags {
-				tLower := strings.ToLower(t)
-				if _, exists := tagSet[tLower]; !exists {
-					tagSet[tLower] = struct{}{}
-					allTags = append(allTags, tLower)
-				}
-			}
-		}
-		fuzzyTags := search.Suggest(tagQuery, allTags, 3)
-		for _, ft := range fuzzyTags {
-			items := a.Store.ListByFilter(catalog.QueryFilter{TagQuery: ft})
-			if len(items) > 0 {
-				suggestions = append(suggestions, fmt.Sprintf("  - kungfu %s --tags %s (%d matching skills)", cmd, ft, len(items)))
-			}
-		}
-	}
-
-	if len(suggestions) > 0 {
-		_, _ = fmt.Fprintln(a.Stderr, "\nDid you mean:")
-		for _, sug := range suggestions {
-			_, _ = fmt.Fprintln(a.Stderr, sug)
-		}
-	} else {
-		_, _ = fmt.Fprintln(a.Stderr, "\nRun 'kungfu list' to see all available skills and categories.")
-	}
-}
 
 func (a *App) getSkillStatus(item *catalog.Item) string {
 	wd, _ := os.Getwd()
@@ -560,15 +455,15 @@ USAGE:
   kungfu [global flags] <command> [flags] [arguments...]
 
 COMMANDS:
-  list    [--category <cat>] [--tags <expr>] [--all] [--json] [--raw]
-          List available skill categories and items.
-  find    <keywords...> [--category <cat>] [--tags <expr>] [--strategy hybrid|bm25|tfidf|exact] [--limit <n>] [--threshold <t>] [--json] [--raw]
-          Search skills with pure Go BM25/TF-IDF/Hybrid ranking.
-  show    <skill1> [skill2...] [--category <cat>] [--tags <expr>] [--all] [--json] [--raw]
+  list    [--json] [--raw]
+          List available skills.
+  find    <keywords...> [--limit <n>] [--json] [--raw]
+          Search skills with hybrid BM25/TF-IDF ranking.
+  show    <skill1> [skill2...] [--json] [--raw]
           Display metadata, description, tags, and summary for one or more skills.
-  load    <skill1[/subpath]> [skill2...] [--category <cat>] [--tags <expr>] [--all] [--json] [--raw]
+  load    <skill1[/subpath]> [skill2...] [--local] [--update] [--force] [--json] [--raw]
           Load verbatim markdown instructions or subpath files (references, scripts, assets) for JIT execution.
-  learn   <skill1> [skill2...] [--global] [--force] [--load] [--category <cat>] [--tags <expr>] [--all] [--json] [--raw]
+  learn   <skill1> [skill2...] [--global] [--force] [--load] [--json] [--raw]
           Install and persist skills to canonical workspace or global locations (optionally stream with --load).
   forget  <skill1> [skill2...] [--global] [--force] [--all] [--json] [--raw]
           Uninstall and soft-delete skills from workspace or global locations.
@@ -576,7 +471,7 @@ COMMANDS:
           Check for updates (dry-run without args) or apply updates to installed skills.
   catalog <add|list|remove|sync> [source] [flags]
           Manage external skill catalogs (GitHub repositories, HTTP manifests, local directories).
-  status  [skill1...] [--category <cat>] [--tags <expr>] [--global] [--json] [--raw]
+  status  [skill1...] [--global] [--json] [--raw]
           Show installed skills, workspace paths, versions, forgotten skills, and JIT load history.
   version
           Display kungfu version.
@@ -597,7 +492,7 @@ EXIT CODES:
   0: Success
   1: General error
   2: Usage error / Invalid arguments
-  3: Item or category not found
+  3: Item not found
   4: Network error
   5: Integrity error (digest mismatch)`)
 }

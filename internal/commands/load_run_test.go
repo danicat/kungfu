@@ -36,9 +36,7 @@ func TestRunLoad(t *testing.T) {
 		{"load embedded kungfu with --local", []string{"load", "kungfu", "--local"}, ExitSuccess, "# KungFu: Agent Skills Gateway"},
 		{"load embedded kungfu with -u", []string{"load", "kungfu", "-u"}, ExitSuccess, "# KungFu: Agent Skills Gateway"},
 		{"load embedded kungfu with -f", []string{"load", "kungfu", "-f"}, ExitSuccess, "# KungFu: Agent Skills Gateway"},
-		{"load by category flag", []string{"load", "-c", "agents"}, ExitSuccess, "# KungFu: Agent Skills Gateway"},
-		{"load by tags flag", []string{"load", "-t", "agent-skills AND cli"}, ExitSuccess, "# KungFu: Agent Skills Gateway"},
-		{"load all flag", []string{"load", "--all"}, ExitSuccess, "# KungFu: Agent Skills Gateway"},
+		{"load multiple skills", []string{"load", "kungfu", "godoctor"}, ExitSuccess, "# KungFu: Agent Skills Gateway"},
 		{"load skill json", []string{"load", "kungfu", "--json"}, ExitSuccess, "\"name\": \"kungfu\""},
 	}
 

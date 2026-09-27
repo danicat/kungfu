@@ -167,10 +167,10 @@ func TestDidYouMeanSuggestions(t *testing.T) {
 			wantStderr: "kungfu load godoctor",
 		},
 		{
-			name:       "show category name suggests --category",
+			name:       "show unknown name suggests find",
 			args:       []string{"show", "agents"},
 			wantCode:   ExitNotFound,
-			wantStderr: "kungfu show --category agents",
+			wantStderr: "kungfu find agents",
 		},
 	}
 

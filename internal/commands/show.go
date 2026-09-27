@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/danicat/kungfu/internal/catalog"
@@ -27,16 +26,8 @@ import (
 func (a *App) RunShow(args []string) int {
 	fs := flag.NewFlagSet("show", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
-	var category, tagQuery string
-	var allFlag, jsonFlag, rawFlag bool
+	var jsonFlag, rawFlag bool
 
-	fs.StringVar(&category, "category", "", "Filter skills by category")
-	fs.StringVar(&category, "c", "", "Filter skills by category (shorthand)")
-	fs.StringVar(&tagQuery, "tags", "", "Filter skills by boolean tag query")
-	fs.StringVar(&tagQuery, "t", "", "Filter skills by boolean tag query (shorthand)")
-	fs.StringVar(&tagQuery, "tag", "", "Filter skills by tag (alias)")
-	fs.BoolVar(&allFlag, "all", false, "Show all skills across categories")
-	fs.BoolVar(&allFlag, "a", false, "Show all skills across categories (shorthand)")
 	fs.BoolVar(&jsonFlag, "json", false, "Output in JSON format")
 	fs.BoolVar(&rawFlag, "raw", false, "Output in raw format")
 
@@ -47,30 +38,8 @@ func (a *App) RunShow(args []string) int {
 
 	mode := a.resolveMode(jsonFlag, rawFlag)
 
-	if allFlag || (category != "" || tagQuery != "") && len(posArgs) == 0 {
-		items := a.Store.ListByFilter(catalog.QueryFilter{
-			Category: category,
-			TagQuery: tagQuery,
-		})
-		if len(items) == 0 {
-			if mode == OutputModeJSON {
-				_, _ = fmt.Fprintln(a.Stdout, "[]")
-				return ExitSuccess
-			}
-			if mode == OutputModeRaw {
-				return ExitSuccess
-			}
-			a.printFilterNotFoundWithSuggestions("show", category, tagQuery)
-			return ExitNotFound
-		}
-		sort.Slice(items, func(i, j int) bool {
-			return items[i].Name < items[j].Name
-		})
-		return a.renderShowItems(items, mode)
-	}
-
 	if len(posArgs) == 0 {
-		_, _ = fmt.Fprintln(a.Stderr, "error: show requires at least one skill name, or use --all / -c / -t")
+		_, _ = fmt.Fprintln(a.Stderr, "error: show requires at least one skill name")
 		return ExitUsage
 	}
 

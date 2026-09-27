@@ -20,74 +20,24 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-
-	"github.com/danicat/kungfu/internal/catalog"
 )
 
 func (a *App) RunList(args []string) int {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
-	var category, tagQuery string
-	var all, jsonFlag, rawFlag bool
+	var jsonFlag, rawFlag bool
 
-	fs.StringVar(&category, "category", "", "Filter skills by category")
-	fs.StringVar(&category, "c", "", "Filter skills by category (shorthand)")
-	fs.StringVar(&tagQuery, "tags", "", "Filter skills by boolean tag query (e.g. 'search AND NOT python')")
-	fs.StringVar(&tagQuery, "t", "", "Filter skills by boolean tag query (shorthand)")
-	fs.StringVar(&tagQuery, "tag", "", "Filter skills by tag (alias)")
-	fs.BoolVar(&all, "all", false, "Show all skills across categories")
-	fs.BoolVar(&all, "a", false, "Show all skills across categories (shorthand)")
 	fs.BoolVar(&jsonFlag, "json", false, "Output in JSON format")
 	fs.BoolVar(&rawFlag, "raw", false, "Output in raw format")
 
-	posArgs, err := parseFlagsWithArgs(fs, args)
+	_, err := parseFlagsWithArgs(fs, args)
 	if err != nil {
 		return ExitUsage
 	}
 
-	if len(posArgs) > 0 && category == "" {
-		category = posArgs[0]
-	}
-
 	mode := a.resolveMode(jsonFlag, rawFlag)
 
-	// Mode 1: No filters and not --all -> show category overview
-	if category == "" && tagQuery == "" && !all {
-		categories := a.Store.Categories()
-		sort.Slice(categories, func(i, j int) bool {
-			return categories[i].ID < categories[j].ID
-		})
-
-		switch mode {
-		case OutputModeJSON:
-			enc := json.NewEncoder(a.Stdout)
-			enc.SetIndent("", "  ")
-			_ = enc.Encode(categories)
-			return ExitSuccess
-		case OutputModeRaw:
-			for _, cat := range categories {
-				_, _ = fmt.Fprintf(a.Stdout, "%s\t%d\t%s\n", cat.ID, cat.Count, cat.Description)
-			}
-			return ExitSuccess
-		default: // OutputModeHuman
-			_, _ = fmt.Fprintln(a.Stdout, "AVAILABLE SKILL CATEGORIES:")
-			_, _ = fmt.Fprintln(a.Stdout)
-			_, _ = fmt.Fprintf(a.Stdout, "%-16s %-8s %s\n", "CATEGORY", "COUNT", "DESCRIPTION")
-			_, _ = fmt.Fprintf(a.Stdout, "%-16s %-8s %s\n", "----------------", "--------", "--------------------------------------------------")
-			for _, cat := range categories {
-				_, _ = fmt.Fprintf(a.Stdout, "%-16s %-8d %s\n", cat.ID, cat.Count, cat.Description)
-			}
-			_, _ = fmt.Fprintln(a.Stdout)
-			_, _ = fmt.Fprintln(a.Stdout, "Use 'kungfu list <category>' or 'kungfu list --all' to inspect skills.")
-			return ExitSuccess
-		}
-	}
-
-	// Mode 2: Filtered items or --all
-	items := a.Store.ListByFilter(catalog.QueryFilter{
-		Category: category,
-		TagQuery: tagQuery,
-	})
+	items := a.Store.All()
 
 	if len(items) == 0 {
 		if mode == OutputModeJSON {
@@ -97,7 +47,7 @@ func (a *App) RunList(args []string) int {
 		if mode == OutputModeRaw {
 			return ExitSuccess
 		}
-		a.printFilterNotFoundWithSuggestions("list", category, tagQuery)
+		_, _ = fmt.Fprintln(a.Stderr, "error: no skills found in catalog")
 		return ExitNotFound
 	}
 
@@ -141,14 +91,7 @@ func (a *App) RunList(args []string) int {
 		}
 		return ExitSuccess
 	default: // OutputModeHuman
-		title := "AVAILABLE SKILLS"
-		if category != "" {
-			title = fmt.Sprintf("SKILLS IN CATEGORY %q", category)
-		}
-		if tagQuery != "" {
-			title += fmt.Sprintf(" (tags: %s)", tagQuery)
-		}
-		_, _ = fmt.Fprintf(a.Stdout, "%s (%d total):\n\n", title, len(listings))
+		_, _ = fmt.Fprintf(a.Stdout, "AVAILABLE SKILLS (%d total):\n\n", len(listings))
 		_, _ = fmt.Fprintf(a.Stdout, "%-22s %-14s %-12s %s\n", "NAME", "CATEGORY", "STATUS", "DESCRIPTION")
 		_, _ = fmt.Fprintf(a.Stdout, "%-22s %-14s %-12s %s\n", "----------------------", "--------------", "------------", "--------------------------------------------------")
 		for _, l := range listings {

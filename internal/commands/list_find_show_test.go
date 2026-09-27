@@ -29,34 +29,21 @@ func TestRunList(t *testing.T) {
 		checkOut func(t *testing.T, stdout string)
 	}{
 		{
-			name:     "list default human category overview",
+			name:     "list default human skill listing",
 			args:     []string{"list"},
 			wantCode: ExitSuccess,
 			checkOut: func(t *testing.T, out string) {
-				if !strings.Contains(out, "CATEGORY") || !strings.Contains(out, "COUNT") {
-					t.Errorf("list human missing headers: %s", out)
-				}
-				if !strings.Contains(out, "agents") {
-					t.Errorf("list human missing agents category: %s", out)
-				}
-			},
-		},
-		{
-			name:     "list all flag",
-			args:     []string{"list", "--all"},
-			wantCode: ExitSuccess,
-			checkOut: func(t *testing.T, out string) {
-				if !strings.Contains(out, "NAME") || !strings.Contains(out, "CATEGORY") {
-					t.Errorf("list --all missing table header: %s", out)
+				if !strings.Contains(out, "AVAILABLE SKILLS") {
+					t.Errorf("list human missing header: %s", out)
 				}
 				if !strings.Contains(out, "kungfu") {
-					t.Errorf("list --all missing kungfu skill: %s", out)
+					t.Errorf("list human missing kungfu skill: %s", out)
 				}
 			},
 		},
 		{
 			name:     "list json",
-			args:     []string{"list", "--all", "--json"},
+			args:     []string{"list", "--json"},
 			wantCode: ExitSuccess,
 			checkOut: func(t *testing.T, out string) {
 				var items []struct {
@@ -73,21 +60,11 @@ func TestRunList(t *testing.T) {
 		},
 		{
 			name:     "list raw flag",
-			args:     []string{"list", "--all", "--raw"},
+			args:     []string{"list", "--raw"},
 			wantCode: ExitSuccess,
 			checkOut: func(t *testing.T, out string) {
 				if !strings.Contains(out, "kungfu") {
 					t.Errorf("list raw missing kungfu item: %s", out)
-				}
-			},
-		},
-		{
-			name:     "list positional category",
-			args:     []string{"list", "agents"},
-			wantCode: ExitSuccess,
-			checkOut: func(t *testing.T, out string) {
-				if !strings.Contains(out, "kungfu") {
-					t.Errorf("list positional category missing item: %s", out)
 				}
 			},
 		},
@@ -132,12 +109,12 @@ func TestRunFind(t *testing.T) {
 			},
 		},
 		{
-			name:     "find with tag shorthand",
-			args:     []string{"find", "kungfu", "-t", "cli"},
+			name:     "find with limit shorthand",
+			args:     []string{"find", "kungfu", "-n", "3"},
 			wantCode: ExitSuccess,
 			checkOut: func(t *testing.T, out string) {
 				if !strings.Contains(out, "kungfu") {
-					t.Errorf("expected kungfu in find results with -t, got: %s", out)
+					t.Errorf("expected kungfu in find results with -n, got: %s", out)
 				}
 			},
 		},
@@ -183,9 +160,7 @@ func TestRunShow(t *testing.T) {
 		{"show single skill human default", []string{"show", "kungfu"}, ExitSuccess, "SKILL: kungfu"},
 		{"show skill raw", []string{"show", "kungfu", "--raw"}, ExitSuccess, "kungfu\tagents"},
 		{"show skill json", []string{"show", "kungfu", "--json"}, ExitSuccess, "\"name\": \"kungfu\""},
-		{"show with category flag", []string{"show", "-c", "agents"}, ExitSuccess, "SKILL: kungfu"},
-		{"show with tags flag", []string{"show", "-t", "agent-skills"}, ExitSuccess, "SKILL: kungfu"},
-		{"show all flag", []string{"show", "--all"}, ExitSuccess, "SKILL: kungfu"},
+		{"show multiple skills", []string{"show", "kungfu", "godoctor"}, ExitSuccess, "SKILL: kungfu"},
 	}
 
 	for _, tt := range tests {

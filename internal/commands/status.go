@@ -20,9 +20,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"strings"
 
-	"github.com/danicat/kungfu/internal/catalog"
 	"github.com/danicat/kungfu/internal/state"
 )
 
@@ -30,13 +28,7 @@ func (a *App) RunStatus(args []string) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
 	var globalFlag, jsonFlag, rawFlag bool
-	var categoryFlag, tagsFlag string
 
-	fs.StringVar(&categoryFlag, "category", "", "Filter status by category")
-	fs.StringVar(&categoryFlag, "c", "", "Filter status by category (shorthand)")
-	fs.StringVar(&tagsFlag, "tags", "", "Filter status by boolean tag expression")
-	fs.StringVar(&tagsFlag, "t", "", "Filter status by boolean tag expression (shorthand)")
-	fs.StringVar(&tagsFlag, "tag", "", "Filter status by tag (alias)")
 	fs.BoolVar(&globalFlag, "global", false, "Show global skills status only")
 	fs.BoolVar(&globalFlag, "g", false, "Show global skills status only (shorthand)")
 	fs.BoolVar(&jsonFlag, "json", false, "Output in JSON format")
@@ -61,30 +53,14 @@ func (a *App) RunStatus(args []string) int {
 	}
 
 	filterSkills := func(skills map[string]state.SkillRecord) map[string]state.SkillRecord {
-		if len(targetNames) == 0 && categoryFlag == "" && tagsFlag == "" {
+		if len(targetNames) == 0 {
 			return skills
 		}
 		res := make(map[string]state.SkillRecord)
 		for name, rec := range skills {
-			if len(targetNames) > 0 && !targetNames[name] {
-				continue
+			if targetNames[name] {
+				res[name] = rec
 			}
-			if categoryFlag != "" || tagsFlag != "" {
-				item, err := a.Store.Get(name)
-				if err != nil {
-					if categoryFlag != "" {
-						continue
-					}
-				} else {
-					if categoryFlag != "" && !strings.EqualFold(item.Category, categoryFlag) {
-						continue
-					}
-					if tagsFlag != "" && !catalog.MatchTags(item.Tags, tagsFlag) {
-						continue
-					}
-				}
-			}
-			res[name] = rec
 		}
 		return res
 	}

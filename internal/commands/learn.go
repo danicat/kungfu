@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -42,8 +41,7 @@ func resolveInstallDirectory(scope, skillName string) string {
 func (a *App) RunLearn(args []string) int {
 	fs := flag.NewFlagSet("learn", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
-	var globalFlag, forceFlag, loadFlag, allFlag, jsonFlag, rawFlag bool
-	var category, tagQuery string
+	var globalFlag, forceFlag, loadFlag, jsonFlag, rawFlag bool
 
 	fs.BoolVar(&globalFlag, "global", false, "Install skill to global store (~/.agents/skills/)")
 	fs.BoolVar(&globalFlag, "g", false, "Install skill to global store (shorthand)")
@@ -51,13 +49,6 @@ func (a *App) RunLearn(args []string) int {
 	fs.BoolVar(&forceFlag, "f", false, "Overwrite existing skill installation (shorthand)")
 	fs.BoolVar(&loadFlag, "load", false, "Output loaded skill markdown to stdout upon successful installation")
 	fs.BoolVar(&loadFlag, "l", false, "Output loaded skill markdown (shorthand)")
-	fs.StringVar(&category, "category", "", "Learn all skills matching category")
-	fs.StringVar(&category, "c", "", "Learn all skills matching category (shorthand)")
-	fs.StringVar(&tagQuery, "tags", "", "Learn all skills matching boolean tag query")
-	fs.StringVar(&tagQuery, "t", "", "Learn all skills matching tag query (shorthand)")
-	fs.StringVar(&tagQuery, "tag", "", "Learn all skills matching tag query (alias)")
-	fs.BoolVar(&allFlag, "all", false, "Learn all skills in the catalog")
-	fs.BoolVar(&allFlag, "a", false, "Learn all skills in the catalog (shorthand)")
 	fs.BoolVar(&jsonFlag, "json", false, "Output in JSON format")
 	fs.BoolVar(&rawFlag, "raw", false, "Output in raw format")
 
@@ -71,57 +62,35 @@ func (a *App) RunLearn(args []string) int {
 	var itemsToInstall []catalog.Item
 	var notFounds []string
 
-	if allFlag || category != "" || tagQuery != "" {
-		items := a.Store.ListByFilter(catalog.QueryFilter{
-			Category: category,
-			TagQuery: tagQuery,
-		})
-		if len(items) == 0 {
-			if mode == OutputModeJSON {
-				_, _ = fmt.Fprintln(a.Stdout, "[]")
-				return ExitSuccess
-			}
-			if mode == OutputModeRaw {
-				return ExitSuccess
-			}
-			a.printFilterNotFoundWithSuggestions("learn", category, tagQuery)
-			return ExitNotFound
-		}
-		sort.Slice(items, func(i, j int) bool {
-			return items[i].Name < items[j].Name
-		})
-		itemsToInstall = items
-	} else {
-		if len(posArgs) == 0 {
-			_, _ = fmt.Fprintln(a.Stderr, "error: learn requires at least one skill name or repository (e.g. 'github:owner/repo'), or use --all / -c / -t")
-			return ExitUsage
-		}
+	if len(posArgs) == 0 {
+		_, _ = fmt.Fprintln(a.Stderr, "error: learn requires at least one skill name or repository (e.g. 'github:owner/repo')")
+		return ExitUsage
+	}
 
-		for _, spec := range posArgs {
-			if strings.HasPrefix(spec, "github:") || strings.Contains(spec, "github.com") || (strings.Count(spec, "/") == 1 && !strings.HasPrefix(spec, ".") && !strings.HasPrefix(spec, "/")) {
-				target, ok := catalog.ParseGitHubTarget(spec)
-				if !ok {
-					_, _ = fmt.Fprintf(a.Stderr, "error: invalid github skill target %q\n", spec)
-					return ExitUsage
-				}
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				item, err := catalog.FetchGitHubSkill(ctx, target, a.getHTTPClient())
-				cancel()
-				if err != nil {
-					_, _ = fmt.Fprintf(a.Stderr, "error: fetching skill from github %q: %v\n", spec, err)
-					return MapErrorToExitCode(err)
-				}
-				itemsToInstall = append(itemsToInstall, *item)
-				continue
+	for _, spec := range posArgs {
+		if strings.HasPrefix(spec, "github:") || strings.Contains(spec, "github.com") || (strings.Count(spec, "/") == 1 && !strings.HasPrefix(spec, ".") && !strings.HasPrefix(spec, "/")) {
+			target, ok := catalog.ParseGitHubTarget(spec)
+			if !ok {
+				_, _ = fmt.Fprintf(a.Stderr, "error: invalid github skill target %q\n", spec)
+				return ExitUsage
 			}
-
-			item, err := a.Store.Get(spec)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			item, err := catalog.FetchGitHubSkill(ctx, target, a.getHTTPClient())
+			cancel()
 			if err != nil {
-				notFounds = append(notFounds, spec)
-				continue
+				_, _ = fmt.Fprintf(a.Stderr, "error: fetching skill from github %q: %v\n", spec, err)
+				return MapErrorToExitCode(err)
 			}
 			itemsToInstall = append(itemsToInstall, *item)
+			continue
 		}
+
+		item, err := a.Store.Get(spec)
+		if err != nil {
+			notFounds = append(notFounds, spec)
+			continue
+		}
+		itemsToInstall = append(itemsToInstall, *item)
 	}
 
 	if len(notFounds) > 0 {

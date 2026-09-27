@@ -19,28 +19,16 @@ import (
 	"flag"
 	"fmt"
 	"strings"
-
-	"github.com/danicat/kungfu/internal/catalog"
 )
 
 func (a *App) RunFind(args []string) int {
 	fs := flag.NewFlagSet("find", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
-	var category, tagQuery, strategy string
 	var limit int
-	var threshold float64
 	var jsonFlag, rawFlag bool
 
-	fs.StringVar(&category, "category", "", "Filter search results by category")
-	fs.StringVar(&category, "c", "", "Filter search results by category (shorthand)")
-	fs.StringVar(&tagQuery, "tags", "", "Filter search results by boolean tag query")
-	fs.StringVar(&tagQuery, "t", "", "Filter search results by boolean tag query (shorthand)")
-	fs.StringVar(&tagQuery, "tag", "", "Filter search results by tag (alias)")
-	fs.StringVar(&strategy, "strategy", "hybrid", "Ranking strategy: hybrid, bm25, tfidf, exact")
-	fs.StringVar(&strategy, "s", "hybrid", "Ranking strategy (shorthand)")
 	fs.IntVar(&limit, "limit", 10, "Maximum number of search results to return")
 	fs.IntVar(&limit, "n", 10, "Maximum number of search results (shorthand)")
-	fs.Float64Var(&threshold, "threshold", 0.0, "Minimum score threshold for results")
 	fs.BoolVar(&jsonFlag, "json", false, "Output in JSON format")
 	fs.BoolVar(&rawFlag, "raw", false, "Output in raw format")
 
@@ -62,22 +50,9 @@ func (a *App) RunFind(args []string) int {
 		return ExitNotFound
 	}
 
-	// Filter by category or tags if requested
-	if category != "" || tagQuery != "" {
-		filtered := a.Store.ListByFilter(catalog.QueryFilter{
-			Category: category,
-			TagQuery: tagQuery,
-		})
-		allItems = filtered
-	}
-
-	if len(allItems) == 0 {
-		a.printFilterNotFoundWithSuggestions("find", category, tagQuery)
-		return ExitNotFound
-	}
-
 	_ = a.Searcher.Index(allItems)
-	results := a.Searcher.Search(query, strategy, limit, float32(threshold))
+	const strategy = "hybrid"
+	results := a.Searcher.Search(query, strategy, limit, 0.0)
 
 	mode := a.resolveMode(jsonFlag, rawFlag)
 

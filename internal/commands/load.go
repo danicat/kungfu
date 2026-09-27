@@ -24,7 +24,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -42,20 +41,11 @@ type loadTarget struct {
 func (a *App) RunLoad(args []string) int {
 	fs := flag.NewFlagSet("load", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
-	var category, tagQuery string
-	var allFlag, jsonFlag, rawFlag, noStripFlag bool
+	var jsonFlag, rawFlag bool
 	var localFlag, updateFlag, forceFlag bool
 
-	fs.StringVar(&category, "category", "", "Filter skills by category")
-	fs.StringVar(&category, "c", "", "Filter skills by category (shorthand)")
-	fs.StringVar(&tagQuery, "tags", "", "Filter skills by boolean tag query")
-	fs.StringVar(&tagQuery, "t", "", "Filter skills by boolean tag query (shorthand)")
-	fs.StringVar(&tagQuery, "tag", "", "Filter skills by tag (alias)")
-	fs.BoolVar(&allFlag, "all", false, "Load all skills across categories")
-	fs.BoolVar(&allFlag, "a", false, "Load all skills across categories (shorthand)")
 	fs.BoolVar(&jsonFlag, "json", false, "Output loaded content as JSON")
 	fs.BoolVar(&rawFlag, "raw", false, "Output raw verbatim markdown content without extra formatting")
-	fs.BoolVar(&noStripFlag, "no-strip", false, "Preserve YAML frontmatter in instructions")
 	fs.BoolVar(&localFlag, "local", false, "Use locally cached or installed copy without checking remote upstream")
 	fs.BoolVar(&updateFlag, "update", false, "Check remote upstream and update cached copy before loading")
 	fs.BoolVar(&updateFlag, "u", false, "Check remote upstream and update cached copy before loading (shorthand)")
@@ -69,55 +59,31 @@ func (a *App) RunLoad(args []string) int {
 
 	mode := a.resolveMode(jsonFlag, rawFlag)
 
+	if len(posArgs) == 0 {
+		_, _ = fmt.Fprintln(a.Stderr, "error: load requires at least one skill name or subpath (e.g. 'kungfu load git/reference')")
+		return ExitUsage
+	}
+
 	var targets []loadTarget
 	var notFounds []string
 
-	if allFlag || category != "" || tagQuery != "" {
-		items := a.Store.ListByFilter(catalog.QueryFilter{
-			Category: category,
-			TagQuery: tagQuery,
-		})
-		if len(items) == 0 {
-			if mode == OutputModeJSON {
-				_, _ = fmt.Fprintln(a.Stdout, "[]")
-				return ExitSuccess
-			}
-			if mode == OutputModeRaw {
-				return ExitSuccess
-			}
-			a.printFilterNotFoundWithSuggestions("load", category, tagQuery)
-			return ExitNotFound
-		}
-		sort.Slice(items, func(i, j int) bool {
-			return items[i].Name < items[j].Name
-		})
-		for _, it := range items {
-			targets = append(targets, loadTarget{item: it})
-		}
-	} else {
-		if len(posArgs) == 0 {
-			_, _ = fmt.Fprintln(a.Stderr, "error: load requires at least one skill name or subpath (e.g. 'kungfu load git/reference'), or use --all / -c / -t")
-			return ExitUsage
+	for _, spec := range posArgs {
+		parts := strings.SplitN(spec, "/", 2)
+		skillName := parts[0]
+		subpath := ""
+		if len(parts) == 2 {
+			subpath = parts[1]
 		}
 
-		for _, spec := range posArgs {
-			parts := strings.SplitN(spec, "/", 2)
-			skillName := parts[0]
-			subpath := ""
-			if len(parts) == 2 {
-				subpath = parts[1]
-			}
-
-			item, err := a.Store.Get(skillName)
-			if err != nil {
-				notFounds = append(notFounds, spec)
-				continue
-			}
-			targets = append(targets, loadTarget{
-				item:    *item,
-				subpath: subpath,
-			})
+		item, err := a.Store.Get(skillName)
+		if err != nil {
+			notFounds = append(notFounds, spec)
+			continue
 		}
+		targets = append(targets, loadTarget{
+			item:    *item,
+			subpath: subpath,
+		})
 	}
 
 	if len(notFounds) > 0 {
@@ -191,7 +157,7 @@ func (a *App) RunLoad(args []string) int {
 				}
 				return MapErrorToExitCode(err)
 			}
-			if noStripFlag {
+			if mode == OutputModeRaw {
 				content = rawContent
 			} else {
 				content = stripFrontmatter(rawContent)
@@ -214,12 +180,9 @@ func (a *App) RunLoad(args []string) int {
 			Source:      target.item.Source,
 		})
 
-		// Track JIT load count in state history ONLY for explicitly targeted single loads
-		if !allFlag && category == "" && tagQuery == "" {
-			st := a.loadState()
-			st.RecordLoad(target.item.Name)
-			a.saveState(st)
-		}
+		st := a.loadState()
+		st.RecordLoad(target.item.Name)
+		a.saveState(st)
 	}
 
 	switch mode {
