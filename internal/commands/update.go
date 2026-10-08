@@ -55,7 +55,6 @@ func (a *App) RunUpdate(args []string) int {
 	if refreshFlag {
 		if store, err := catalog.NewCatalog(
 			catalog.WithRemoteSync(true),
-			catalog.WithEmbeddedFS(a.EmbeddedFS),
 			catalog.WithForceRefresh(),
 		); err == nil {
 			a.Store = store
@@ -94,6 +93,7 @@ func (a *App) RunUpdate(args []string) int {
 		RemoteDigest    string   `json:"remote_digest,omitempty"`
 		HasUpdate       bool     `json:"has_update"`
 		RequiresYes     bool     `json:"requires_yes"`
+		IsDirty         bool     `json:"is_dirty"`
 		Reason          string   `json:"reason"`
 		Status          string   `json:"status"`
 		Files           []string `json:"files,omitempty"`
@@ -148,7 +148,7 @@ func (a *App) RunUpdate(args []string) int {
 		var item *catalog.Item
 		var err error
 
-		if rec.Origin == state.OriginGitHub || rec.RawURL != "" {
+		if rec.Origin == state.OriginGitHub || (rec.RawURL != "" && (strings.Contains(rec.RawURL, "github.com") || strings.Contains(rec.RawURL, "raw.githubusercontent.com"))) {
 			var target *catalog.GitHubTarget
 			var ok bool
 			if rec.RawURL != "" {
@@ -169,6 +169,39 @@ func (a *App) RunUpdate(args []string) int {
 			}
 		} else {
 			item, err = a.Store.Get(name)
+			if err != nil || item == nil || (item.URL == "" && item.Body == "") {
+				lookupCatalogs := []string{rec.Catalog, name, "kungfu"}
+				for _, catName := range lookupCatalogs {
+					if catName == "" {
+						continue
+					}
+					if catRec, ok := st.GetCatalog(catName); ok && catRec.Type == state.CatalogTypeGitHub {
+						target, okTarget := catalog.ParseGitHubTarget(catRec.Source)
+						if okTarget {
+							if catRec.Ref != "" {
+								target.Ref = catRec.Ref
+							}
+							if target.Subpath == "" {
+								target.Subpath = "skills/" + name
+							}
+							ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+							ghItem, ghErr := catalog.FetchGitHubSkill(ctx, target, a.getHTTPClient())
+							cancel()
+							if ghErr == nil && ghItem != nil {
+								item = ghItem
+								err = nil
+								rec.Origin = state.OriginGitHub
+								rec.Repo = catRec.Source
+								rec.Ref = catRec.Ref
+								if ghItem.URL != "" {
+									rec.RawURL = ghItem.URL
+								}
+								break
+							}
+						}
+					}
+				}
+			}
 		}
 
 		if err != nil || item == nil {
@@ -244,6 +277,7 @@ func (a *App) RunUpdate(args []string) int {
 			InstalledDigest: rec.Digest,
 			HasUpdate:       hasUpdate,
 			RequiresYes:     requiresYes,
+			IsDirty:         isDirty,
 			Reason:          reason,
 			Status:          "up_to_date",
 		}
@@ -342,7 +376,9 @@ func (a *App) RunUpdate(args []string) int {
 					}
 				} else if c.HasUpdate {
 					hasAnyUpdates = true
-					if c.RequiresYes {
+					if c.IsDirty {
+						_, _ = fmt.Fprintf(a.Stdout, "  ⚠ %-20s [Update available with -f] %s\n", c.Name, c.Reason)
+					} else if c.RequiresYes {
 						_, _ = fmt.Fprintf(a.Stdout, "  ⚠ %-20s [Update available with -y] %s\n", c.Name, c.Reason)
 					} else {
 						_, _ = fmt.Fprintf(a.Stdout, "  ↑ %-20s [Update available] %s\n", c.Name, c.Reason)
@@ -353,7 +389,11 @@ func (a *App) RunUpdate(args []string) int {
 			}
 
 			if hasAnyUpdates {
-				_, _ = fmt.Fprintln(a.Stdout, "\nRun 'kungfu update <skill>' or 'kungfu update --all' to apply updates.")
+				if globalFlag {
+					_, _ = fmt.Fprintln(a.Stdout, "\nRun 'kungfu update -g <skill>' or 'kungfu update -g --all' to apply updates.")
+				} else {
+					_, _ = fmt.Fprintln(a.Stdout, "\nRun 'kungfu update <skill>' or 'kungfu update --all' to apply updates.")
+				}
 			} else {
 				_, _ = fmt.Fprintln(a.Stdout, "\nAll installed skills are up to date.")
 			}
@@ -377,6 +417,8 @@ func (a *App) RunUpdate(args []string) int {
 							}
 						}
 					}
+				case "conflict":
+					_, _ = fmt.Fprintf(a.Stderr, "⚠ Skill %q was not updated: %s\n", c.Name, c.Message)
 				case "blocked":
 					_, _ = fmt.Fprintf(a.Stderr, "⚠ Skill %q was not updated: %s\n", c.Name, c.Message)
 				case "error":
@@ -392,7 +434,7 @@ func (a *App) RunUpdate(args []string) int {
 		switch c.Status {
 		case "not_found":
 			hasNotFound = true
-		case "error":
+		case "error", "conflict", "blocked":
 			hasGeneralError = true
 		}
 	}

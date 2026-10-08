@@ -4,6 +4,18 @@ This backlog tracks prioritized architectural enhancements, feature requests, an
 
 ---
 
+## ✅ Completed (v0.5.0)
+
+- [x] **Fail-Fast & Zero-Fallback Architecture**: Purged all silent fallback mechanisms, stale cache fallbacks, git branch fallbacks, and legacy compatibility layers across `catalog`, `config`, `state`, and `runner`. Implemented visible, immediate error reporting with rich diagnostics.
+- [x] **8 KiB Buffer Ceiling & Safe Pagination**: Added automatic pagination to `kungfu load` (`--full`, `-p`/`--page`, `--page-size`) with rune boundary slicing (`utf8.RuneStart`) and PTY line expansion (`\r\n`) protection, strictly preventing output truncation in agent execution buffers.
+- [x] **Stateless JIT Loading**: Removed state modification side effects and disk writes from `kungfu load`, making skill context streaming purely read-only and ephemeral.
+- [x] **Single-Skill Loading Enforcement**: Disabled multi-skill batch loading (`kungfu load a b`) with usage error guidance to eliminate pagination interleaving.
+- [x] **Decoupled Skill Catalog & Removed Embedding**: Eliminated embedded binaries and special handling for `kungfu` skill. The repository itself is exposed as a GitHub catalog.
+- [x] **Security & Concurrency Hardening**: Enforced symlink boundary verification (`isSafeSkillDirectory`), directory ancestor containment checks (`isContained`), runtime interpreter resolution, and panic on environment failures.
+- [x] **Google Open Source Compliance**: Added `CONTRIBUTING.md`, `NOTICE`, normalized copyright headers to Google LLC, and sanitized paths.
+
+---
+
 ## ✅ Completed (v0.4.0)
 
 - [x] **User Configuration System (`~/.config/kungfu/config.yaml`)**: Added structured configuration (`internal/config`) supporting custom default catalog URLs and `load.auto_update` policy.

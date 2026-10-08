@@ -16,11 +16,44 @@ package commands
 
 import (
 	"bytes"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/danicat/kungfu/internal/catalog"
 )
+
+func startMockKungfuServer(t *testing.T) (*httptest.Server, string) {
+	t.Helper()
+	skillContent := "---\nname: kungfu\ndescription: agent skills gateway\n---\n# KungFu: Agent Skills Gateway\n"
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "SKILL.md") {
+			w.Header().Set("Content-Type", "text/markdown")
+			_, _ = w.Write([]byte(skillContent))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(fmt.Sprintf(`{
+			"$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
+			"skills": [
+				{
+					"name": "kungfu",
+					"type": "skill-md",
+					"description": "agent skills gateway",
+					"category": "agents",
+					"url": "%s/skills/kungfu/SKILL.md",
+					"digest": "%s"
+				}
+			]
+		}`, server.URL, catalog.ComputeDigest([]byte(skillContent)))))
+	}))
+	return server, skillContent
+}
 
 func TestRunLearnAndForget(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -30,13 +63,17 @@ func TestRunLearnAndForget(t *testing.T) {
 
 	t.Setenv("KUNGFU_STATE_PATH", filepath.Join(tmpDir, ".kungfu-state.json"))
 
+	server, _ := startMockKungfuServer(t)
+	defer server.Close()
+	t.Setenv("KUNGFU_URL", server.URL)
+
 	var stdout, stderr bytes.Buffer
-	app, err := NewApp(GlobalOptions{}, &stdout, &stderr, testEmbeddedFS)
+	app, err := NewApp(GlobalOptions{}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("NewApp failed: %v", err)
 	}
 
-	// 1. Learn embedded skill into workspace
+	// 1. Learn skill into workspace
 	stdout.Reset()
 	stderr.Reset()
 	code := app.RunLearn([]string{"kungfu"})
@@ -89,8 +126,12 @@ func TestRunUpdate(t *testing.T) {
 
 	t.Setenv("KUNGFU_STATE_PATH", filepath.Join(tmpDir, ".kungfu-state.json"))
 
+	server, _ := startMockKungfuServer(t)
+	defer server.Close()
+	t.Setenv("KUNGFU_URL", server.URL)
+
 	var stdout, stderr bytes.Buffer
-	app, err := NewApp(GlobalOptions{}, &stdout, &stderr, testEmbeddedFS)
+	app, err := NewApp(GlobalOptions{}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("NewApp failed: %v", err)
 	}
@@ -112,3 +153,64 @@ func TestRunUpdate(t *testing.T) {
 		t.Errorf("expected kungfu in update check, got: %s", stdout.String())
 	}
 }
+
+func TestRunUpdate_ConflictAndForce(t *testing.T) {
+	tmpDir := t.TempDir()
+	origWd, _ := os.Getwd()
+	_ = os.Chdir(tmpDir)
+	defer func() { _ = os.Chdir(origWd) }()
+
+	t.Setenv("KUNGFU_STATE_PATH", filepath.Join(tmpDir, ".kungfu-state.json"))
+
+	server, _ := startMockKungfuServer(t)
+	defer server.Close()
+	t.Setenv("KUNGFU_URL", server.URL)
+
+	var stdout, stderr bytes.Buffer
+	app, err := NewApp(GlobalOptions{}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("NewApp failed: %v", err)
+	}
+
+	// 1. Learn skill
+	if code := app.RunLearn([]string{"kungfu"}); code != ExitSuccess {
+		t.Fatalf("RunLearn = %d; stderr: %s", code, stderr.String())
+	}
+
+	// 2. Modify local skill file to create conflict
+	skillFilePath := filepath.Join(tmpDir, ".agents", "skills", "kungfu", "SKILL.md")
+	if err := os.WriteFile(skillFilePath, []byte("# Kungfu modified locally"), 0644); err != nil {
+		t.Fatalf("failed to write local modification: %v", err)
+	}
+
+	// 3. Dry-run update should note -f requirement
+	stdout.Reset()
+	stderr.Reset()
+	if code := app.RunUpdate([]string{}); code != ExitSuccess {
+		t.Fatalf("RunUpdate dry-run = %d; stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "[Update available with -f]") {
+		t.Errorf("expected '[Update available with -f]', got: %s", stdout.String())
+	}
+
+	// 4. Update without -f should fail visibly
+	stdout.Reset()
+	stderr.Reset()
+	if code := app.RunUpdate([]string{"kungfu"}); code != ExitGeneral {
+		t.Fatalf("expected RunUpdate without -f to fail with ExitGeneral, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "Local skill has been modified since install; pass -f/--force") {
+		t.Errorf("expected conflict message in stderr, got: %s", stderr.String())
+	}
+
+	// 5. Update with -f should succeed
+	stdout.Reset()
+	stderr.Reset()
+	if code := app.RunUpdate([]string{"-f", "kungfu"}); code != ExitSuccess {
+		t.Fatalf("RunUpdate with -f failed = %d; stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Updated skill \"kungfu\"") {
+		t.Errorf("expected successful update message, got: %s", stdout.String())
+	}
+}
+

@@ -553,17 +553,30 @@ func (a *App) runCatalogSync(args []string) int {
 
 	a.saveState(st)
 
+	hasError := false
+	for _, r := range results {
+		if r.Status == "error" {
+			hasError = true
+			break
+		}
+	}
+
+	exitCode := ExitSuccess
+	if hasError {
+		exitCode = ExitGeneral
+	}
+
 	switch mode {
 	case OutputModeJSON:
 		enc := json.NewEncoder(a.Stdout)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(results)
-		return ExitSuccess
+		return exitCode
 	case OutputModeRaw:
 		for _, r := range results {
 			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%d\n", r.Status, r.Name, r.Type, r.SkillCount)
 		}
-		return ExitSuccess
+		return exitCode
 	default:
 		_, _ = fmt.Fprintf(a.Stdout, "Synchronized %d catalogs:\n", len(results))
 		for _, r := range results {
@@ -573,6 +586,6 @@ func (a *App) runCatalogSync(args []string) int {
 				_, _ = fmt.Fprintf(a.Stderr, "  ✗ %-22s (%s: %s)\n", r.Name, r.Type, r.Message)
 			}
 		}
-		return ExitSuccess
+		return exitCode
 	}
 }

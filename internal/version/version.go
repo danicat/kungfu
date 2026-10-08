@@ -1,4 +1,4 @@
-// Copyright 2026 Daniela Petruzalek <daniela@danicat.dev>
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,13 +21,16 @@ import (
 )
 
 // DefaultVersion is the fallback version string used in local development builds.
-var DefaultVersion = "0.4.0"
+var DefaultVersion = "0.5.0"
 
 // Get returns the dynamic version string resolved from runtime/debug build info
 // (e.g., when built via `go install module@version`), falling back to DefaultVersion.
 func Get() string {
 	if info, ok := debug.ReadBuildInfo(); ok {
 		if info.Main.Version != "" && info.Main.Version != "(devel)" {
+			if strings.Contains(info.Main.Version, "dirty") {
+				return DefaultVersion + "+dirty"
+			}
 			return strings.TrimPrefix(info.Main.Version, "v")
 		}
 	}

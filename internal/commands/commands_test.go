@@ -17,29 +17,16 @@ package commands
 import (
 	"bytes"
 	"errors"
-	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 
 	"github.com/danicat/kungfu/internal/catalog"
 )
-
-var testEmbeddedFS fs.FS
-
-func init() {
-	absRoot, err := filepath.Abs("../..")
-	if err == nil {
-		testEmbeddedFS = os.DirFS(absRoot)
-	} else {
-		testEmbeddedFS = os.DirFS("../..")
-	}
-}
 
 func TestMain(m *testing.M) {
 	tempHome, err := os.MkdirTemp("", "kungfu-cmd-test-home-*")
@@ -97,7 +84,7 @@ func TestGlobalHelpAndVersion(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := Run(tt.args, &stdout, &stderr, testEmbeddedFS)
+			code := Run(tt.args, &stdout, &stderr)
 			if code != tt.wantCode {
 				t.Fatalf("Run(%v) = %d, want %d; stderr: %s", tt.args, code, tt.wantCode, stderr.String())
 			}
@@ -111,7 +98,7 @@ func TestGlobalHelpAndVersion(t *testing.T) {
 
 func TestUnknownCommand(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := Run([]string{"unknowncommand"}, &stdout, &stderr, testEmbeddedFS)
+	code := Run([]string{"unknowncommand"}, &stdout, &stderr)
 	if code != ExitUsage {
 		t.Fatalf("Run(unknowncommand) = %d, want %d", code, ExitUsage)
 	}
@@ -126,6 +113,14 @@ func TestDidYouMeanSuggestions(t *testing.T) {
 		_, _ = w.Write([]byte(`{
 			"$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
 			"skills": [
+				{
+					"name": "kungfu",
+					"type": "skill-md",
+					"description": "Agent skills gateway",
+					"category": "agents",
+					"url": "https://skills.danicat.dev/agents/kungfu/SKILL.md",
+					"digest": "sha256:345678"
+				},
 				{
 					"name": "godoctor",
 					"type": "skill-md",
@@ -177,7 +172,7 @@ func TestDidYouMeanSuggestions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := Run(tt.args, &stdout, &stderr, testEmbeddedFS)
+			code := Run(tt.args, &stdout, &stderr)
 			if code != tt.wantCode {
 				t.Fatalf("Run(%v) = %d, want %d; stderr: %s", tt.args, code, tt.wantCode, stderr.String())
 			}

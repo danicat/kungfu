@@ -231,23 +231,13 @@ func TestManifestNormalization(t *testing.T) {
 	}
 }
 
-func TestCatalog_LoadContent_EmbeddedAndBody(t *testing.T) {
-	cat, err := NewCatalog(WithRemoteURL("http://127.0.0.1:0/unused"), WithEmbeddedFS(os.DirFS("../..")))
+func TestCatalog_LoadContent_BodyAndLocalError(t *testing.T) {
+	cat, err := NewCatalog(WithRemoteURL("http://127.0.0.1:0/unused"), WithRemoteDisabled())
 	if err != nil {
 		t.Fatalf("NewCatalog failed: %v", err)
 	}
 
-	// 1. Embedded
-	kfItem, _ := cat.Get("kungfu")
-	kfContent, err := cat.LoadContent(kfItem)
-	if err != nil {
-		t.Fatalf("LoadContent embedded failed: %v", err)
-	}
-	if !strings.Contains(kfContent, "name: kungfu") {
-		t.Errorf("expected embedded kungfu content, got: %s", kfContent)
-	}
-
-	// 2. Direct in-memory body
+	// 1. Direct in-memory body
 	bodyItem := &Item{
 		ID:   "bodyskill",
 		Body: "---\nname: bodyskill\n---\nBody text",
@@ -257,7 +247,7 @@ func TestCatalog_LoadContent_EmbeddedAndBody(t *testing.T) {
 		t.Errorf("unexpected bodyContent: %s, err: %v", bodyContent, err)
 	}
 
-	// 3. Local path should not be loaded
+	// 2. Local path should not be loaded
 	localItem := &Item{
 		ID:   "myskill",
 		Name: "myskill",
@@ -278,6 +268,7 @@ func TestCatalog_LoadContent_Remote(t *testing.T) {
 	defer ts.Close()
 
 	cat, err := NewCatalog(
+		WithRemoteDisabled(),
 		WithHTTPClient(ts.Client()),
 	)
 	if err != nil {
@@ -321,7 +312,7 @@ func TestCatalog_LoadContent_NetworkError(t *testing.T) {
 	tmpDir := t.TempDir()
 	cat, err := NewCatalog(
 		WithCacheDir(tmpDir),
-		WithRemoteURL("http://127.0.0.1:0/unreachable"),
+		WithRemoteDisabled(),
 	)
 	if err != nil {
 		t.Fatalf("NewCatalog failed: %v", err)

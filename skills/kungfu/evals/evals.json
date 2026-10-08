@@ -144,9 +144,9 @@
       "id": 2,
       "name": "multi_skill_jit_loading",
       "prompt": "Load both godoctor and ebitengineer skills into the current session context.",
-      "expected_output": "Agent executes kungfu load godoctor ebitengineer and incorporates verbatim instructions.",
+      "expected_output": "Agent executes kungfu load individually for each skill (kungfu load godoctor then kungfu load ebitengineer) and incorporates verbatim instructions.",
       "assertions": [
-        "Runs kungfu load godoctor ebitengineer in a single batch invocation",
+        "Runs kungfu load individually for godoctor and ebitengineer",
         "Receives verbatim markdown bodies for both skills",
         "Does not create files on disk (.agents/skills/ is untouched)",
         "Acknowledges capabilities of both loaded skills"

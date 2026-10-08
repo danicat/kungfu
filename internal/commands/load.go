@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/danicat/kungfu/internal/catalog"
 	"github.com/danicat/kungfu/internal/config"
@@ -38,11 +39,70 @@ type loadTarget struct {
 	subpath string
 }
 
+const DefaultPageSize = 6000
+const MaxPageSize = 7000
+
+func paginateContent(content string, pageSize int) []string {
+	if pageSize <= 0 || len(content) <= pageSize {
+		return []string{content}
+	}
+
+	lines := strings.Split(content, "\n")
+	var pages []string
+	var cur strings.Builder
+
+	for i, line := range lines {
+		toAdd := len(line)
+		if i > 0 && cur.Len() > 0 {
+			toAdd += 2 // account for "\r\n" in PTY line disciplines
+		}
+
+		if cur.Len() > 0 && cur.Len()+toAdd > pageSize {
+			pages = append(pages, cur.String())
+			cur.Reset()
+		}
+
+		// Handle lines longer than pageSize without severing UTF-8 runes
+		for len(line) > pageSize {
+			if cur.Len() > 0 {
+				pages = append(pages, cur.String())
+				cur.Reset()
+			}
+			splitIdx := pageSize
+			for splitIdx > 0 && !utf8.RuneStart(line[splitIdx]) {
+				splitIdx--
+			}
+			if splitIdx == 0 {
+				_, size := utf8.DecodeRuneInString(line)
+				splitIdx = size
+			}
+			pages = append(pages, line[:splitIdx])
+			line = line[splitIdx:]
+		}
+
+		if cur.Len() > 0 {
+			cur.WriteString("\n")
+		}
+		cur.WriteString(line)
+	}
+
+	if cur.Len() > 0 {
+		pages = append(pages, cur.String())
+	}
+
+	if len(pages) == 0 {
+		return []string{content}
+	}
+
+	return pages
+}
+
 func (a *App) RunLoad(args []string) int {
 	fs := flag.NewFlagSet("load", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
 	var jsonFlag, rawFlag bool
-	var localFlag, updateFlag, forceFlag bool
+	var localFlag, updateFlag, forceFlag, fullFlag bool
+	var pageFlag, pageSizeFlag int
 
 	fs.BoolVar(&jsonFlag, "json", false, "Output loaded content as JSON")
 	fs.BoolVar(&rawFlag, "raw", false, "Output raw verbatim markdown content without extra formatting")
@@ -51,6 +111,10 @@ func (a *App) RunLoad(args []string) int {
 	fs.BoolVar(&updateFlag, "u", false, "Check remote upstream and update cached copy before loading (shorthand)")
 	fs.BoolVar(&forceFlag, "force", false, "Force loading/updating even if digest verification fails")
 	fs.BoolVar(&forceFlag, "f", false, "Force loading/updating even if digest verification fails (shorthand)")
+	fs.IntVar(&pageFlag, "page", 1, "Page number to display (1-based)")
+	fs.IntVar(&pageFlag, "p", 1, "Page number to display (1-based, shorthand)")
+	fs.IntVar(&pageSizeFlag, "page-size", DefaultPageSize, "Maximum page size in bytes")
+	fs.BoolVar(&fullFlag, "full", false, "Output complete unpaginated content")
 
 	posArgs, err := parseFlagsWithArgs(fs, args)
 	if err != nil {
@@ -60,169 +124,182 @@ func (a *App) RunLoad(args []string) int {
 	mode := a.resolveMode(jsonFlag, rawFlag)
 
 	if len(posArgs) == 0 {
-		_, _ = fmt.Fprintln(a.Stderr, "error: load requires at least one skill name or subpath (e.g. 'kungfu load git/reference')")
+		_, _ = fmt.Fprintln(a.Stderr, "error: load requires a skill name or subpath (e.g. 'kungfu load git/reference')")
+		return ExitUsage
+	}
+	if len(posArgs) > 1 {
+		_, _ = fmt.Fprintln(a.Stderr, "error: loading multiple skills simultaneously is disabled to prevent truncation; load skills individually (e.g. 'kungfu load <skill>')")
+		return ExitUsage
+	}
+	if pageFlag < 1 {
+		_, _ = fmt.Fprintf(a.Stderr, "error: invalid page %d: page must be >= 1\n", pageFlag)
+		return ExitUsage
+	}
+	if pageSizeFlag <= 0 || pageSizeFlag > MaxPageSize {
+		_, _ = fmt.Fprintf(a.Stderr, "error: invalid page-size %d: page-size must be between 1 and %d bytes (agent buffer safety ceiling)\n", pageSizeFlag, MaxPageSize)
+		return ExitUsage
+	}
+	if fullFlag && pageFlag > 1 {
+		_, _ = fmt.Fprintln(a.Stderr, "error: cannot combine --full with -p/--page > 1")
 		return ExitUsage
 	}
 
-	var targets []loadTarget
-	var notFounds []string
-
-	for _, spec := range posArgs {
-		parts := strings.SplitN(spec, "/", 2)
-		skillName := parts[0]
-		subpath := ""
-		if len(parts) == 2 {
-			subpath = parts[1]
-		}
-
-		item, err := a.Store.Get(skillName)
-		if err != nil {
-			notFounds = append(notFounds, spec)
-			continue
-		}
-		targets = append(targets, loadTarget{
-			item:    *item,
-			subpath: subpath,
-		})
+	spec := posArgs[0]
+	parts := strings.SplitN(spec, "/", 2)
+	skillName := parts[0]
+	subpath := ""
+	if len(parts) == 2 {
+		subpath = parts[1]
 	}
 
-	if len(notFounds) > 0 {
-		for _, name := range notFounds {
-			a.printNotFoundWithSuggestions("load", name)
-		}
+	item, err := a.Store.Get(skillName)
+	if err != nil {
+		a.printNotFoundWithSuggestions("load", spec)
 		return ExitNotFound
 	}
-
-	type LoadResultItem struct {
-		Name        string `json:"name"`
-		Subpath     string `json:"subpath,omitempty"`
-		Category    string `json:"category"`
-		Version     string `json:"version,omitempty"`
-		Description string `json:"description"`
-		Content     string `json:"content"`
-		Digest      string `json:"digest,omitempty"`
-		Source      string `json:"source,omitempty"`
+	target := loadTarget{
+		item:    *item,
+		subpath: subpath,
 	}
 
-	var results []LoadResultItem
+	var content string
+	var loadErr error
 
-	for _, target := range targets {
-		var content string
-		var loadErr error
+	if target.subpath != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 
-		if target.subpath != "" {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-
-			content, loadErr = runner.ReadFileContext(ctx, target.item, target.subpath, a.getHTTPClient())
-			if loadErr != nil {
-				if errors.Is(loadErr, runner.ErrInvalidPath) {
-					_, _ = fmt.Fprintf(a.Stderr, "error: invalid path traversal in %q\n", target.subpath)
-					return ExitUsage
+		content, loadErr = runner.ReadFileContext(ctx, target.item, target.subpath, a.getHTTPClient())
+		if loadErr != nil {
+			if errors.Is(loadErr, runner.ErrInvalidPath) {
+				_, _ = fmt.Fprintf(a.Stderr, "error: invalid path traversal in %q\n", target.subpath)
+				return ExitUsage
+			}
+			if errors.Is(loadErr, runner.ErrFileNotFound) {
+				_, _ = fmt.Fprintf(a.Stderr, "error: subpath %q not found in skill %q.\n", target.subpath, target.item.Name)
+				var candidates []string
+				for _, ref := range a.listReferences(target.item) {
+					candidates = append(candidates, ref, "references/"+ref, "references/"+ref+".md")
 				}
-				if errors.Is(loadErr, runner.ErrFileNotFound) {
-					_, _ = fmt.Fprintf(a.Stderr, "error: subpath %q not found in skill %q.\n", target.subpath, target.item.Name)
-					var candidates []string
-					for _, ref := range a.listReferences(target.item) {
-						candidates = append(candidates, ref, "references/"+ref, "references/"+ref+".md")
-					}
-					for _, scr := range a.listScripts(target.item) {
-						candidates = append(candidates, scr, "scripts/"+scr)
-					}
-					candidates = uniqueStrings(candidates)
-					if len(candidates) > 0 {
-						suggs := search.Suggest(target.subpath, candidates, 3)
-						if len(suggs) > 0 {
-							_, _ = fmt.Fprintln(a.Stderr, "\nDid you mean:")
-							for _, s := range suggs {
-								_, _ = fmt.Fprintf(a.Stderr, "  - kungfu load %s/%s\n", target.item.Name, s)
-							}
+				for _, scr := range a.listScripts(target.item) {
+					candidates = append(candidates, scr, "scripts/"+scr)
+				}
+				candidates = uniqueStrings(candidates)
+				if len(candidates) > 0 {
+					suggs := search.Suggest(target.subpath, candidates, 3)
+					if len(suggs) > 0 {
+						_, _ = fmt.Fprintln(a.Stderr, "\nDid you mean:")
+						for _, s := range suggs {
+							_, _ = fmt.Fprintf(a.Stderr, "  - kungfu load %s/%s\n", target.item.Name, s)
 						}
 					}
-					return ExitNotFound
 				}
-				_, _ = fmt.Fprintf(a.Stderr, "error: loading %s/%s: %v\n", target.item.Name, target.subpath, loadErr)
-				return MapErrorToExitCode(loadErr)
+				return ExitNotFound
 			}
-		} else {
-			rawContent, err := a.loadItemContentWithOpts(&target.item, localFlag, updateFlag, forceFlag)
-			if err != nil {
-				_, _ = fmt.Fprintf(a.Stderr, "error: loading skill %q: %v\n", target.item.Name, err)
-				if errors.Is(err, catalog.ErrDigestMismatch) {
-					_, _ = fmt.Fprintln(a.Stderr, "\nDid you mean:")
-					_, _ = fmt.Fprintf(a.Stderr, "  - Load local cached copy:   kungfu load %s --local\n", target.item.Name)
-					_, _ = fmt.Fprintf(a.Stderr, "  - Check upstream update:    kungfu load %s --update\n", target.item.Name)
-					_, _ = fmt.Fprintf(a.Stderr, "  - Ignore digest check:      kungfu load %s --force\n", target.item.Name)
-					_, _ = fmt.Fprintf(a.Stderr, "  - Synchronize catalog:      kungfu catalog sync\n")
-				}
-				return MapErrorToExitCode(err)
-			}
-			if mode == OutputModeRaw {
-				content = rawContent
-			} else {
-				content = stripFrontmatter(rawContent)
-			}
+			_, _ = fmt.Fprintf(a.Stderr, "error: loading %s/%s: %v\n", target.item.Name, target.subpath, loadErr)
+			return MapErrorToExitCode(loadErr)
 		}
+	} else {
+		rawContent, err := a.loadItemContentWithOpts(&target.item, localFlag, updateFlag, forceFlag)
+		if err != nil {
+			_, _ = fmt.Fprintf(a.Stderr, "error: loading skill %q: %v\n", target.item.Name, err)
+			if errors.Is(err, catalog.ErrDigestMismatch) {
+				_, _ = fmt.Fprintln(a.Stderr, "\nDid you mean:")
+				_, _ = fmt.Fprintf(a.Stderr, "  - Load local cached copy:   kungfu load %s --local\n", target.item.Name)
+				_, _ = fmt.Fprintf(a.Stderr, "  - Check upstream update:    kungfu load %s --update\n", target.item.Name)
+				_, _ = fmt.Fprintf(a.Stderr, "  - Ignore digest check:      kungfu load %s --force\n", target.item.Name)
+				_, _ = fmt.Fprintf(a.Stderr, "  - Synchronize catalog:      kungfu catalog sync\n")
+			}
+			return MapErrorToExitCode(err)
+		}
+		if mode == OutputModeRaw {
+			content = rawContent
+		} else {
+			content = stripFrontmatter(rawContent)
+		}
+	}
 
+	var pages []string
+	if fullFlag {
+		pages = []string{content}
+	} else {
+		pages = paginateContent(content, pageSizeFlag)
+	}
+
+	totalPages := len(pages)
+	if pageFlag > totalPages {
+		_, _ = fmt.Fprintf(a.Stderr, "error: page %d out of bounds; %s has %d page(s) (valid pages: 1..%d)\n", pageFlag, spec, totalPages, totalPages)
+		return ExitUsage
+	}
+
+	currentPageContent := pages[pageFlag-1]
+
+	if mode == OutputModeJSON {
 		ver := target.item.Version
 		if ver == "" && target.item.Metadata != nil {
 			ver = target.item.Metadata["version"]
 		}
 
-		results = append(results, LoadResultItem{
+		pageNum := 0
+		totPages := 0
+		if totalPages > 1 && !fullFlag {
+			pageNum = pageFlag
+			totPages = totalPages
+		}
+
+		type LoadResultItem struct {
+			Name        string `json:"name"`
+			Subpath     string `json:"subpath,omitempty"`
+			Category    string `json:"category"`
+			Version     string `json:"version,omitempty"`
+			Description string `json:"description"`
+			Page        int    `json:"page,omitempty"`
+			TotalPages  int    `json:"total_pages,omitempty"`
+			Content     string `json:"content"`
+			Digest      string `json:"digest,omitempty"`
+			Source      string `json:"source,omitempty"`
+		}
+
+		res := LoadResultItem{
 			Name:        target.item.Name,
 			Subpath:     target.subpath,
 			Category:    target.item.Category,
 			Version:     ver,
 			Description: target.item.Description,
-			Content:     content,
+			Page:        pageNum,
+			TotalPages:  totPages,
+			Content:     currentPageContent,
 			Digest:      target.item.Digest,
 			Source:      target.item.Source,
-		})
+		}
 
-		st := a.loadState()
-		st.RecordLoad(target.item.Name)
-		a.saveState(st)
-	}
-
-	switch mode {
-	case OutputModeJSON:
 		enc := json.NewEncoder(a.Stdout)
 		enc.SetIndent("", "  ")
-		if len(results) == 1 {
-			_ = enc.Encode(results[0])
-		} else {
-			_ = enc.Encode(results)
-		}
-		return ExitSuccess
-	case OutputModeRaw:
-		for _, r := range results {
-			_, _ = fmt.Fprint(a.Stdout, r.Content)
-			if !strings.HasSuffix(r.Content, "\n") {
-				_, _ = fmt.Fprintln(a.Stdout)
-			}
-		}
-		return ExitSuccess
-	default: // OutputModeHuman
-		for i, r := range results {
-			if len(results) > 1 {
-				header := fmt.Sprintf("# SKILL: %s", r.Name)
-				if r.Subpath != "" {
-					header += fmt.Sprintf(" (%s)", r.Subpath)
-				}
-				_, _ = fmt.Fprintln(a.Stdout, header)
-				_, _ = fmt.Fprintln(a.Stdout)
-			}
-			_, _ = fmt.Fprint(a.Stdout, r.Content)
-			if !strings.HasSuffix(r.Content, "\n") {
-				_, _ = fmt.Fprintln(a.Stdout)
-			}
-			if i < len(results)-1 {
-				_, _ = fmt.Fprintln(a.Stdout, "\n---")
-			}
-		}
+		_ = enc.Encode(res)
 		return ExitSuccess
 	}
+
+	var sb strings.Builder
+	if totalPages > 1 && !fullFlag && pageFlag > 1 && mode != OutputModeRaw {
+		sb.WriteString(fmt.Sprintf("[Page %d of %d (continued)]\n\n", pageFlag, totalPages))
+	}
+
+	sb.WriteString(currentPageContent)
+	if !strings.HasSuffix(currentPageContent, "\n") {
+		sb.WriteString("\n")
+	}
+
+	if totalPages > 1 && !fullFlag && mode != OutputModeRaw {
+		sb.WriteString("\n---\n")
+		if pageFlag < totalPages {
+			sb.WriteString(fmt.Sprintf("[Page %d of %d • Next: kungfu load %s -p %d • Use --full to display all]\n", pageFlag, totalPages, spec, pageFlag+1))
+		} else {
+			sb.WriteString(fmt.Sprintf("[Page %d of %d • End of document]\n", pageFlag, totalPages))
+		}
+	}
+
+	_, _ = fmt.Fprint(a.Stdout, sb.String())
+	return ExitSuccess
 }
 
 func uniqueStrings(slice []string) []string {
@@ -254,19 +331,14 @@ func (a *App) loadItemContentWithOpts(item *catalog.Item, localOnly, forceUpdate
 		}
 
 		// Check local disk cache (~/.cache/kungfu/skills/<name>/SKILL.md)
-		homeDir, _ := os.UserHomeDir()
-		if homeDir != "" {
-			cachedMD := filepath.Join(homeDir, ".cache", "kungfu", "skills", item.Name, "SKILL.md")
-			if data, err := os.ReadFile(cachedMD); err == nil && len(data) > 0 {
-				return string(data), nil
-			}
+		homeDir, err := os.UserHomeDir()
+		if err != nil || homeDir == "" {
+			return "", fmt.Errorf("load --local: unable to determine user home directory: %w", err)
 		}
-
-		// If embedded, return embedded data
-		if item.Source == "embedded" {
-			return a.loadItemContent(item)
+		cachedMD := filepath.Join(homeDir, ".cache", "kungfu", "skills", item.Name, "SKILL.md")
+		if data, err := os.ReadFile(cachedMD); err == nil && len(data) > 0 {
+			return string(data), nil
 		}
-
 		return "", fmt.Errorf("skill %q not found in local cache. Run 'kungfu load %s' to fetch from remote", item.Name, item.Name)
 	}
 
@@ -333,15 +405,7 @@ func (a *App) loadItemContentWithOpts(item *catalog.Item, localOnly, forceUpdate
 						}
 						return freshContent, nil
 					} else {
-						// autoUpdate is false and not forced: warn and use cached copy
-						homeDir, _ := os.UserHomeDir()
-						if homeDir != "" {
-							cachedMD := filepath.Join(homeDir, ".cache", "kungfu", "skills", item.Name, "SKILL.md")
-							if cachedData, cErr := os.ReadFile(cachedMD); cErr == nil && len(cachedData) > 0 {
-								_, _ = fmt.Fprintf(a.Stderr, "warning: skill %q has an update available upstream; loading cached copy. Use 'kungfu load %s --update' to update.\n", item.Name, item.Name)
-								return string(cachedData), nil
-							}
-						}
+						return "", fmt.Errorf("%w: upstream content for %q has changed (new digest %s); run 'kungfu load %s --update' to update", catalog.ErrDigestMismatch, item.Name, freshItem.Digest, item.Name)
 					}
 				}
 			}

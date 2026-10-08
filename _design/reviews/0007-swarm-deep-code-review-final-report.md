@@ -21,15 +21,15 @@
 
 ## 2. Priority Action Items
 
-1. **[P0 - Security] Subprocess Environment Scrubbing** ([`internal/runner/runner.go:294`](file:///Users/petruzalek/projects/kungfu/internal/runner/runner.go#L294)):
+1. **[P0 - Security] Subprocess Environment Scrubbing** ([`internal/runner/runner.go:294`](../../internal/runner/runner.go#L294)):
    Replace `cmd.Env = os.Environ()` with a sanitized allowlist (`PATH`, `HOME`, `USER`, `TMPDIR`, `SYSTEMROOT`, etc.) to prevent exposing host API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, etc.) to third-party scripts.
-2. **[P0 - Security] Symlink Containment during Installation** ([`internal/runner/runner.go:429`](file:///Users/petruzalek/projects/kungfu/internal/runner/runner.go#L429)):
+2. **[P0 - Security] Symlink Containment during Installation** ([`internal/runner/runner.go:429`](../../internal/runner/runner.go#L429)):
    Verify `isContained(cleanBase, srcPath)` inside `filepath.Walk` in `InstallSkillContext`.
-3. **[P1 - Reliability] Subprocess WaitDelay on Pipes** ([`internal/runner/runner.go:289`](file:///Users/petruzalek/projects/kungfu/internal/runner/runner.go#L289)):
+3. **[P1 - Reliability] Subprocess WaitDelay on Pipes** ([`internal/runner/runner.go:289`](../../internal/runner/runner.go#L289)):
    Add `cmd.WaitDelay = 2 * time.Second` to prevent hung child background processes from blocking `cmd.Run()`.
-4. **[P1 - Security] Go 1.24 `os.OpenRoot` Jailing** ([`internal/runner/runner.go:347`](file:///Users/petruzalek/projects/kungfu/internal/runner/runner.go#L347)):
+4. **[P1 - Security] Go 1.24 `os.OpenRoot` Jailing** ([`internal/runner/runner.go:347`](../../internal/runner/runner.go#L347)):
    Migrate `ReadFileContext` to `os.OpenRoot` for descriptor-based root jailing.
-5. **[P1 - State Integrity] Dual Digest 3-Way State Tracking** ([`internal/state/state.go:441`](file:///Users/petruzalek/projects/kungfu/internal/state/state.go#L441)):
+5. **[P1 - State Integrity] Dual Digest 3-Way State Tracking** ([`internal/state/state.go:441`](../../internal/state/state.go#L441)):
    Store immutable `InstalledDigest` alongside `CurrentDigest` so `kungfu update` blocks overwriting local developer edits.
 6. **[P2 - Documentation] Synchronize SPEC-0001 Exit Codes**:
    Update `_design/spec/0001-kungfu-cli-specification.md §5` to ratify `2=ExitUsage` and `3=ExitNotFound`.

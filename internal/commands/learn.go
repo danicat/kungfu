@@ -31,10 +31,16 @@ import (
 
 func resolveInstallDirectory(scope, skillName string) string {
 	if scope == state.ScopeGlobal {
-		homeDir, _ := os.UserHomeDir()
+		homeDir, err := os.UserHomeDir()
+		if err != nil || homeDir == "" {
+			panic(fmt.Sprintf("kungfu: unable to determine user home directory: %v", err))
+		}
 		return filepath.Join(homeDir, ".agents", "skills", skillName)
 	}
-	wsDir, _ := os.Getwd()
+	wsDir, err := os.Getwd()
+	if err != nil || wsDir == "" {
+		panic(fmt.Sprintf("kungfu: unable to determine working directory: %v", err))
+	}
 	return filepath.Join(wsDir, ".agents", "skills", skillName)
 }
 
@@ -188,6 +194,21 @@ func (a *App) RunLearn(args []string) int {
 				ref = item.Metadata["ref"]
 				rawURL = item.Metadata["canonical"]
 			}
+		} else if item.Metadata != nil && (item.Metadata["repo"] != "" || item.Metadata["canonical"] != "") {
+			if item.Metadata["repo"] != "" {
+				repo = item.Metadata["repo"]
+				ref = item.Metadata["ref"]
+				origin = state.OriginGitHub
+			}
+			if item.Metadata["canonical"] != "" {
+				rawURL = item.Metadata["canonical"]
+			}
+		} else if strings.Contains(item.URL, "raw.githubusercontent.com") {
+			origin = state.OriginGitHub
+			rawURL = item.URL
+		}
+		if rawURL == "" && item.URL != "" {
+			rawURL = item.URL
 		}
 
 		rec := state.SkillRecord{
@@ -204,6 +225,7 @@ func (a *App) RunLearn(args []string) int {
 			Repo:            repo,
 			Ref:             ref,
 			RawURL:          rawURL,
+			Catalog:         item.Source,
 			Files:           files,
 		}
 		st.RecordInstall(scope, wsDir, rec)

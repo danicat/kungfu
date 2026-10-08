@@ -2,7 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/danicat/kungfu.svg)](https://pkg.go.dev/github.com/danicat/kungfu)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.4.0-green.svg)](https://github.com/danicat/kungfu/releases)
+[![Release](https://img.shields.io/badge/release-v0.5.0-green.svg)](https://github.com/danicat/kungfu/releases)
 
 A command-line tool for discovering, loading, installing, and managing Agent Skills.
 
@@ -13,7 +13,7 @@ A command-line tool for discovering, loading, installing, and managing Agent Ski
 ## Key Features
 
 - **Just-in-Time (JIT) Loading**: Stream skill instructions (`SKILL.md`), reference docs, and companion assets directly to `stdout` for context injection without installing files to disk (`kungfu load`).
-- **GitHub and Catalog Ingestion**: Discover and load skills from `agentskills.io` catalog endpoints, embedded packages, or directly from GitHub repositories (`kungfu load` / `kungfu learn`).
+- **GitHub and Catalog Ingestion**: Discover and load skills from `agentskills.io` catalog endpoints or directly from GitHub repositories (`kungfu load` / `kungfu learn`).
 - **Workspace and Global Management**: Install skills to `.agents/skills/` (workspace) or `~/.agents/skills/` (global), track provenance, check for updates, and remove skills when no longer needed (`kungfu learn`, `kungfu update`, `kungfu forget`).
 - **Catalog Search and Filtering**: Search across skill titles, descriptions, categories, and tags to find the right capabilities for your task (`kungfu find`, `kungfu list`).
 
@@ -228,22 +228,7 @@ load:
 - **`catalogs.default`**: Default catalog URL (defaults to `https://skills.danicat.dev/catalog.json`).
 - **`load.auto_update`**: Automatically update cached catalog metadata and downloaded skills when an upstream digest change is detected (default `true`).
 
----
 
-## User Configuration
-
-KungFu supports user-level configuration stored at `~/.config/kungfu/config.yaml` (or `.json`):
-
-```yaml
-version: 1
-catalogs:
-  default: https://skills.danicat.dev/catalog.json
-load:
-  auto_update: true
-```
-
-- **`catalogs.default`**: Default catalog URL (defaults to `https://skills.danicat.dev/catalog.json`).
-- **`load.auto_update`**: Automatically update cached catalog metadata and downloaded skills when an upstream digest change is detected (default `true`).
 
 ---
 

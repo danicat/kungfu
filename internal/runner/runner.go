@@ -43,6 +43,7 @@ var (
 	ErrInvalidItemPath  = errors.New("invalid item path")
 	ErrInvalidPath      = errors.New("invalid path or directory traversal detected")
 	ErrExecutionTimeout = errors.New("script execution timed out")
+	ErrRuntimeNotFound  = errors.New("interpreter runtime not found in PATH")
 )
 
 // GetCandidateBaseDirs returns all existing local directories where a skill might be located.
@@ -140,25 +141,48 @@ func cacheSkillFile(skillName, relPath string, data []byte) {
 }
 
 func isContained(baseDir, targetPath string) bool {
-	realBase, err := filepath.EvalSymlinks(baseDir)
-	if err != nil {
-		realBase = baseDir
-	}
-	realTarget, err := filepath.EvalSymlinks(targetPath)
-	if err != nil {
-		realTarget = targetPath
-	}
-	rel, err := filepath.Rel(realBase, realTarget)
-	if err != nil {
+	cleanBase := filepath.Clean(baseDir)
+	cleanTarget := filepath.Clean(targetPath)
+
+	rel, err := filepath.Rel(cleanBase, cleanTarget)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return false
 	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+
+	realBase, err := filepath.EvalSymlinks(cleanBase)
+	if err != nil {
+		realBase = cleanBase
+	}
+
+	realTarget, err := filepath.EvalSymlinks(cleanTarget)
+	if err != nil {
+		parent := filepath.Dir(cleanTarget)
+		var relParts []string
+		relParts = append(relParts, filepath.Base(cleanTarget))
+		for {
+			evalParent, pErr := filepath.EvalSymlinks(parent)
+			if pErr == nil {
+				realTarget = filepath.Join(append([]string{evalParent}, relParts...)...)
+				break
+			}
+			relParts = append([]string{filepath.Base(parent)}, relParts...)
+			nextParent := filepath.Dir(parent)
+			if nextParent == parent {
+				realTarget = cleanTarget
+				break
+			}
+			parent = nextParent
+		}
+	}
+
+	realRel, err := filepath.Rel(realBase, realTarget)
+	if err != nil || realRel == ".." || strings.HasPrefix(realRel, ".."+string(filepath.Separator)) {
 		return false
 	}
 	return true
 }
 
-func detectInterpreter(scriptPath string) (string, []string) {
+func detectInterpreter(scriptPath string) (string, []string, error) {
 	ext := strings.ToLower(filepath.Ext(scriptPath))
 
 	if f, err := os.Open(scriptPath); err == nil {
@@ -196,14 +220,32 @@ func detectInterpreter(scriptPath string) (string, []string) {
 					bin := interpName
 					if found, err := exec.LookPath(base); err == nil {
 						bin = found
+					} else if found, err := exec.LookPath(interpName); err == nil {
+						bin = found
+					} else {
+						return "", nil, fmt.Errorf("%w: shebang interpreter %q not found in PATH", ErrRuntimeNotFound, interpName)
 					}
-					return bin, append(append([]string{}, interpFlags...), scriptPath)
+					return bin, append(append([]string{}, interpFlags...), scriptPath), nil
 				case strings.HasPrefix(base, "bash") || strings.HasPrefix(base, "sh") || strings.HasPrefix(base, "zsh"):
 					bin := interpName
 					if found, err := exec.LookPath(base); err == nil {
 						bin = found
+					} else if found, err := exec.LookPath(interpName); err == nil {
+						bin = found
+					} else {
+						return "", nil, fmt.Errorf("%w: shebang interpreter %q not found in PATH", ErrRuntimeNotFound, interpName)
 					}
-					return bin, append(append([]string{}, interpFlags...), scriptPath)
+					return bin, append(append([]string{}, interpFlags...), scriptPath), nil
+				default:
+					bin := interpName
+					if found, err := exec.LookPath(base); err == nil {
+						bin = found
+					} else if found, err := exec.LookPath(interpName); err == nil {
+						bin = found
+					} else {
+						return "", nil, fmt.Errorf("%w: shebang interpreter %q not found in PATH", ErrRuntimeNotFound, interpName)
+					}
+					return bin, append(append([]string{}, interpFlags...), scriptPath), nil
 				}
 			}
 		}
@@ -214,44 +256,53 @@ func detectInterpreter(scriptPath string) (string, []string) {
 		return resolvePythonCommand(scriptPath)
 	case ".js", ".mjs", ".cjs":
 		if bin, err := exec.LookPath("node"); err == nil {
-			return bin, []string{scriptPath}
+			return bin, []string{scriptPath}, nil
 		}
-		return "node", []string{scriptPath}
-	case ".ts":
 		if bin, err := exec.LookPath("bun"); err == nil {
-			return bin, []string{"run", scriptPath}
+			return bin, []string{"run", scriptPath}, nil
 		}
 		if bin, err := exec.LookPath("deno"); err == nil {
-			return bin, []string{"run", scriptPath}
+			return bin, []string{"run", scriptPath}, nil
+		}
+		return "", nil, fmt.Errorf("%w: JavaScript runtime not found (checked node, bun, deno in PATH)", ErrRuntimeNotFound)
+	case ".ts":
+		if bin, err := exec.LookPath("bun"); err == nil {
+			return bin, []string{"run", scriptPath}, nil
+		}
+		if bin, err := exec.LookPath("deno"); err == nil {
+			return bin, []string{"run", scriptPath}, nil
 		}
 		if bin, err := exec.LookPath("tsx"); err == nil {
-			return bin, []string{scriptPath}
+			return bin, []string{scriptPath}, nil
 		}
 		if bin, err := exec.LookPath("node"); err == nil {
-			return bin, []string{scriptPath}
+			return bin, []string{scriptPath}, nil
 		}
-		return "node", []string{scriptPath}
+		return "", nil, fmt.Errorf("%w: TypeScript runtime not found (checked bun, deno, tsx, node in PATH)", ErrRuntimeNotFound)
 	case ".sh", ".bash":
 		if bin, err := exec.LookPath("bash"); err == nil {
-			return bin, []string{scriptPath}
+			return bin, []string{scriptPath}, nil
 		}
-		return "sh", []string{scriptPath}
+		if bin, err := exec.LookPath("sh"); err == nil {
+			return bin, []string{scriptPath}, nil
+		}
+		return "", nil, fmt.Errorf("%w: shell runtime not found (checked bash, sh in PATH)", ErrRuntimeNotFound)
 	default:
-		return scriptPath, nil
+		return scriptPath, nil, nil
 	}
 }
 
-func resolvePythonCommand(scriptPath string) (string, []string) {
+func resolvePythonCommand(scriptPath string) (string, []string, error) {
 	if bin, err := exec.LookPath("uv"); err == nil {
-		return bin, []string{"run", scriptPath}
+		return bin, []string{"run", scriptPath}, nil
 	}
 	if bin, err := exec.LookPath("python3"); err == nil {
-		return bin, []string{scriptPath}
+		return bin, []string{scriptPath}, nil
 	}
 	if bin, err := exec.LookPath("python"); err == nil {
-		return bin, []string{scriptPath}
+		return bin, []string{scriptPath}, nil
 	}
-	return "python", []string{scriptPath}
+	return "", nil, fmt.Errorf("%w: Python runtime not found (checked uv, python3, python in PATH)", ErrRuntimeNotFound)
 }
 
 // RunScriptContext executes a bundled script for a catalog item with context cancellation and custom I/O.
@@ -308,14 +359,21 @@ func RunScriptContext(ctx context.Context, item catalog.Item, scriptName string,
 
 		if err == nil && len(data) > 0 {
 			homeDir, herr := os.UserHomeDir()
-			if herr == nil && homeDir != "" {
-				cachedPath := filepath.Join(homeDir, ".cache", "kungfu", "skills", item.Name, filepath.FromSlash(fetchTarget))
-				_ = os.MkdirAll(filepath.Dir(cachedPath), 0755)
-				_ = os.WriteFile(cachedPath, data, 0755)
-				_ = os.Chmod(cachedPath, 0755)
-				scriptPath = cachedPath
-				baseDir = filepath.Join(homeDir, ".cache", "kungfu", "skills", item.Name)
+			if herr != nil || homeDir == "" {
+				return fmt.Errorf("runner: unable to determine user home directory: %w", herr)
 			}
+			cachedPath := filepath.Join(homeDir, ".cache", "kungfu", "skills", item.Name, filepath.FromSlash(fetchTarget))
+			if err := os.MkdirAll(filepath.Dir(cachedPath), 0755); err != nil {
+				return fmt.Errorf("runner: creating cache directory for %s: %w", cachedPath, err)
+			}
+			if err := os.WriteFile(cachedPath, data, 0755); err != nil {
+				return fmt.Errorf("runner: writing cached script %s: %w", cachedPath, err)
+			}
+			if err := os.Chmod(cachedPath, 0755); err != nil {
+				return fmt.Errorf("runner: setting permissions on %s: %w", cachedPath, err)
+			}
+			scriptPath = cachedPath
+			baseDir = filepath.Join(homeDir, ".cache", "kungfu", "skills", item.Name)
 		}
 	}
 
@@ -323,7 +381,10 @@ func RunScriptContext(ctx context.Context, item catalog.Item, scriptName string,
 		return fmt.Errorf("%w: script %q not found in skill %q", ErrScriptNotFound, scriptName, item.Name)
 	}
 
-	bin, binArgs := detectInterpreter(scriptPath)
+	bin, binArgs, err := detectInterpreter(scriptPath)
+	if err != nil {
+		return fmt.Errorf("runner: %w", err)
+	}
 	allArgs := append(binArgs, args...)
 
 	cmd := exec.CommandContext(ctx, bin, allArgs...)
@@ -458,7 +519,7 @@ func ReadBytesContext(ctx context.Context, item catalog.Item, filePath string, c
 	cleanPath := filepath.Clean(trimmed)
 	cleanPath = filepath.ToSlash(cleanPath)
 	cleanPath = strings.TrimPrefix(cleanPath, "./")
-	if strings.Contains(cleanPath, "..") || filepath.IsAbs(trimmed) || strings.HasPrefix(cleanPath, "/") || strings.HasPrefix(trimmed, "\\") {
+	if strings.Contains(cleanPath, "..") || filepath.IsAbs(trimmed) || strings.HasPrefix(cleanPath, "/") || strings.HasPrefix(trimmed, "\\") || strings.Contains(trimmed, ":") {
 		return nil, fmt.Errorf("runner: %w: %s", ErrInvalidPath, filePath)
 	}
 
@@ -576,6 +637,9 @@ func ExtractCandidates(content string) []string {
 		if idx := strings.IndexAny(p, "?#"); idx != -1 {
 			p = p[:idx]
 		}
+		if strings.Contains(p, ":") || strings.HasPrefix(p, "\\") || filepath.IsAbs(p) {
+			return
+		}
 		clean := filepath.ToSlash(filepath.Clean(p))
 		clean = strings.TrimPrefix(clean, "./")
 		if clean == "" || clean == "." || clean == ".." || clean == "SKILL.md" || clean == "skill.md" || strings.HasPrefix(clean, "../") || strings.Contains(clean, "/../") || strings.HasPrefix(clean, "/") {
@@ -658,20 +722,24 @@ func InstallSkillContext(ctx context.Context, item catalog.Item, destDir string,
 	// 1. Ensure SKILL.md is written
 	skillFilePath := filepath.Join(cleanDest, "SKILL.md")
 	if rawContent != "" {
-		if err := os.WriteFile(skillFilePath, []byte(rawContent), 0644); err == nil {
-			recordInstalled("SKILL.md")
+		if err := os.WriteFile(skillFilePath, []byte(rawContent), 0644); err != nil {
+			return nil, fmt.Errorf("runner: writing %s: %w", skillFilePath, err)
 		}
+		recordInstalled("SKILL.md")
 	} else if !installedMap["SKILL.md"] {
 		if data, err := os.ReadFile(skillFilePath); err == nil {
 			rawContent = string(data)
 			recordInstalled("SKILL.md")
 		} else {
-			if content, err := ReadFileContext(ctx, item, "SKILL.md", client); err == nil {
-				rawContent = content
-				if err := os.WriteFile(skillFilePath, []byte(content), 0644); err == nil {
-					recordInstalled("SKILL.md")
-				}
+			content, err := ReadFileContext(ctx, item, "SKILL.md", client)
+			if err != nil {
+				return nil, fmt.Errorf("runner: fetching SKILL.md for %s: %w", item.Name, err)
 			}
+			rawContent = content
+			if err := os.WriteFile(skillFilePath, []byte(content), 0644); err != nil {
+				return nil, fmt.Errorf("runner: writing %s: %w", skillFilePath, err)
+			}
+			recordInstalled("SKILL.md")
 		}
 	}
 
@@ -686,6 +754,9 @@ func InstallSkillContext(ctx context.Context, item catalog.Item, destDir string,
 		}
 		if idx := strings.IndexAny(p, "?#"); idx != -1 {
 			p = p[:idx]
+		}
+		if strings.Contains(p, ":") || strings.HasPrefix(p, "\\") || filepath.IsAbs(p) {
+			return
 		}
 		clean := filepath.ToSlash(filepath.Clean(p))
 		clean = strings.TrimPrefix(clean, "./")
@@ -726,8 +797,11 @@ func InstallSkillContext(ctx context.Context, item catalog.Item, destDir string,
 		}
 
 		destFilePath := filepath.Join(cleanDest, filepath.FromSlash(target))
+		if !isContained(cleanDest, destFilePath) {
+			return nil, fmt.Errorf("runner: candidate %q escapes destination directory %q: %w", target, cleanDest, ErrInvalidPath)
+		}
 		if err := os.MkdirAll(filepath.Dir(destFilePath), 0755); err != nil {
-			continue
+			return nil, fmt.Errorf("runner: creating directory for %s: %w", destFilePath, err)
 		}
 
 		var perm os.FileMode = 0644
@@ -735,13 +809,16 @@ func InstallSkillContext(ctx context.Context, item catalog.Item, destDir string,
 			perm = 0755
 		}
 
-		if err := os.WriteFile(destFilePath, data, perm); err == nil {
-			_ = os.Chmod(destFilePath, perm)
-			recordInstalled(target)
-			if strings.HasSuffix(strings.ToLower(target), ".md") && utf8.Valid(data) {
-				for _, next := range ExtractCandidates(string(data)) {
-					addCandidate(next)
-				}
+		if err := os.WriteFile(destFilePath, data, perm); err != nil {
+			return nil, fmt.Errorf("runner: writing %s: %w", destFilePath, err)
+		}
+		if err := os.Chmod(destFilePath, perm); err != nil {
+			return nil, fmt.Errorf("runner: setting permissions on %s: %w", destFilePath, err)
+		}
+		recordInstalled(target)
+		if strings.HasSuffix(strings.ToLower(target), ".md") && utf8.Valid(data) {
+			for _, next := range ExtractCandidates(string(data)) {
+				addCandidate(next)
 			}
 		}
 	}

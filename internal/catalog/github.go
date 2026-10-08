@@ -149,26 +149,14 @@ func FetchGitHubSkill(ctx context.Context, target *GitHubTarget, client *http.Cl
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
 
-	refsToTry := []string{target.Ref}
-	if target.Ref == "main" {
-		refsToTry = append(refsToTry, "master")
+	item, err := probeGitHubRef(ctx, target, target.Ref, client)
+	if err != nil {
+		return nil, err
 	}
-
-	var lastErr error
-	for _, ref := range refsToTry {
-		item, err := probeGitHubRef(ctx, target, ref, client)
-		if err == nil && item != nil {
-			return item, nil
-		}
-		if err != nil {
-			lastErr = err
-		}
+	if item == nil {
+		return nil, fmt.Errorf("no valid SKILL.md found in github repository %s/%s (ref: %s)", target.Owner, target.Repo, target.Ref)
 	}
-
-	if lastErr != nil {
-		return nil, lastErr
-	}
-	return nil, fmt.Errorf("no valid SKILL.md found in github repository %s/%s (ref: %s)", target.Owner, target.Repo, target.Ref)
+	return item, nil
 }
 
 func probeGitHubRef(ctx context.Context, target *GitHubTarget, ref string, client *http.Client) (*Item, error) {
@@ -300,26 +288,14 @@ func FetchGitHubCatalog(ctx context.Context, target *GitHubTarget, client *http.
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
 
-	refsToTry := []string{target.Ref}
-	if target.Ref == "main" {
-		refsToTry = append(refsToTry, "master")
+	manifest, err := probeGitHubCatalogRef(ctx, target, target.Ref, client)
+	if err != nil {
+		return nil, err
 	}
-
-	var lastErr error
-	for _, ref := range refsToTry {
-		manifest, err := probeGitHubCatalogRef(ctx, target, ref, client)
-		if err == nil && manifest != nil && len(manifest.Items) > 0 {
-			return manifest, nil
-		}
-		if err != nil {
-			lastErr = err
-		}
+	if manifest == nil || len(manifest.Items) == 0 {
+		return nil, fmt.Errorf("no skills found in github repository %s/%s", target.Owner, target.Repo)
 	}
-
-	if lastErr != nil {
-		return nil, lastErr
-	}
-	return nil, fmt.Errorf("no skills found in github repository %s/%s", target.Owner, target.Repo)
+	return manifest, nil
 }
 
 func tryFetchManifest(ctx context.Context, target *GitHubTarget, ref, catPath string, client *http.Client) (*Manifest, error) {

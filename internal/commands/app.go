@@ -19,7 +19,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -103,7 +102,6 @@ type App struct {
 	Stderr     io.Writer
 	Options    GlobalOptions
 	HTTPClient *http.Client
-	EmbeddedFS fs.FS
 	Config     *config.Config
 }
 
@@ -114,7 +112,7 @@ func (a *App) getHTTPClient() *http.Client {
 	return http.DefaultClient
 }
 
-func NewApp(opts GlobalOptions, stdout, stderr io.Writer, embeddedFS fs.FS) (*App, error) {
+func NewApp(opts GlobalOptions, stdout, stderr io.Writer) (*App, error) {
 	if stdout == nil {
 		stdout = os.Stdout
 	}
@@ -128,7 +126,6 @@ func NewApp(opts GlobalOptions, stdout, stderr io.Writer, embeddedFS fs.FS) (*Ap
 	}
 
 	catOpts := []catalog.Option{
-		catalog.WithEmbeddedFS(embeddedFS),
 		catalog.WithLocalDiscovery(true),
 	}
 	if defURL := cfg.GetCatalogURL("default"); defURL != "" && defURL != config.DefaultCatalogURL {
@@ -151,7 +148,6 @@ func NewApp(opts GlobalOptions, stdout, stderr io.Writer, embeddedFS fs.FS) (*Ap
 		Stderr:     stderr,
 		Options:    opts,
 		HTTPClient: &http.Client{Timeout: 30 * time.Second},
-		EmbeddedFS: embeddedFS,
 		Config:     cfg,
 	}, nil
 }
@@ -159,13 +155,12 @@ func NewApp(opts GlobalOptions, stdout, stderr io.Writer, embeddedFS fs.FS) (*Ap
 func (a *App) loadState() *state.State {
 	s, err := state.LoadState("")
 	if err != nil {
-		path := state.DefaultStateFilePath()
-		if data, rerr := os.ReadFile(path); rerr == nil && len(data) > 0 {
-			backupPath := fmt.Sprintf("%s.corrupted.%d", path, time.Now().Unix())
-			_ = os.WriteFile(backupPath, data, 0644)
-			_, _ = fmt.Fprintf(a.Stderr, "warning: state file corrupted; backed up to %s\n", backupPath)
+		if os.IsNotExist(err) {
+			s = state.NewState()
+		} else {
+			_, _ = fmt.Fprintf(a.Stderr, "FATAL: state file %s is corrupted or unreadable: %v\n", state.DefaultStateFilePath(), err)
+			os.Exit(ExitGeneral)
 		}
-		s = state.NewState()
 	}
 
 	wd, _ := os.Getwd()
@@ -188,7 +183,9 @@ func (a *App) loadState() *state.State {
 }
 
 func (a *App) saveState(s *state.State) {
-	_ = state.SaveState("", s)
+	if err := state.SaveState("", s); err != nil {
+		_, _ = fmt.Fprintf(a.Stderr, "error: failed to persist state to %s: %v\n", state.DefaultStateFilePath(), err)
+	}
 }
 
 func parseFlagsWithArgs(fs *flag.FlagSet, args []string) ([]string, error) {
@@ -308,18 +305,12 @@ func (a *App) getSkillStatus(item *catalog.Item) string {
 		if _, err := os.Stat(filepath.Join(wd, ".agents", "skills", item.Name, "SKILL.md")); err == nil {
 			return state.ScopeWorkspace
 		}
-		if _, err := os.Stat(filepath.Join(wd, ".gemini", "skills", item.Name, "SKILL.md")); err == nil {
-			return state.ScopeWorkspace
-		}
 		if _, err := os.Stat(filepath.Join(wd, "skills", item.Name, "SKILL.md")); err == nil {
 			return state.ScopeWorkspace
 		}
 	}
 	if homeDir != "" {
 		if _, err := os.Stat(filepath.Join(homeDir, ".agents", "skills", item.Name, "SKILL.md")); err == nil {
-			return state.ScopeGlobal
-		}
-		if _, err := os.Stat(filepath.Join(homeDir, ".gemini", "config", "skills", item.Name, "SKILL.md")); err == nil {
 			return state.ScopeGlobal
 		}
 		if _, err := os.Stat(filepath.Join(homeDir, ".cache", "kungfu", "skills", item.Name, "SKILL.md")); err == nil {
@@ -331,7 +322,7 @@ func (a *App) getSkillStatus(item *catalog.Item) string {
 }
 
 // Run executes the command line entrypoint for kungfu CLI.
-func Run(args []string, stdout, stderr io.Writer, embeddedFS fs.FS) int {
+func Run(args []string, stdout, stderr io.Writer) int {
 	if stdout == nil {
 		stdout = os.Stdout
 	}
@@ -404,7 +395,7 @@ func Run(args []string, stdout, stderr io.Writer, embeddedFS fs.FS) int {
 		opts.Mode = OutputModeRaw
 	}
 
-	app, err := NewApp(opts, stdout, stderr, embeddedFS)
+	app, err := NewApp(opts, stdout, stderr)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 		return MapErrorToExitCode(err)
@@ -461,8 +452,8 @@ COMMANDS:
           Search skills with hybrid BM25/TF-IDF ranking.
   show    <skill1> [skill2...] [--json] [--raw]
           Display metadata, description, tags, and summary for one or more skills.
-  load    <skill1[/subpath]> [skill2...] [--local] [--update] [--force] [--json] [--raw]
-          Load verbatim markdown instructions or subpath files (references, scripts, assets) for JIT execution.
+  load    <skill[/subpath]> [-p <page>] [--full] [--local] [--update] [--force] [--json] [--raw]
+          Load verbatim markdown instructions or subpath files for JIT execution (paginated to prevent buffer truncation).
   learn   <skill1> [skill2...] [--global] [--force] [--load] [--json] [--raw]
           Install and persist skills to canonical workspace or global locations (optionally stream with --load).
   forget  <skill1> [skill2...] [--global] [--force] [--all] [--json] [--raw]

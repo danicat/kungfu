@@ -20,12 +20,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 // DefaultCatalogURL is the default remote catalog URL.
 const DefaultCatalogURL = "https://skills.danicat.dev/catalog.json"
+
+// DefaultGitHubCatalog is the default GitHub catalog repository.
+const DefaultGitHubCatalog = "danicat/kungfu"
 
 // LoadConfig holds configuration options for kungfu load behavior.
 type LoadConfig struct {
@@ -47,6 +51,7 @@ func DefaultConfig() *Config {
 		},
 		Catalogs: map[string]string{
 			"default": DefaultCatalogURL,
+			"kungfu":  DefaultGitHubCatalog,
 		},
 	}
 }
@@ -65,6 +70,9 @@ func (c *Config) GetCatalogURL(name string) string {
 		if name == "default" {
 			return DefaultCatalogURL
 		}
+		if name == "kungfu" {
+			return DefaultGitHubCatalog
+		}
 		return ""
 	}
 	if u, ok := c.Catalogs[name]; ok && u != "" {
@@ -72,6 +80,9 @@ func (c *Config) GetCatalogURL(name string) string {
 	}
 	if name == "default" {
 		return DefaultCatalogURL
+	}
+	if name == "kungfu" {
+		return DefaultGitHubCatalog
 	}
 	return ""
 }
@@ -83,7 +94,7 @@ func UserConfigDir() string {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		home = "."
+		panic(fmt.Sprintf("config: unable to resolve user home directory: %v", err))
 	}
 	return filepath.Join(home, ".config", "kungfu")
 }
@@ -133,11 +144,13 @@ func Load(customPath string) (*Config, error) {
 
 	cfg := DefaultConfig()
 
-	// Try YAML first (YAML is a superset of JSON, but yaml.v3 handles both cleanly)
-	if err := yaml.Unmarshal(data, cfg); err != nil {
-		// Fallback to JSON unmarshaler
-		if jerr := json.Unmarshal(data, cfg); jerr != nil {
-			return nil, fmt.Errorf("config: parsing %s: %w", path, err)
+	if strings.HasSuffix(path, ".json") {
+		if err := json.Unmarshal(data, cfg); err != nil {
+			return nil, fmt.Errorf("config: parsing JSON %s: %w", path, err)
+		}
+	} else {
+		if err := yaml.Unmarshal(data, cfg); err != nil {
+			return nil, fmt.Errorf("config: parsing YAML %s: %w", path, err)
 		}
 	}
 
@@ -146,6 +159,9 @@ func Load(customPath string) (*Config, error) {
 	}
 	if _, ok := cfg.Catalogs["default"]; !ok || cfg.Catalogs["default"] == "" {
 		cfg.Catalogs["default"] = DefaultCatalogURL
+	}
+	if _, ok := cfg.Catalogs["kungfu"]; !ok || cfg.Catalogs["kungfu"] == "" {
+		cfg.Catalogs["kungfu"] = DefaultGitHubCatalog
 	}
 
 	return cfg, nil

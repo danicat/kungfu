@@ -38,7 +38,7 @@ type CachedCatalog struct {
 func DefaultCacheDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		home = "."
+		panic(fmt.Sprintf("catalog: unable to resolve user home directory: %v", err))
 	}
 	return filepath.Join(home, ".cache", "kungfu")
 }

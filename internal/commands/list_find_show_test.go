@@ -17,11 +17,48 @@ package commands
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
 
+func setupTestCatalogServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
+			"skills": [
+				{
+					"name": "kungfu",
+					"type": "skill-md",
+					"description": "Agent skills gateway and discovery hybrid tool",
+					"category": "agents",
+					"tags": ["gateway", "discovery"],
+					"url": "https://skills.danicat.dev/agents/kungfu/SKILL.md",
+					"digest": "sha256:123"
+				},
+				{
+					"name": "godoctor",
+					"type": "skill-md",
+					"description": "Go doctor",
+					"category": "coding",
+					"tags": ["go", "linter"],
+					"url": "https://skills.danicat.dev/coding/godoctor/SKILL.md",
+					"digest": "sha256:456"
+				}
+			]
+		}`))
+	}))
+	t.Setenv("KUNGFU_URL", server.URL)
+	return server
+}
+
 func TestRunList(t *testing.T) {
+	server := setupTestCatalogServer(t)
+	defer server.Close()
+
 	tests := []struct {
 		name     string
 		args     []string
@@ -73,7 +110,7 @@ func TestRunList(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := Run(tt.args, &stdout, &stderr, testEmbeddedFS)
+			code := Run(tt.args, &stdout, &stderr)
 			if code != tt.wantCode {
 				t.Fatalf("Run(%v) = %d, want %d; stderr: %s", tt.args, code, tt.wantCode, stderr.String())
 			}
@@ -83,6 +120,9 @@ func TestRunList(t *testing.T) {
 }
 
 func TestRunFind(t *testing.T) {
+	server := setupTestCatalogServer(t)
+	defer server.Close()
+
 	tests := []struct {
 		name     string
 		args     []string
@@ -140,7 +180,7 @@ func TestRunFind(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := Run(tt.args, &stdout, &stderr, testEmbeddedFS)
+			code := Run(tt.args, &stdout, &stderr)
 			if code != tt.wantCode {
 				t.Fatalf("Run(%v) = %d, want %d; stderr: %s", tt.args, code, tt.wantCode, stderr.String())
 			}
@@ -150,6 +190,9 @@ func TestRunFind(t *testing.T) {
 }
 
 func TestRunShow(t *testing.T) {
+	server := setupTestCatalogServer(t)
+	defer server.Close()
+
 	tests := []struct {
 		name     string
 		args     []string
@@ -166,7 +209,7 @@ func TestRunShow(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := Run(tt.args, &stdout, &stderr, testEmbeddedFS)
+			code := Run(tt.args, &stdout, &stderr)
 			if code != tt.wantCode {
 				t.Fatalf("Run(%v) = %d, want %d; stderr: %s", tt.args, code, tt.wantCode, stderr.String())
 			}

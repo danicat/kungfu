@@ -11,7 +11,7 @@ metadata:
   category: agents
   tags: "gateway, agent-skills, discovery, search, catalog, cli, learn, jit"
   author: Daniela Petruzalek (daniela@danicat.dev)
-  version: "0.4.0"
+  version: "0.5.0"
   catalog: https://skills.danicat.dev
 ---
 
@@ -44,28 +44,37 @@ kungfu find ast
 
 ## 2. ⚡ Just-In-Time Loading (`kungfu load` / `::skill`)
 
-Stream complete verbatim instructions directly into session context with zero workspace footprint:
+Stream complete verbatim instructions directly into session context with zero workspace footprint.
+
+> [!IMPORTANT]
+> **Buffer Truncation Ceiling & Safe Pagination**:
+> - Execution buffers (e.g. `run_command`) enforce an exact **8,192-byte** (8 KiB) ring-buffer limit.
+> - Exceeding 8,192 bytes causes **head truncation** (tail retention), silently dropping titles, frontmatter, and initial instructions.
+> - PTY newline expansion (`\n` → `\r\n`) consumes 2 bytes per line break.
+> - To prevent truncation, `kungfu load` paginates automatically (safe page size: ~6,000 bytes).
+> - Loading multiple skills simultaneously on a single command (`kungfu load skillA skillB`) is **disabled** to avoid pagination conflicts. Always load skills individually.
 
 ```bash
-# Load single skill into context (default catalog)
+# Load single skill into context (paginated automatically if large)
 kungfu load ebitengineer
+
+# Navigate to subsequent pages
+kungfu load ebitengineer -p 2
+kungfu load ebitengineer --page 3
+
+# Stream complete unpaginated content (bypass pagination)
+kungfu load ebitengineer --full
 
 # Load skill from a specific catalog
 kungfu load go@go-skills
 
-# Batch load multiple skills simultaneously
-kungfu load ebitengineer procedural-art procedural-composer
-
 # Stream raw unformatted markdown directly for LLM context injection
 kungfu load godoctor --raw
 
-# Offline fallback / force refresh
+# Local cache only / force refresh
 kungfu load godoctor --local         # Force local cache only
 kungfu load godoctor -u -f           # Force upstream check & reload
 ```
-
-> [!TIP]
-> **Buffer Safety**: When calling `run_command` on `kungfu load` for batch or large skills, set `WaitMsBeforeAsync: 0` so the complete, untruncated content streams into the task log.
 
 ---
 
@@ -181,4 +190,3 @@ kungfu catalog sync
 ### Core Operational Rules
 1. **Automation Script First Instinct**: Never crawl disk looking for scripts. Always invoke `kungfu run <skill> <script> [args]`.
 2. **JIT Streaming by Default**: Prefer ephemeral `kungfu load` over persistent `kungfu learn` unless permanent repository storage is requested.
-3. **Resilient Offline Fallback**: If the network is unreachable, `kungfu` automatically falls back to local cache and embedded skills without error.

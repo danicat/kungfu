@@ -67,6 +67,7 @@ type SkillRecord struct {
 	Repo            string     `json:"repo,omitempty"`    // e.g. "https://github.com/owner/repo" or "owner/repo"
 	Ref             string     `json:"ref,omitempty"`     // e.g. "main", "v1.0.0"
 	RawURL          string     `json:"raw_url,omitempty"` // e.g. "https://raw.githubusercontent.com/owner/repo/main/path/SKILL.md"
+	Catalog         string     `json:"catalog,omitempty"` // Catalog name (e.g. "kungfu", "default")
 	Path            string     `json:"path"`
 	Version         string     `json:"version,omitempty"`
 	Digest          string     `json:"digest,omitempty"`           // Current/reconciled digest
@@ -101,6 +102,7 @@ type State struct {
 }
 
 const DefaultRemoteCatalogURL = "https://skills.danicat.dev/catalog.json"
+const DefaultGitHubCatalog = "danicat/kungfu"
 
 // NewState creates an initialized State struct.
 func NewState() *State {
@@ -123,6 +125,15 @@ func NewState() *State {
 		AddedAt:   now,
 		UpdatedAt: now,
 	}
+	s.Catalogs["kungfu"] = CatalogRecord{
+		Name:      "kungfu",
+		Type:      CatalogTypeGitHub,
+		Source:    DefaultGitHubCatalog,
+		URL:       "https://github.com/" + DefaultGitHubCatalog,
+		Ref:       "main",
+		AddedAt:   now,
+		UpdatedAt: now,
+	}
 	return s
 }
 
@@ -136,7 +147,7 @@ func DefaultStateFilePath() string {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		home = "."
+		panic(fmt.Sprintf("kungfu: unable to determine user home directory: %v", err))
 	}
 	return filepath.Join(home, ".config", "kungfu", "state.json")
 }
@@ -181,6 +192,18 @@ func LoadState(filePath string) (*State, error) {
 			Type:      CatalogTypeDefault,
 			Source:    DefaultRemoteCatalogURL,
 			URL:       DefaultRemoteCatalogURL,
+			AddedAt:   now,
+			UpdatedAt: now,
+		}
+	}
+	if _, ok := s.Catalogs["kungfu"]; !ok {
+		now := time.Now().UTC()
+		s.Catalogs["kungfu"] = CatalogRecord{
+			Name:      "kungfu",
+			Type:      CatalogTypeGitHub,
+			Source:    DefaultGitHubCatalog,
+			URL:       "https://github.com/" + DefaultGitHubCatalog,
+			Ref:       "main",
 			AddedAt:   now,
 			UpdatedAt: now,
 		}

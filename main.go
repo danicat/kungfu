@@ -15,7 +15,6 @@
 package main
 
 import (
-	"embed"
 	"io"
 	"os"
 
@@ -32,9 +31,6 @@ const (
 	ExitIntegrity = commands.ExitIntegrity
 )
 
-//go:embed all:skills
-var embeddedSkills embed.FS
-
 func main() {
 	code := Run(os.Args[1:], os.Stdout, os.Stderr)
 	os.Exit(code)
@@ -42,5 +38,5 @@ func main() {
 
 // Run executes the command line entrypoint for kungfu CLI.
 func Run(args []string, stdout, stderr io.Writer) int {
-	return commands.Run(args, stdout, stderr, embeddedSkills)
+	return commands.Run(args, stdout, stderr)
 }

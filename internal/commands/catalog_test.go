@@ -50,7 +50,7 @@ func TestRunCatalog(t *testing.T) {
 	defer server.Close()
 
 	var stdout, stderr bytes.Buffer
-	app, err := NewApp(GlobalOptions{}, &stdout, &stderr, testEmbeddedFS)
+	app, err := NewApp(GlobalOptions{}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("NewApp failed: %v", err)
 	}

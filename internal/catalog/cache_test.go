@@ -24,7 +24,7 @@ import (
 	"github.com/danicat/kungfu/internal/catalog"
 )
 
-func TestCatalogCache_ETagAndOfflineFallback(t *testing.T) {
+func TestCatalogCache_ETagAndFailFast(t *testing.T) {
 	var requestCount int32
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -99,18 +99,15 @@ func TestCatalogCache_ETagAndOfflineFallback(t *testing.T) {
 		t.Errorf("expected 2 requests (1 full + 1 304 conditional), got %d", atomic.LoadInt32(&requestCount))
 	}
 
-	// 4. Offline fallback: server closed, should load from cache
+	// 4. Server closed: force refresh fails fast and does not fallback to stale cache
 	server.Close()
-	c4, err := catalog.NewCatalog(
+	_, err = catalog.NewCatalog(
 		catalog.WithRemoteURL(server.URL),
 		catalog.WithCacheDir(tmpDir),
 		catalog.WithForceRefresh(),
 	)
-	if err != nil {
-		t.Fatalf("fourth NewCatalog (offline fallback) failed: %v", err)
-	}
-	if _, err := c4.Get("cached-skill"); err != nil {
-		t.Fatalf("expected cached-skill in offline fallback, err: %v", err)
+	if err == nil {
+		t.Fatalf("expected NewCatalog to fail fast when server is closed with WithForceRefresh")
 	}
 }
 

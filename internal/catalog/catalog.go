@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -77,13 +76,6 @@ func WithRemoteDisabled() Option {
 	}
 }
 
-// WithEmbeddedFS sets an embedded filesystem to discover built-in skills from.
-func WithEmbeddedFS(fsys fs.FS) Option {
-	return func(c *Catalog) {
-		c.embeddedFS = fsys
-	}
-}
-
 // WithManifest injects a pre-parsed manifest (useful for testing).
 func WithManifest(m *Manifest) Option {
 	return func(c *Catalog) {
@@ -137,8 +129,6 @@ func WithForceRefresh() Option {
 type Catalog struct {
 	mu           sync.RWMutex
 	items        map[string]Item
-	embeddedData map[string]string
-	embeddedFS   fs.FS
 	manifest     *Manifest
 	remoteURL    string
 	httpClient   *http.Client
@@ -231,7 +221,6 @@ func NewCatalog(opts ...Option) (*Catalog, error) {
 
 	c := &Catalog{
 		items:        make(map[string]Item),
-		embeddedData: make(map[string]string),
 		remoteURL:    remote,
 		httpClient:   &http.Client{Timeout: 10 * time.Second},
 		enableRemote: true,
@@ -244,12 +233,13 @@ func NewCatalog(opts ...Option) (*Catalog, error) {
 
 	// 1. Fetch live remote catalog manifest if enabled with 3 exponential retries and caching
 	if c.enableRemote && c.remoteURL != "" && c.manifest == nil {
-		c.fetchRemoteLocked(context.Background())
+		if err := c.fetchRemoteLocked(context.Background()); err != nil {
+			return nil, err
+		}
 	}
 
-	// 2. Register built-in embedded kungfu item and discover local/installed skills
+	// 2. Discover local/installed skills
 	c.mu.Lock()
-	c.discoverEmbeddedLocked()
 	if c.enableLocal {
 		c.discoverLocalSkillsLocked()
 	}
@@ -267,13 +257,14 @@ func (c *Catalog) Sync(ctx context.Context, force bool) error {
 	}
 
 	c.forceRefresh = force
-	c.fetchRemoteLocked(ctx)
-	c.discoverEmbeddedLocked()
+	if err := c.fetchRemoteLocked(ctx); err != nil {
+		return err
+	}
 	c.discoverLocalSkillsLocked()
 	return nil
 }
 
-func (c *Catalog) fetchRemoteLocked(ctx context.Context) {
+func (c *Catalog) fetchRemoteLocked(ctx context.Context) error {
 	cachePath := GetCatalogCachePath()
 	if c.cacheDir != "" {
 		cachePath = filepath.Join(c.cacheDir, "index.json")
@@ -303,47 +294,47 @@ func (c *Catalog) fetchRemoteLocked(ctx context.Context) {
 		}
 
 		resp, err := fetchWithRetryAndHeaders(reqCtx, c.httpClient, c.remoteURL, version.UserAgent(), headers, defaultMaxRetries, defaultInitialBackoff)
-		if err == nil && resp != nil {
-			defer func() { _ = resp.Body.Close() }()
-			if resp.StatusCode == http.StatusNotModified && cached != nil {
-				// 304 Not Modified: refresh fetched timestamp and use cache
-				_ = SaveCachedCatalog(cachePath, c.remoteURL, cached.Manifest, cached.ETag)
-				c.manifest = &cached.Manifest
-				for _, it := range cached.Manifest.Items {
-					c.items[strings.ToLower(it.ID)] = it
-					c.items[strings.ToLower(it.Name)] = it
-				}
-			} else if resp.StatusCode == http.StatusOK {
-				data, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
-				if err == nil {
-					var manifest Manifest
-					if err := json.Unmarshal(data, &manifest); err == nil {
-						c.manifest = &manifest
-						etag := resp.Header.Get("ETag")
-						if !c.noCache {
-							_ = SaveCachedCatalog(cachePath, c.remoteURL, manifest, etag)
-						}
-						for _, it := range manifest.Items {
-							c.items[strings.ToLower(it.ID)] = it
-							c.items[strings.ToLower(it.Name)] = it
-						}
-					}
-				}
-			}
+		if err != nil {
+			return fmt.Errorf("catalog: fetching %s: %w", c.remoteURL, err)
 		}
-
-		if c.manifest == nil && cached != nil {
-			// Offline / non-200 HTTP fallback to cache
+		if resp == nil {
+			return fmt.Errorf("catalog: nil response from %s", c.remoteURL)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode == http.StatusNotModified && cached != nil {
+			// 304 Not Modified: refresh fetched timestamp and use cache
+			_ = SaveCachedCatalog(cachePath, c.remoteURL, cached.Manifest, cached.ETag)
 			c.manifest = &cached.Manifest
 			for _, it := range cached.Manifest.Items {
 				c.items[strings.ToLower(it.ID)] = it
 				c.items[strings.ToLower(it.Name)] = it
 			}
+		} else if resp.StatusCode == http.StatusOK {
+			data, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+			if err != nil {
+				return fmt.Errorf("catalog: reading %s body: %w", c.remoteURL, err)
+			}
+			var manifest Manifest
+			if err := json.Unmarshal(data, &manifest); err != nil {
+				return fmt.Errorf("catalog: parsing %s JSON: %w", c.remoteURL, err)
+			}
+			c.manifest = &manifest
+			etag := resp.Header.Get("ETag")
+			if !c.noCache {
+				_ = SaveCachedCatalog(cachePath, c.remoteURL, manifest, etag)
+			}
+			for _, it := range manifest.Items {
+				c.items[strings.ToLower(it.ID)] = it
+				c.items[strings.ToLower(it.Name)] = it
+			}
+		} else {
+			return fmt.Errorf("catalog: unexpected HTTP %d from %s", resp.StatusCode, c.remoteURL)
 		}
 	}
 
 	// Also load all registered/named external catalogs from cache
 	c.loadNamedCatalogsLocked()
+	return nil
 }
 
 func (c *Catalog) loadNamedCatalogsLocked() {
@@ -369,6 +360,8 @@ func (c *Catalog) loadNamedCatalogsLocked() {
 			if _, exists := c.items[lowName]; !exists {
 				c.items[lowName] = it
 			}
+			c.items[fmt.Sprintf("%s@%s", lowID, strings.ToLower(catName))] = it
+			c.items[fmt.Sprintf("%s@%s", lowName, strings.ToLower(catName))] = it
 		}
 	}
 }
@@ -383,8 +376,12 @@ func (c *Catalog) AddCatalogManifest(name string, manifest *Manifest) {
 	for _, it := range manifest.Items {
 		it.Normalize()
 		it.Source = name
-		c.items[strings.ToLower(it.ID)] = it
-		c.items[strings.ToLower(it.Name)] = it
+		lowID := strings.ToLower(it.ID)
+		lowName := strings.ToLower(it.Name)
+		c.items[lowID] = it
+		c.items[lowName] = it
+		c.items[fmt.Sprintf("%s@%s", lowID, strings.ToLower(name))] = it
+		c.items[fmt.Sprintf("%s@%s", lowName, strings.ToLower(name))] = it
 	}
 }
 
@@ -556,43 +553,18 @@ func (c *Catalog) Categories() []Category {
 	return result
 }
 
-func (c *Catalog) discoverEmbeddedLocked() {
-	if c.embeddedFS == nil {
-		return
-	}
-	items, contents, err := DiscoverSkillsInFS(c.embeddedFS)
-	if err == nil {
-		for _, item := range items {
-			idKey := strings.ToLower(item.ID)
-			nameKey := strings.ToLower(item.Name)
-			// Only populate c.items if not already present from remote manifest or cache
-			if _, exists := c.items[idKey]; !exists {
-				c.items[idKey] = item
-			}
-			if _, exists := c.items[nameKey]; !exists {
-				c.items[nameKey] = item
-			}
-		}
-		for k, v := range contents {
-			c.embeddedData[k] = v
-		}
-	}
-}
-
 func (c *Catalog) discoverLocalSkillsLocked() {
 	var candidateRoots []string
 
 	// 1. Workspace directories
 	if wd, err := os.Getwd(); err == nil && wd != "" {
 		candidateRoots = append(candidateRoots, filepath.Join(wd, ".agents", "skills"))
-		candidateRoots = append(candidateRoots, filepath.Join(wd, ".gemini", "skills"))
 		candidateRoots = append(candidateRoots, filepath.Join(wd, "skills"))
 	}
 
 	// 2. Global user directories
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		candidateRoots = append(candidateRoots, filepath.Join(home, ".agents", "skills"))
-		candidateRoots = append(candidateRoots, filepath.Join(home, ".gemini", "config", "skills"))
 		candidateRoots = append(candidateRoots, filepath.Join(home, ".cache", "kungfu", "skills"))
 	}
 
@@ -701,29 +673,19 @@ func (c *Catalog) discoverLocalSkillsLocked() {
 }
 
 // LoadContent retrieves the full raw markdown content for an item.
-// It loads embedded skills, in-memory bodies, or streams live from remote URLs.
+// It loads in-memory bodies or streams live from remote URLs.
 // Kungfu does not load skills from local filesystem paths; local paths are only used for installation via learn.
 func (c *Catalog) LoadContent(item *Item) (string, error) {
 	if item == nil {
 		return "", errors.New("cannot load content for nil item")
 	}
 
-	// 1. Embedded skills
-	if item.Source == "embedded" {
-		if content, ok := c.embeddedData[strings.ToLower(item.ID)]; ok && content != "" {
-			return content, nil
-		}
-		if content, ok := c.embeddedData[strings.ToLower(item.Name)]; ok && content != "" {
-			return content, nil
-		}
-	}
-
-	// 2. Direct frontmatter body already in memory
+	// 1. Direct frontmatter body already in memory
 	if strings.HasPrefix(item.Body, "---") {
 		return item.Body, nil
 	}
 
-	// 3. Remote URL: Stream live over HTTP into memory
+	// 2. Remote URL: Stream live over HTTP into memory
 	remoteURL := item.URL
 	if remoteURL == "" && item.Metadata != nil && item.Metadata["canonical"] != "" {
 		remoteURL = item.Metadata["canonical"]
@@ -764,18 +726,10 @@ func (c *Catalog) LoadContent(item *Item) (string, error) {
 		return string(data), nil
 	}
 
-	// 4. If item has raw body, return it
+	// 3. If item has raw body, return it
 	if item.Body != "" {
 		return item.Body, nil
 	}
 
-	// 5. Offline fallback to embedded content if available
-	if content, ok := c.embeddedData[strings.ToLower(item.ID)]; ok && content != "" {
-		return content, nil
-	}
-	if content, ok := c.embeddedData[strings.ToLower(item.Name)]; ok && content != "" {
-		return content, nil
-	}
-
-	return "", fmt.Errorf("content unavailable for skill %q (remote URL or embedded content required)", item.Name)
+	return "", fmt.Errorf("content unavailable for skill %q: missing remote URL or body", item.Name)
 }

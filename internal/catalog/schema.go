@@ -56,7 +56,7 @@ type Item struct {
 	Path               string            `json:"path,omitempty" yaml:"path,omitempty"`
 	Digest             string            `json:"digest,omitempty" yaml:"digest,omitempty"`
 	Sha256             string            `json:"sha256,omitempty" yaml:"sha256,omitempty"`
-	Source             string            `json:"source,omitempty" yaml:"source,omitempty"` // "remote", "workspace", "global", "embedded"
+	Source             string            `json:"source,omitempty" yaml:"source,omitempty"` // "remote", "workspace", "global", "catalog"
 	Status             string            `json:"status,omitempty" yaml:"status,omitempty"` // "installed", "online"
 	InstallCmd         string            `json:"install_command,omitempty" yaml:"install_command,omitempty"`
 	InstallCommand     string            `json:"installCommand,omitempty" yaml:"installCommand,omitempty"`

@@ -1,0 +1,45 @@
+{
+  "version": "1.0.0",
+  "name": "danicat/kungfu",
+  "title": "KungFu CLI & Agent Skills Catalog",
+  "repository": "https://github.com/danicat/kungfu",
+  "url": "https://github.com/danicat/kungfu",
+  "items": [
+    {
+      "id": "kungfu",
+      "name": "kungfu",
+      "type": "skill",
+      "title": "KungFu: Agent Skills Gateway",
+      "description": "\"I know Kung Fu!\": Activate this skill to acquire knowledge about anything immediately. It teaches how to discover skills with keywords, JIT load skills into context, load reference guides and assets, execute companion scripts, and use the KungFu pair-programming shortcut dialect. When encountering unknown commands, niche domains, or ::notation, activate kungfu.",
+      "category": "agents",
+      "tags": [
+        "gateway",
+        "agent-skills",
+        "discovery",
+        "search",
+        "catalog",
+        "cli",
+        "learn",
+        "jit"
+      ],
+      "author": "Daniela Petruzalek (daniela@danicat.dev)",
+      "version": "0.5.0",
+      "license": "Apache-2.0",
+      "url": "https://raw.githubusercontent.com/danicat/kungfu/main/skills/kungfu/SKILL.md",
+      "relativePath": "skills/kungfu/SKILL.md",
+      "digest": "sha256:9a782101e4d28c092c738aa928d3d1a7dd59c7716fabdf7852caa456365d6036",
+      "sha256": "9a782101e4d28c092c738aa928d3d1a7dd59c7716fabdf7852caa456365d6036",
+      "source": "github:danicat/kungfu",
+      "metadata": {
+        "author": "Daniela Petruzalek (daniela@danicat.dev)",
+        "category": "agents",
+        "canonical": "https://raw.githubusercontent.com/danicat/kungfu/main/skills/kungfu/SKILL.md",
+        "origin": "https://github.com/danicat/kungfu",
+        "repo": "danicat/kungfu",
+        "ref": "main",
+        "tags": "gateway, agent-skills, discovery, search, catalog, cli, learn, jit",
+        "version": "0.5.0"
+      }
+    }
+  ]
+}

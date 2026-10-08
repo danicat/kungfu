@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/danicat/kungfu/internal/search"
 	"github.com/danicat/kungfu/internal/state"
@@ -106,11 +107,26 @@ func (a *App) RunForget(args []string) int {
 		}
 
 		if rec.Path != "" {
+			if !isSafeSkillDirectory(rec.Path, scope, wsDir) {
+				results = append(results, ForgetResult{
+					Name:    name,
+					Status:  "error",
+					Message: fmt.Sprintf("unsafe skill path %q outside authorized skills directory", rec.Path),
+				})
+				continue
+			}
 			for _, relFile := range rec.Files {
 				filePath := filepath.Join(rec.Path, filepath.FromSlash(relFile))
 				_ = os.Remove(filePath)
 			}
-			_ = os.RemoveAll(rec.Path)
+			if err := os.RemoveAll(rec.Path); err != nil {
+				results = append(results, ForgetResult{
+					Name:    name,
+					Status:  "error",
+					Message: fmt.Sprintf("failed to remove skill directory %q: %v", rec.Path, err),
+				})
+				continue
+			}
 		}
 
 		st.RecordForget(scope, wsDir, name)
@@ -175,11 +191,65 @@ func (a *App) RunForget(args []string) int {
 		}
 	}
 
-	if hasNotFound {
-		return ExitNotFound
-	}
 	if hasGeneralError {
 		return ExitGeneral
 	}
+	if hasNotFound {
+		return ExitNotFound
+	}
 	return ExitSuccess
+}
+
+func isSafeSkillDirectory(targetPath, scope, wsDir string) bool {
+	if targetPath == "" {
+		return false
+	}
+	cleanTarget := filepath.Clean(targetPath)
+
+	var allowedBase string
+	if scope == state.ScopeGlobal {
+		homeDir, err := os.UserHomeDir()
+		if err != nil || homeDir == "" {
+			return false
+		}
+		allowedBase = filepath.Join(homeDir, ".agents", "skills")
+	} else {
+		if wsDir == "" {
+			return false
+		}
+		allowedBase = filepath.Join(wsDir, ".agents", "skills")
+	}
+	allowedBase = filepath.Clean(allowedBase)
+
+	rel, err := filepath.Rel(allowedBase, cleanTarget)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	if strings.Contains(rel, string(filepath.Separator)) {
+		return false
+	}
+
+	realBase, err := filepath.EvalSymlinks(allowedBase)
+	if err != nil {
+		realBase = allowedBase
+	}
+	realTarget, err := filepath.EvalSymlinks(cleanTarget)
+	if err != nil {
+		parent := filepath.Dir(cleanTarget)
+		evalParent, pErr := filepath.EvalSymlinks(parent)
+		if pErr == nil {
+			realTarget = filepath.Join(evalParent, filepath.Base(cleanTarget))
+		} else {
+			realTarget = cleanTarget
+		}
+	}
+
+	realRel, err := filepath.Rel(realBase, realTarget)
+	if err != nil || realRel == "." || realRel == ".." || strings.HasPrefix(realRel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	if strings.Contains(realRel, string(filepath.Separator)) {
+		return false
+	}
+	return true
 }
