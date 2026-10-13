@@ -2,7 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/danicat/kungfu.svg)](https://pkg.go.dev/github.com/danicat/kungfu)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.5.0-green.svg)](https://github.com/danicat/kungfu/releases)
+[![Release](https://img.shields.io/badge/release-v0.5.1-green.svg)](https://github.com/danicat/kungfu/releases)
 
 A command-line tool for discovering, loading, installing, and managing Agent Skills.
 

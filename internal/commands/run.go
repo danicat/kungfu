@@ -79,5 +79,6 @@ func (a *App) RunRun(args []string) int {
 		_, _ = fmt.Fprintf(a.Stderr, "error: running script %q: %v\n", scriptName, err)
 		return MapErrorToExitCode(err)
 	}
+	a.recordSkillRun(item.Name)
 	return ExitSuccess
 }

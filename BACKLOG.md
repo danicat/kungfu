@@ -4,6 +4,15 @@ This backlog tracks prioritized architectural enhancements, feature requests, an
 
 ---
 
+## ✅ Completed (v0.5.1)
+
+- [x] **Restored & Enhanced Local Telemetry (`state.json`)**: Restored JIT load recording in `kungfu load` (resolving the `v0.5.0` stateless load regression) and added telemetry tracking to `kungfu learn --load` and `kungfu run`.
+- [x] **Pagination & Subpath Counter Separation**: Extended `HistoryRecord` with `page_load_count`, `subpath_load_count`, and `run_count` (`RecordLoadDetailed`, `RecordRun`) so logical skill loads (`load_count`, incremented only on page 1 root `SKILL.md` loads) are cleanly separated from continuation pages (`-p 2+`) and companion reference/asset reads.
+- [x] **Cross-Process Exclusive State Locking (`flock`)**: Implemented OS-level exclusive file locking (`~/.config/kungfu/state.json.lock` via `flock` on POSIX and `LockFileEx` on Windows) and `WithLockedState` atomic read-modify-write transactions to prevent lost updates under concurrent `::parallel(N` subagent execution.
+- [x] **Test Suite State Isolation**: Isolated `TestMain` across `main` and `internal/commands` with temporary `KUNGFU_STATE_PATH` directories so unit tests never pollute user telemetry.
+
+---
+
 ## ✅ Completed (v0.5.0)
 
 - [x] **Fail-Fast & Zero-Fallback Architecture**: Purged all silent fallback mechanisms, stale cache fallbacks, git branch fallbacks, and legacy compatibility layers across `catalog`, `config`, `state`, and `runner`. Implemented visible, immediate error reporting with rich diagnostics.

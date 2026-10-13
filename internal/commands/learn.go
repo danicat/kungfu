@@ -240,6 +240,7 @@ func (a *App) RunLearn(args []string) int {
 		}
 		if loadFlag {
 			res.Content = stripFrontmatter(content)
+			st.RecordLoadDetailed(item.Name, "", 1)
 		}
 		results = append(results, res)
 	}

@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	"github.com/danicat/kungfu/internal/catalog"
+	"github.com/danicat/kungfu/internal/state"
 )
 
 func TestRunLoad(t *testing.T) {
@@ -393,5 +394,74 @@ func TestRunLoad_Pagination(t *testing.T) {
 	jsonOut := stdout.String()
 	if !strings.Contains(jsonOut, `"page": 1`) || !strings.Contains(jsonOut, `"total_pages":`) {
 		t.Errorf("expected json to contain page and total_pages, got: %s", jsonOut)
+	}
+}
+
+func TestTelemetryRecording_LoadLearnRun(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "state.json")
+	t.Setenv("KUNGFU_STATE_PATH", stateFile)
+
+	tmpDir := t.TempDir()
+	refsDir := filepath.Join(tmpDir, "references")
+	scriptsDir := filepath.Join(tmpDir, "scripts")
+	_ = os.MkdirAll(refsDir, 0755)
+	_ = os.MkdirAll(scriptsDir, 0755)
+
+	body := "---\nname: teleskill\ncategory: test\n---\n# Telemetry Skill\n" + strings.Repeat("Line of skill body for pagination.\n", 30)
+	_ = os.WriteFile(filepath.Join(tmpDir, "SKILL.md"), []byte(body), 0644)
+	_ = os.WriteFile(filepath.Join(refsDir, "guide.md"), []byte("# Guide Reference\nDetails."), 0644)
+	_ = os.WriteFile(filepath.Join(scriptsDir, "ping.sh"), []byte("#!/bin/sh\necho pong\n"), 0755)
+
+	var stdout, stderr bytes.Buffer
+	app, err := NewApp(GlobalOptions{}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("NewApp failed: %v", err)
+	}
+	if cat, ok := app.Store.(*catalog.Catalog); ok {
+		cat.AddItem(catalog.Item{
+			ID:       "teleskill",
+			Name:     "teleskill",
+			Category: "test",
+			Path:     tmpDir,
+			Body:     body,
+		})
+	}
+
+	// 1. Root page 1 load -> increments LoadCount
+	if code := app.RunLoad([]string{"teleskill", "--page-size=400", "-p", "1"}); code != ExitSuccess {
+		t.Fatalf("RunLoad page 1 failed: %d (%s)", code, stderr.String())
+	}
+	// 2. Continuation page 2 load -> increments PageLoadCount, NOT LoadCount
+	if code := app.RunLoad([]string{"teleskill", "--page-size=400", "-p", "2"}); code != ExitSuccess {
+		t.Fatalf("RunLoad page 2 failed: %d (%s)", code, stderr.String())
+	}
+	// 3. Subpath load -> increments SubpathLoadCount, NOT LoadCount
+	if code := app.RunLoad([]string{"teleskill/references/guide.md"}); code != ExitSuccess {
+		t.Fatalf("RunLoad subpath failed: %d (%s)", code, stderr.String())
+	}
+	// 4. Script run -> increments RunCount
+	if code := app.RunRun([]string{"teleskill", "ping.sh"}); code != ExitSuccess {
+		t.Fatalf("RunRun failed: %d (%s)", code, stderr.String())
+	}
+
+	st, err := state.LoadState(stateFile)
+	if err != nil {
+		t.Fatalf("LoadState failed: %v", err)
+	}
+	h, ok := st.History["teleskill"]
+	if !ok {
+		t.Fatalf("expected teleskill in state.History")
+	}
+	if h.LoadCount != 1 {
+		t.Errorf("expected LoadCount=1, got %d", h.LoadCount)
+	}
+	if h.PageLoadCount != 1 {
+		t.Errorf("expected PageLoadCount=1, got %d", h.PageLoadCount)
+	}
+	if h.SubpathLoadCount != 1 {
+		t.Errorf("expected SubpathLoadCount=1, got %d", h.SubpathLoadCount)
+	}
+	if h.RunCount != 1 {
+		t.Errorf("expected RunCount=1, got %d", h.RunCount)
 	}
 }

@@ -212,7 +212,17 @@ func (a *App) RunStatus(args []string) int {
 			sort.Strings(histNames)
 			for _, n := range histNames {
 				h := st.History[n]
-				_, _ = fmt.Fprintf(a.Stdout, "  • %-20s (last seen %s, loaded %d times)\n", n, h.LastSeenAt.Format("2006-01-02 15:04"), h.LoadCount)
+				details := fmt.Sprintf("loaded %d times", h.LoadCount)
+				if h.PageLoadCount > 0 {
+					details += fmt.Sprintf(", +%d pages", h.PageLoadCount)
+				}
+				if h.SubpathLoadCount > 0 {
+					details += fmt.Sprintf(", +%d subpaths", h.SubpathLoadCount)
+				}
+				if h.RunCount > 0 {
+					details += fmt.Sprintf(", %d runs", h.RunCount)
+				}
+				_, _ = fmt.Fprintf(a.Stdout, "  • %-20s (last seen %s, %s)\n", n, h.LastSeenAt.Format("2006-01-02 15:04"), details)
 			}
 		}
 

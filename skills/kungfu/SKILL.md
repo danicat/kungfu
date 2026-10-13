@@ -11,7 +11,7 @@ metadata:
   category: agents
   tags: "gateway, agent-skills, discovery, search, catalog, cli, learn, jit"
   author: Daniela Petruzalek (daniela@danicat.dev)
-  version: "0.5.0"
+  version: "0.5.1"
   catalog: https://skills.danicat.dev
 ---
 

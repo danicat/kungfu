@@ -233,6 +233,7 @@ func (a *App) RunLoad(args []string) int {
 	}
 
 	currentPageContent := pages[pageFlag-1]
+	a.recordSkillLoad(target.item.Name, target.subpath, pageFlag)
 
 	if mode == OutputModeJSON {
 		ver := target.item.Version

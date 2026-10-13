@@ -29,6 +29,8 @@ func TestMain(m *testing.M) {
 	tempHome, err := os.MkdirTemp("", "kungfu-state-test-*")
 	if err == nil {
 		_ = os.Setenv("HOME", tempHome)
+		_ = os.Setenv("KUNGFU_CONFIG_DIR", filepath.Join(tempHome, ".config", "kungfu"))
+		_ = os.Setenv("KUNGFU_STATE_PATH", filepath.Join(tempHome, ".config", "kungfu", "state.json"))
 		defer func() { _ = os.RemoveAll(tempHome) }()
 	}
 	os.Exit(m.Run())
@@ -259,5 +261,57 @@ version: "2.0.0"
 	gForgotten := s.GetForgottenSkills(state.ScopeGlobal, "")
 	if len(gForgotten) != 1 || gForgotten["godoctor"].Status != state.StatusUninstalled {
 		t.Errorf("expected godoctor to be marked uninstalled in forgotten skills: %+v", gForgotten)
+	}
+}
+
+func TestState_WithLockedStateAndDetailedTelemetry(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateFile := filepath.Join(tmpDir, "state.json")
+
+	// Parallel WithLockedState invocations simulating concurrent ::parallel(N subagent loads
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			err := state.WithLockedState(stateFile, func(s *state.State) error {
+				s.RecordLoadDetailed("godoctor", "", 1)
+				if idx%2 == 0 {
+					s.RecordLoadDetailed("godoctor", "", 2)
+				}
+				if idx%4 == 0 {
+					s.RecordLoadDetailed("godoctor", "references/arch.md", 1)
+				}
+				if idx%5 == 0 {
+					s.RecordRun("godoctor")
+				}
+				return nil
+			})
+			if err != nil {
+				t.Errorf("WithLockedState failed: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	loaded, err := state.LoadState(stateFile)
+	if err != nil {
+		t.Fatalf("LoadState failed: %v", err)
+	}
+	h, ok := loaded.History["godoctor"]
+	if !ok {
+		t.Fatalf("expected godoctor history entry")
+	}
+	if h.LoadCount != 20 {
+		t.Errorf("expected LoadCount=20, got %d", h.LoadCount)
+	}
+	if h.PageLoadCount != 10 {
+		t.Errorf("expected PageLoadCount=10, got %d", h.PageLoadCount)
+	}
+	if h.SubpathLoadCount != 5 {
+		t.Errorf("expected SubpathLoadCount=5, got %d", h.SubpathLoadCount)
+	}
+	if h.RunCount != 4 {
+		t.Errorf("expected RunCount=4, got %d", h.RunCount)
 	}
 }

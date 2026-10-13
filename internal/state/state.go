@@ -83,10 +83,13 @@ type WorkspaceState struct {
 	Skills map[string]SkillRecord `json:"skills"`
 }
 
-// HistoryRecord tracks JIT load activity for a skill.
+// HistoryRecord tracks JIT load and script execution activity for a skill.
 type HistoryRecord struct {
-	LastSeenAt time.Time `json:"last_seen_at"`
-	LoadCount  int       `json:"load_count"`
+	LastSeenAt       time.Time `json:"last_seen_at"`
+	LoadCount        int       `json:"load_count"`
+	PageLoadCount    int       `json:"page_load_count,omitempty"`
+	SubpathLoadCount int       `json:"subpath_load_count,omitempty"`
+	RunCount         int       `json:"run_count,omitempty"`
 }
 
 // State represents the complete root manifest in ~/.config/kungfu/state.json.
@@ -253,6 +256,44 @@ func SaveState(filePath string, s *State) error {
 	return nil
 }
 
+// WithLockedState acquires an exclusive cross-process file lock on filePath+".lock",
+// loads the current State from disk, executes fn(s), and saves the updated State atomically.
+func WithLockedState(filePath string, fn func(s *State) error) error {
+	if filePath == "" {
+		filePath = DefaultStateFilePath()
+	}
+
+	dir := filepath.Dir(filePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("state: creating lock directory %s: %w", dir, err)
+	}
+
+	lockPath := filePath + ".lock"
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return fmt.Errorf("state: opening lock file %s: %w", lockPath, err)
+	}
+	defer func() {
+		_ = unlockFile(lockFile)
+		_ = lockFile.Close()
+	}()
+
+	if err := lockFileExclusive(lockFile); err != nil {
+		return fmt.Errorf("state: acquiring exclusive lock on %s: %w", lockPath, err)
+	}
+
+	s, err := LoadState(filePath)
+	if err != nil {
+		return err
+	}
+
+	if err := fn(s); err != nil {
+		return err
+	}
+
+	return SaveState(filePath, s)
+}
+
 // RecordInstall records or updates a skill installation in the state.
 func (s *State) RecordInstall(scope string, workspaceDir string, record SkillRecord) {
 	s.mu.Lock()
@@ -320,21 +361,59 @@ func (s *State) RecordForget(scope string, workspaceDir string, skillName string
 	return false
 }
 
-// RecordLoad updates the last seen timestamp and increments load count for a skill.
+// RecordLoad updates the last seen timestamp and increments primary load count for a skill.
 func (s *State) RecordLoad(skillName string) {
+	s.RecordLoadDetailed(skillName, "", 1)
+}
+
+// RecordLoadDetailed updates the last seen timestamp and increments the appropriate counter
+// (LoadCount for primary page-1 loads, PageLoadCount for continuation pages > 1, or SubpathLoadCount for subpaths).
+func (s *State) RecordLoadDetailed(skillName, subpath string, page int) {
+	if skillName == "" {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	now := time.Now().UTC()
 	rec, ok := s.History[skillName]
 	if !ok || rec == nil {
 		rec = &HistoryRecord{
-			LastSeenAt: time.Now().UTC(),
-			LoadCount:  1,
+			LastSeenAt: now,
 		}
 		s.History[skillName] = rec
 	} else {
-		rec.LastSeenAt = time.Now().UTC()
+		rec.LastSeenAt = now
+	}
+
+	if subpath != "" {
+		rec.SubpathLoadCount++
+	} else if page > 1 {
+		rec.PageLoadCount++
+	} else {
 		rec.LoadCount++
+	}
+}
+
+// RecordRun updates the last seen timestamp and increments the script execution count for a skill.
+func (s *State) RecordRun(skillName string) {
+	if skillName == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC()
+	rec, ok := s.History[skillName]
+	if !ok || rec == nil {
+		rec = &HistoryRecord{
+			LastSeenAt: now,
+			RunCount:   1,
+		}
+		s.History[skillName] = rec
+	} else {
+		rec.LastSeenAt = now
+		rec.RunCount++
 	}
 }
 

@@ -188,6 +188,26 @@ func (a *App) saveState(s *state.State) {
 	}
 }
 
+func (a *App) recordSkillLoad(skillName, subpath string, page int) {
+	err := state.WithLockedState("", func(s *state.State) error {
+		s.RecordLoadDetailed(skillName, subpath, page)
+		return nil
+	})
+	if err != nil {
+		_, _ = fmt.Fprintf(a.Stderr, "error: failed to record load telemetry in %s: %v\n", state.DefaultStateFilePath(), err)
+	}
+}
+
+func (a *App) recordSkillRun(skillName string) {
+	err := state.WithLockedState("", func(s *state.State) error {
+		s.RecordRun(skillName)
+		return nil
+	})
+	if err != nil {
+		_, _ = fmt.Fprintf(a.Stderr, "error: failed to record run telemetry in %s: %v\n", state.DefaultStateFilePath(), err)
+	}
+}
+
 func parseFlagsWithArgs(fs *flag.FlagSet, args []string) ([]string, error) {
 	var flags []string
 	var posArgs []string
@@ -275,8 +295,6 @@ func (a *App) printNotFoundWithSuggestions(cmd, query string) {
 		_, _ = fmt.Fprintln(a.Stderr, "\nRun 'kungfu find <term>' to search for relevant skills across descriptions and keywords.")
 	}
 }
-
-
 
 func (a *App) getSkillStatus(item *catalog.Item) string {
 	wd, _ := os.Getwd()

@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -32,6 +33,8 @@ func TestMain(m *testing.M) {
 	tempHome, err := os.MkdirTemp("", "kungfu-cmd-test-home-*")
 	if err == nil {
 		_ = os.Setenv("HOME", tempHome)
+		_ = os.Setenv("KUNGFU_CONFIG_DIR", filepath.Join(tempHome, ".config", "kungfu"))
+		_ = os.Setenv("KUNGFU_STATE_PATH", filepath.Join(tempHome, ".config", "kungfu", "state.json"))
 		defer func() { _ = os.RemoveAll(tempHome) }()
 	}
 	os.Exit(m.Run())

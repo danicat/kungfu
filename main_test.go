@@ -17,6 +17,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -25,6 +26,8 @@ func TestMain(m *testing.M) {
 	tempHome, err := os.MkdirTemp("", "kungfu-main-test-home-*")
 	if err == nil {
 		_ = os.Setenv("HOME", tempHome)
+		_ = os.Setenv("KUNGFU_CONFIG_DIR", filepath.Join(tempHome, ".config", "kungfu"))
+		_ = os.Setenv("KUNGFU_STATE_PATH", filepath.Join(tempHome, ".config", "kungfu", "state.json"))
 		defer func() { _ = os.RemoveAll(tempHome) }()
 	}
 	os.Exit(m.Run())
