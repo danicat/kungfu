@@ -229,6 +229,7 @@ func (a *App) RunLearn(args []string) int {
 			Files:           files,
 		}
 		st.RecordInstall(scope, wsDir, rec)
+		st.RecordLearn(item.Name)
 
 		res := InstallResult{
 			Name:    item.Name,

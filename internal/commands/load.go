@@ -423,18 +423,26 @@ func (a *App) loadItemContentWithOpts(item *catalog.Item, localOnly, forceUpdate
 			if remoteURL != "" {
 				reqCtx, reqCancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer reqCancel()
-				resp, rErr := a.getHTTPClient().Get(remoteURL)
-				if rErr == nil && resp != nil {
-					defer func() { _ = resp.Body.Close() }()
-					if resp.StatusCode == http.StatusOK {
-						b, readErr := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
-						if readErr == nil && len(b) > 0 {
-							runner.CacheSkillFile(item.Name, "SKILL.md", b)
-							return string(b), nil
-						}
-					}
+				req, reqErr := http.NewRequestWithContext(reqCtx, http.MethodGet, remoteURL, nil)
+				if reqErr != nil {
+					return "", fmt.Errorf("creating force-refresh request for %s: %w", remoteURL, reqErr)
 				}
-				_ = reqCtx
+				resp, rErr := a.getHTTPClient().Do(req)
+				if rErr != nil {
+					return "", fmt.Errorf("fetching %s (--force): %w", remoteURL, rErr)
+				}
+				defer func() { _ = resp.Body.Close() }()
+				if resp.StatusCode != http.StatusOK {
+					return "", fmt.Errorf("fetching %s (--force): HTTP %d", remoteURL, resp.StatusCode)
+				}
+				b, readErr := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
+				if readErr != nil {
+					return "", fmt.Errorf("reading %s (--force): %w", remoteURL, readErr)
+				}
+				if len(b) > 0 {
+					runner.CacheSkillFile(item.Name, "SKILL.md", b)
+					return string(b), nil
+				}
 			}
 		}
 	}

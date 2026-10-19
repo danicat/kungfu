@@ -30,6 +30,18 @@ import (
 	"github.com/danicat/kungfu/internal/runner"
 )
 
+func TestMain(m *testing.M) {
+	tempHome, err := os.MkdirTemp("", "kungfu-runner-test-*")
+	if err == nil {
+		_ = os.Setenv("HOME", tempHome)
+	}
+	code := m.Run()
+	if tempHome != "" {
+		_ = os.RemoveAll(tempHome)
+	}
+	os.Exit(code)
+}
+
 func TestRunScript_ShellScript(t *testing.T) {
 	tmpDir := t.TempDir()
 	scriptsDir := filepath.Join(tmpDir, "scripts")

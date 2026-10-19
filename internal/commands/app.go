@@ -122,7 +122,7 @@ func NewApp(opts GlobalOptions, stdout, stderr io.Writer) (*App, error) {
 
 	cfg, err := config.Load(opts.Config)
 	if err != nil {
-		cfg = config.DefaultConfig()
+		return nil, err
 	}
 
 	catOpts := []catalog.Option{
@@ -183,7 +183,44 @@ func (a *App) loadState() *state.State {
 }
 
 func (a *App) saveState(s *state.State) {
-	if err := state.SaveState("", s); err != nil {
+	err := state.WithLockedState("", func(disk *state.State) error {
+		disk.Workspaces = s.Workspaces
+		disk.Global = s.Global
+		disk.Catalogs = s.Catalogs
+		if disk.History == nil {
+			disk.History = make(map[string]*state.HistoryRecord)
+		}
+		for name, h := range s.History {
+			if h == nil {
+				continue
+			}
+			cur, ok := disk.History[name]
+			if !ok || cur == nil {
+				cp := *h
+				disk.History[name] = &cp
+				continue
+			}
+			if h.LastSeenAt.After(cur.LastSeenAt) {
+				cur.LastSeenAt = h.LastSeenAt
+			}
+			cur.LoadCount = max(cur.LoadCount, h.LoadCount)
+			cur.PageLoadCount = max(cur.PageLoadCount, h.PageLoadCount)
+			cur.SubpathLoadCount = max(cur.SubpathLoadCount, h.SubpathLoadCount)
+			cur.RunCount = max(cur.RunCount, h.RunCount)
+			cur.LearnCount = max(cur.LearnCount, h.LearnCount)
+			cur.SyncedLoadCount = max(cur.SyncedLoadCount, h.SyncedLoadCount)
+			cur.SyncedPageLoadCount = max(cur.SyncedPageLoadCount, h.SyncedPageLoadCount)
+			cur.SyncedSubpathLoadCount = max(cur.SyncedSubpathLoadCount, h.SyncedSubpathLoadCount)
+			cur.SyncedRunCount = max(cur.SyncedRunCount, h.SyncedRunCount)
+			cur.SyncedLearnCount = max(cur.SyncedLearnCount, h.SyncedLearnCount)
+			if h.LastSyncedAt != nil && (cur.LastSyncedAt == nil || h.LastSyncedAt.After(*cur.LastSyncedAt)) {
+				ts := *h.LastSyncedAt
+				cur.LastSyncedAt = &ts
+			}
+		}
+		return nil
+	})
+	if err != nil {
 		_, _ = fmt.Fprintf(a.Stderr, "error: failed to persist state to %s: %v\n", state.DefaultStateFilePath(), err)
 	}
 }
@@ -438,11 +475,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return app.RunStatus(cmdArgs)
 	case "catalog", "catalogs":
 		return app.RunCatalog(cmdArgs)
+	case "telemetry":
+		return app.RunTelemetry(cmdArgs)
 	case "run", "exec":
 		return app.RunRun(cmdArgs)
 	default:
 		validCommands := []string{
-			"list", "find", "show", "load", "learn", "forget", "update", "status", "catalog", "run", "version", "help",
+			"list", "find", "show", "load", "learn", "forget", "update", "status", "catalog", "telemetry", "run", "version", "help",
 		}
 		_, _ = fmt.Fprintf(stderr, "error: unknown command %q.\n", cmdName)
 		suggs := search.Suggest(cmdName, validCommands, 2)
@@ -464,46 +503,40 @@ USAGE:
   kungfu [global flags] <command> [flags] [arguments...]
 
 COMMANDS:
-  list    [--json] [--raw]
-          List available skills.
-  find    <keywords...> [--limit <n>] [--json] [--raw]
-          Search skills with hybrid BM25/TF-IDF ranking.
-  show    <skill1> [skill2...] [--json] [--raw]
-          Display metadata, description, tags, and summary for one or more skills.
-  load    <skill[/subpath]> [-p <page>] [--full] [--local] [--update] [--force] [--json] [--raw]
-          Load verbatim markdown instructions or subpath files for JIT execution (paginated to prevent buffer truncation).
-  learn   <skill1> [skill2...] [--global] [--force] [--load] [--json] [--raw]
-          Install and persist skills to canonical workspace or global locations (optionally stream with --load).
-  forget  <skill1> [skill2...] [--global] [--force] [--all] [--json] [--raw]
-          Uninstall and soft-delete skills from workspace or global locations.
-  update  [skill1...] [--global] [--all] [--yes] [--force] [--refresh] [--json] [--raw]
-          Check for updates (dry-run without args) or apply updates to installed skills.
-  catalog <add|list|remove|sync> [source] [flags]
-          Manage external skill catalogs (GitHub repositories, HTTP manifests, local directories).
-  status  [skill1...] [--global] [--json] [--raw]
-          Show installed skills, workspace paths, versions, forgotten skills, and JIT load history.
+  find      <keywords...> [--limit <n>]
+            Search skills by keyword.
+  load      <skill[/subpath]> [-p <page>] [--full] [--local] [-u] [-f]
+            Stream skill instructions or reference files to stdout.
+  run       <skill> <script> [args...]
+            Run a companion script bundled with a skill.
+  list      [--json] [--raw]
+            List available skills.
+  show      <skill...> [--json] [--raw]
+            Show skill metadata, references, and scripts.
+  learn     <skill...> [-g] [-f] [--load]
+            Install skills to workspace or global scope.
+  status    [skill...] [-g] [--json] [--raw]
+            Show installed skills and usage history.
+  update    [skill...] [-g] [--all] [-y] [-f] [--refresh]
+            Check for or apply skill updates.
+  forget    <skill...> [-g] [-f] [--all]
+            Uninstall skills from workspace or global scope.
+  catalog   <add|list|remove|sync> [source] [flags]
+            Manage external skill catalogs.
+  telemetry [status|enable|disable|sync] [--json] [--raw]
+            Manage opt-in anonymous community usage counters.
   version
-          Display kungfu version.
-  run     <skill> <script> [args...]
-          Execute a script bundled within an agent skill.
+            Print kungfu version.
 
 GLOBAL FLAGS:
-  --json            Emit strict RFC 8259 JSON output
-  --raw             Emit verbatim raw markdown/text
-  --config <path>   Path to custom configuration file
+  --json            Emit JSON output
+  --raw             Emit raw tab/text output
+  --config <path>   Custom configuration file path
   --cache-dir <dir> Custom cache directory (default ~/.cache/kungfu)
-  --verbose, -v     Verbose output to stderr
+  -v, --verbose     Verbose diagnostics on stderr
   --no-color        Disable colored output
-  --version, -V     Show kungfu version
-  --help, -h        Show this help message
-
-EXIT CODES:
-  0: Success
-  1: General error
-  2: Usage error / Invalid arguments
-  3: Item not found
-  4: Network error
-  5: Integrity error (digest mismatch)`)
+  -V, --version     Print version
+  -h, --help        Show help`)
 }
 
 func (a *App) listReferences(item catalog.Item) []string {

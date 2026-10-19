@@ -107,7 +107,8 @@ func TestRunCatalog(t *testing.T) {
 		t.Errorf("expected default catalog removal to be prevented")
 	}
 
-	// 6. Sync default catalog
+	// 6. Sync default catalog (using mock server URL so tests never hit live internet)
+	app.Config.Catalogs["default"] = server.URL
 	stdout.Reset()
 	stderr.Reset()
 	code = app.RunCatalog([]string{"sync", "default"})

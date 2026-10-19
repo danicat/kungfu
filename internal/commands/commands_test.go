@@ -35,9 +35,15 @@ func TestMain(m *testing.M) {
 		_ = os.Setenv("HOME", tempHome)
 		_ = os.Setenv("KUNGFU_CONFIG_DIR", filepath.Join(tempHome, ".config", "kungfu"))
 		_ = os.Setenv("KUNGFU_STATE_PATH", filepath.Join(tempHome, ".config", "kungfu", "state.json"))
-		defer func() { _ = os.RemoveAll(tempHome) }()
+		_ = os.Setenv("KUNGFU_CONFIG", "")
+		_ = os.Setenv("KUNGFU_TELEMETRY", "0")
+		_ = os.Setenv("DO_NOT_TRACK", "")
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	if tempHome != "" {
+		_ = os.RemoveAll(tempHome)
+	}
+	os.Exit(code)
 }
 
 func TestMapErrorToExitCode(t *testing.T) {

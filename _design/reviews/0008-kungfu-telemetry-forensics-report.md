@@ -2,8 +2,8 @@
 
 **Generated:** `2026-10-11T19:18:00+01:00`  
 **Corpus Scope:** 100% Exhaustive (`425` union conversations across `conversation_summaries.db` and `brain/`, `76,436` steps scanned, `0` sampling)  
-**Database:** [`kungfu_telemetry.db`](file:///Users/petruzalek/projects/kungfu/kungfu_telemetry.db)  
-**ETL & Backfill Engine:** [`scripts/kungfu_telemetry.py`](file:///Users/petruzalek/projects/kungfu/scripts/kungfu_telemetry.py)
+**Database:** [`kungfu_telemetry.db`](./kungfu_telemetry.db)  
+**ETL & Backfill Engine:** [`scripts/kungfu_telemetry.py`](./scripts/kungfu_telemetry.py)
 
 ---
 
@@ -21,22 +21,22 @@ An exhaustive, zero-sampling data-mining pass across all **425 conversations** (
 ### Key Forensic Findings
 1. **Why `~/.config/kungfu/state.json` Telemetry Stopped Updating on Oct 8, 2026:**
    - Every single entry in `~/.config/kungfu/state.json` `history` (`24` skills, `202` total loads) has a `last_seen_at` timestamp on or before **`2026-10-08T01:26:37.257975Z`**.
-   - Exactly **18 minutes and 41 seconds later**, commit **`38cbfd1`** (`v0.5.0`, `2026-10-08T01:45:18Z`, *"feat(release): kungfu v0.5.0 - safe pagination, stateless JIT load..."*) deleted `st := a.loadState(); st.RecordLoad(target.item.Name); a.saveState(st)` from [`internal/commands/load.go`](file:///Users/petruzalek/projects/kungfu/internal/commands/load.go), leaving [`State.RecordLoad`](file:///Users/petruzalek/projects/kungfu/internal/state/state.go#L324-L339) as uncalled dead production code while [`RunStatus`](file:///Users/petruzalek/projects/kungfu/internal/commands/status.go#L206-L217) continues to render `st.History` (`Recent JIT Loads:`).
+   - Exactly **18 minutes and 41 seconds later**, commit **`38cbfd1`** (`v0.5.0`, `2026-10-08T01:45:18Z`, *"feat(release): kungfu v0.5.0 - safe pagination, stateless JIT load..."*) deleted `st := a.loadState(); st.RecordLoad(target.item.Name); a.saveState(st)` from [`internal/commands/load.go`](./internal/commands/load.go), leaving [`State.RecordLoad`](./internal/state/state.go#L324-L339) as uncalled dead production code while [`RunStatus`](./internal/commands/status.go#L206-L217) continues to render `st.History` (`Recent JIT Loads:`).
    - **94.7% (`144 / 152`)** of all production `kungfu load` CLI invocations in the transcript corpus occurred between `2026-10-09` and `2026-10-11` — **after** `state.json` froze.
 2. **The "Stateless" Cache Paradox:**
-   - Although `v0.5.0` removed `RecordLoad` to make `kungfu load` "stateless", [`loadItemContentWithOpts`](file:///Users/petruzalek/projects/kungfu/internal/commands/load.go#L356) still writes `~/.cache/kungfu/skills/<name>/SKILL.md` on every load. File modification timestamps in `~/.cache/kungfu/skills/` independently confirm **22 skills** were loaded via `kungfu load` after the Oct 8 freeze, including **8 cached skills completely missing from `state.json` `history`**.
+   - Although `v0.5.0` removed `RecordLoad` to make `kungfu load` "stateless", [`loadItemContentWithOpts`](./internal/commands/load.go#L356) still writes `~/.cache/kungfu/skills/<name>/SKILL.md` on every load. File modification timestamps in `~/.cache/kungfu/skills/` independently confirm **22 skills** were loaded via `kungfu load` after the Oct 8 freeze, including **8 cached skills completely missing from `state.json` `history`**.
 3. **Gateway `view_file` Bypass (`273` Production Activations vs `19` in `state.json`):**
-   - Per `<RULE[user_global]>`, agents activate `kungfu` at session start (and after context compaction) by calling `view_file` directly on `/Users/petruzalek/.gemini/config/skills/kungfu/SKILL.md` (`273` production times across `187` production conversations), bypassing the `kungfu` CLI binary entirely.
+   - Per `<RULE[user_global]>`, agents activate `kungfu` at session start (and after context compaction) by calling `view_file` directly on `~/.gemini/config/skills/kungfu/SKILL.md` (`273` production times across `187` production conversations), bypassing the `kungfu` CLI binary entirely.
 4. **Unit-Test State Pollution (`2026-10-08T01:09:28Z..01:09:36Z`):**
    - Before `38cbfd1` removed `RecordLoad` at `01:45:18Z`, running `go test ./...` at `01:09:28Z..01:09:36Z` executed `RunLoad` without isolating `KUNGFU_STATE_PATH`, injecting **4 skills with zero real transcript usage** into `~/.config/kungfu/state.json`: `pyhd` (`4`), `engineering-flow` (`2`), `evals` (`1`), and `latest-version` (`1`).
 5. **Global `SKILL.md` Version Skew (`v0.4.0` vs `v0.5.0`) Causing `14` Failed Batch Loads:**
-   - On `2026-10-08`, `kungfu learn -g kungfu` ran at `01:43:52Z` — **86 seconds before** commit `38cbfd1` (`01:45:18Z`) bumped `skills/kungfu/SKILL.md` to `v0.5.0`. Consequently, `/Users/petruzalek/.gemini/config/skills/kungfu/SKILL.md` is still stuck on `v0.4.0` (`6d50ac6`), instructing agents to run multi-skill batch loads (`kungfu load a b c`) that `kungfu v0.5.0` rejects with exit code `2` (`14` rejected commands across transcripts).
+   - On `2026-10-08`, `kungfu learn -g kungfu` ran at `01:43:52Z` — **86 seconds before** commit `38cbfd1` (`01:45:18Z`) bumped `skills/kungfu/SKILL.md` to `v0.5.0`. Consequently, `~/.gemini/config/skills/kungfu/SKILL.md` is still stuck on `v0.4.0` (`6d50ac6`), instructing agents to run multi-skill batch loads (`kungfu load a b c`) that `kungfu v0.5.0` rejects with exit code `2` (`14` rejected commands across transcripts).
 
 ---
 
 ## 2. Exhaustive Extraction Breakdown (`v_subcommand_summary`)
 
-All **557 events** in [`kungfu_telemetry.db`](file:///Users/petruzalek/projects/kungfu/kungfu_telemetry.db) are categorized by `invocation_kind`, `subcommand` / `notation_type`, production vs. self-test status, and conversation reach:
+All **557 events** in [`kungfu_telemetry.db`](./kungfu_telemetry.db) are categorized by `invocation_kind`, `subcommand` / `notation_type`, production vs. self-test status, and conversation reach:
 
 | Invocation Kind | Subcommand / Notation | Total Events | Prod (`is_self_test=0`) | Self-Test / Audit (`is_self_test=1`) | Distinct Convs | First Seen (UTC) | Last Seen (UTC) |
 |:---|:---|---:|---:|---:|---:|:---|:---|
@@ -145,7 +145,7 @@ Of the `153` `kungfu load` commands executed via `run_command`:
 - **`kungfu status` (`3` invocations)**: `b59f8a81` steps 800 & 818, `bf06e710` step 479 (`kungfu status pagespeed-insights`).
 - **`kungfu learn` (`1` invocation)**: `6135811d` step 191 (`kungfu learn swarm-coding --load`).
 - **`kungfu version` (`2` invocations)**: `9dfa16ef` step 12 (`kungfu version`), `cb44a4e5` step 42 (`kungfu --version`).
-- **`kungfu --help` (`1` invocation)**: `fafd5a99` step 12 (`/Users/petruzalek/go/bin/kungfu --help`).
+- **`kungfu --help` (`1` invocation)**: `fafd5a99` step 12 (`~/go/bin/kungfu --help`).
 
 ---
 
@@ -184,15 +184,15 @@ xychart-beta
 
 ### 6.1 The Six Root Causes of Telemetry Lag
 1. **Root Cause 1 — The `v0.5.0` Stateless JIT Regression (`38cbfd1`, `2026-10-08T01:45:18Z`)**:
-   - In [`internal/commands/load.go`](file:///Users/petruzalek/projects/kungfu/internal/commands/load.go), commit `38cbfd1` deleted lines 183–185 (`st := a.loadState(); st.RecordLoad(target.item.Name); a.saveState(st)`).
-   - Meanwhile, [`internal/state/state.go:324`](file:///Users/petruzalek/projects/kungfu/internal/state/state.go#L324) still defines `func (s *State) RecordLoad(skillName string)` and [`internal/commands/status.go:206`](file:///Users/petruzalek/projects/kungfu/internal/commands/status.go#L206) still displays `Recent JIT Loads:` from `st.History`.
+   - In [`internal/commands/load.go`](./internal/commands/load.go), commit `38cbfd1` deleted lines 183–185 (`st := a.loadState(); st.RecordLoad(target.item.Name); a.saveState(st)`).
+   - Meanwhile, [`internal/state/state.go:324`](./internal/state/state.go#L324) still defines `func (s *State) RecordLoad(skillName string)` and [`internal/commands/status.go:206`](./internal/commands/status.go#L206) still displays `Recent JIT Loads:` from `st.History`.
    - Because `RecordLoad` is never called anywhere in `internal/commands/`, `state.json` `history` has been completely frozen since `2026-10-08T01:26:37.257975Z`.
 2. **Root Cause 2 — Direct `view_file` Gateway Bypass (`273` Production Reads)**:
-   - Agents activate the `kungfu` skill at the start of every session by calling `view_file` on `/Users/petruzalek/.gemini/config/skills/kungfu/SKILL.md` (`273` production times), which never invokes the `kungfu` CLI binary.
+   - Agents activate the `kungfu` skill at the start of every session by calling `view_file` on `~/.gemini/config/skills/kungfu/SKILL.md` (`273` production times), which never invokes the `kungfu` CLI binary.
 3. **Root Cause 3 — Pre-`v0.5.0` Unit-Test State Pollution (`2026-10-08T01:09:28Z..01:09:36Z`)**:
    - Just before `v0.5.0` removed `RecordLoad`, unit tests in `internal/commands/commands_test.go` and `load_run_test.go` ran `App.RunLoad` without setting a temporary `KUNGFU_STATE_PATH`. This polluted the real `~/.config/kungfu/state.json` with `pyhd` (`4`), `engineering-flow` (`2`), `evals` (`1`), and `latest-version` (`1`), and added `+1` test load to `godoctor` at `01:09:36Z`.
 4. **Root Cause 4 — Untracked Subcommands (`learn --load`, `run`, `find`, `show`, `list`)**:
-   - `kungfu learn <skill> --load` (`-l`) in [`internal/commands/learn.go:241`](file:///Users/petruzalek/projects/kungfu/internal/commands/learn.go#L241) streams `SKILL.md` into context identically to `kungfu load`, but only calls `st.RecordInstall` and never `st.RecordLoad`.
+   - `kungfu learn <skill> --load` (`-l`) in [`internal/commands/learn.go:241`](./internal/commands/learn.go#L241) streams `SKILL.md` into context identically to `kungfu load`, but only calls `st.RecordInstall` and never `st.RecordLoad`.
    - `kungfu run` (`33` executions), `kungfu find` (`13`), `kungfu show` (`8`), and `kungfu list` (`7`) have zero telemetry instrumentation in `state.json`.
 5. **Root Cause 5 — Pagination (`-p 2`) & Subpath (`skill/references/...`) Distortion + Unlocked Concurrent Writes**:
    - Before `v0.5.0`, `load.go` incremented `load_count` on every `kungfu load <skill>/<subpath>` reference file read (inflating `developing-genkit-go` to `75` loads across its 15 reference files).
@@ -200,7 +200,7 @@ xychart-beta
    - Furthermore, `state.SaveState` uses an in-process `sync.RWMutex` without OS-level `syscall.Flock`, risking lost updates when `::parallel(10` subagents run `kungfu load` concurrently.
 6. **Root Cause 6 — Global `SKILL.md` Version Skew (`v0.4.0` vs `v0.5.0`) & Stale `skills/catalog.json` Digest**:
    - `~/.gemini/config/skills/kungfu/SKILL.md` (`-> ~/.agents/skills/kungfu/SKILL.md`) was installed at `2026-10-08T01:43:52Z`, 86 seconds before commit `38cbfd1` (`01:45:18Z`), leaving it at `v0.4.0` and causing agents to attempt disabled multi-skill batch loads (`14` failures).
-   - [`skills/catalog.json:30-31`](file:///Users/petruzalek/projects/kungfu/skills/catalog.json#L30-L31) has a stale SHA-256 (`9a782101...`) that does not match `skills/kungfu/SKILL.md` (`12fb33cb...`).
+   - [`skills/catalog.json:30-31`](./skills/catalog.json#L30-L31) has a stale SHA-256 (`9a782101...`) that does not match `skills/kungfu/SKILL.md` (`12fb33cb...`).
 
 ### 6.2 Skill-by-Skill Drift Matrix (`v_skill_telemetry_drift`)
 | Skill Name | `state.json` Count | `state.json` Last Seen (UTC) | Transcript CLI Raw Loads | Transcript CLI Primary Loads (`p=1`, no subpath) | Direct `view_file` | User Notations | CLI `run` | Total Transcript Activations | Drift vs `state.json` | Backfill Target Count | Forensic Diagnosis |
@@ -253,7 +253,7 @@ xychart-beta
          RunCount         int       `json:"run_count,omitempty"`
      }
      ```
-   - In [`internal/commands/load.go`](file:///Users/petruzalek/projects/kungfu/internal/commands/load.go), invoke `s.RecordLoadDetailed(target.item.Name, target.subpath, pageFlag)`:
+   - In [`internal/commands/load.go`](./internal/commands/load.go), invoke `s.RecordLoadDetailed(target.item.Name, target.subpath, pageFlag)`:
      - Increment `LoadCount` **only** when `target.subpath == "" && pageFlag == 1`.
      - Increment `PageLoadCount` when `target.subpath == "" && pageFlag > 1`.
      - Increment `SubpathLoadCount` when `target.subpath != ""`.
@@ -263,9 +263,9 @@ xychart-beta
 4. **Isolate Unit Tests from Global `~/.config/kungfu/state.json`**:
    - Ensure `TestMain` / test helpers in `internal/commands/*_test.go` set `t.Setenv("KUNGFU_STATE_PATH", filepath.Join(t.TempDir(), "state.json"))` so `go test ./...` never mutates the user's live `~/.config/kungfu/state.json`.
 5. **Sync Global `SKILL.md` to `v0.5.0` & Fix `skills/catalog.json` Digest**:
-   - Update [`skills/catalog.json:30-31`](file:///Users/petruzalek/projects/kungfu/skills/catalog.json#L30-L31) digest to `sha256:12fb33cb9e0ad6b6fcc2da83eb13424cf421591ce18f202c966257a2636c76c4` and run `kungfu learn -g -f kungfu` so agents stop issuing `v0.4.0` multi-skill batch loads.
+   - Update [`skills/catalog.json:30-31`](./skills/catalog.json#L30-L31) digest to `sha256:12fb33cb9e0ad6b6fcc2da83eb13424cf421591ce18f202c966257a2636c76c4` and run `kungfu learn -g -f kungfu` so agents stop issuing `v0.4.0` multi-skill batch loads.
 
-### 7.2 Operating the SQLite ETL & Backfill Script ([`scripts/kungfu_telemetry.py`](file:///Users/petruzalek/projects/kungfu/scripts/kungfu_telemetry.py))
+### 7.2 Operating the SQLite ETL & Backfill Script ([`scripts/kungfu_telemetry.py`](./scripts/kungfu_telemetry.py))
 
 ```bash
 # 1. Incremental update (default: fast <150ms watermark check across all transcripts)

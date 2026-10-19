@@ -35,4 +35,5 @@ Thumbs.db
 
 # Workspace skills directory
 .agents/
+.godoctor/
 

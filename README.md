@@ -2,26 +2,15 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/danicat/kungfu.svg)](https://pkg.go.dev/github.com/danicat/kungfu)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.5.1-green.svg)](https://github.com/danicat/kungfu/releases)
+[![Release](https://img.shields.io/badge/release-v0.5.2-green.svg)](https://github.com/danicat/kungfu/releases)
 
-A command-line tool for discovering, loading, installing, and managing Agent Skills.
-
-`kungfu` enables developers and AI coding agents to discover, stream, and manage specialized **Agent Skills** (`SKILL.md`) and companion tools. Skills can be streamed dynamically into agent context on demand or installed in workspace and global directories.
-
----
-
-## Key Features
-
-- **Just-in-Time (JIT) Loading**: Stream skill instructions (`SKILL.md`), reference docs, and companion assets directly to `stdout` for context injection without installing files to disk (`kungfu load`).
-- **GitHub and Catalog Ingestion**: Discover and load skills from `agentskills.io` catalog endpoints or directly from GitHub repositories (`kungfu load` / `kungfu learn`).
-- **Workspace and Global Management**: Install skills to `.agents/skills/` (workspace) or `~/.agents/skills/` (global), track provenance, check for updates, and remove skills when no longer needed (`kungfu learn`, `kungfu update`, `kungfu forget`).
-- **Catalog Search and Filtering**: Search across skill titles, descriptions, categories, and tags to find the right capabilities for your task (`kungfu find`, `kungfu list`).
+`kungfu` is a command-line tool for discovering, streaming, running, and installing **Agent Skills** (`SKILL.md`). Coding agents can stream skill instructions and reference files into context on demand (`kungfu load`) or install them into workspace and global directories (`kungfu learn`).
 
 ---
 
 ## Installation
 
-Install using Go (1.27+):
+Install with Go 1.27 or newer:
 
 ```bash
 go install github.com/danicat/kungfu@latest
@@ -37,24 +26,6 @@ kungfu --version
 
 ## Commands
 
-### Discover Skills (`list`)
-
-List available categories and registered skills:
-
-```bash
-# List all skills
-kungfu list
-
-# Filter by category
-kungfu list -c coding
-
-# Filter by tags
-kungfu list -t "golang AND testing"
-
-# Output structured JSON
-kungfu list --json
-```
-
 ### Search Skills (`find`)
 
 Search across skill names, descriptions, categories, and tags:
@@ -63,52 +34,61 @@ Search across skill names, descriptions, categories, and tags:
 # Search by keyword
 kungfu find "refactoring ast"
 
-# Filter search within a category
-kungfu find "testing" -c coding
+# Limit results
+kungfu find "audio" --limit 5
 
-# Limit results and set score threshold
-kungfu find "audio" --limit 5 --threshold 0.25
-```
-
-### Inspect Metadata (`show`)
-
-Display metadata, tags, and documentation paths for a skill:
-
-```bash
-kungfu show godoctor
-kungfu show anthropics/anthropic-quickstarts/evals
+# Search within a specific catalog
+kungfu find "testing@go-skills"
 ```
 
 ### Load Instructions (`load`)
 
-Stream raw `SKILL.md` instructions, companion references, or assets to `stdout`:
+Stream `SKILL.md` instructions, references, or assets to `stdout`. Output pages at ~6,000 bytes to fit within 8 KiB agent buffers:
 
 ```bash
-# Stream skill instructions to stdout
+# Stream skill instructions (page 1)
 kungfu load godoctor
+
+# Read subsequent pages or stream full content
+kungfu load godoctor -p 2
+kungfu load godoctor --full
 
 # Stream directly from a GitHub repository
 kungfu load anthropics/anthropic-quickstarts/evals
 
-# Load from local cache or workspace without remote check
+# Load from local cache only or force an upstream refresh
 kungfu load godoctor --local
-
-# Force checking remote upstream and updating local cache
-kungfu load godoctor --update
-
-# Bypass integrity verification if needed
 kungfu load godoctor --update --force
-
-# Stream multiple skills simultaneously
-kungfu load godoctor deslopify
 
 # Load a companion reference document or asset
 kungfu load godoctor/references/architecture.md
 ```
 
+### Run Companion Scripts (`run`)
+
+Run scripts bundled inside a skill (`uv`, `python3`, `bun`, `deno`, `node`, or `bash`):
+
+```bash
+kungfu run godoctor analyze.sh --json
+```
+
+### List & Inspect Skills (`list` / `show`)
+
+List available skills or inspect metadata, references, and scripts for a skill:
+
+```bash
+# List all available skills
+kungfu list
+kungfu list --json
+
+# Show metadata and bundled files for a skill
+kungfu show godoctor
+kungfu show anthropics/anthropic-quickstarts/evals
+```
+
 ### Install Skills (`learn` / `add`)
 
-Install skills locally in the workspace (`.agents/skills/`) or globally (`~/.agents/skills/`):
+Install skills to the workspace (`.agents/skills/`) or globally (`~/.agents/skills/`):
 
 ```bash
 # Install to workspace (.agents/skills/<skill>/)
@@ -123,112 +103,100 @@ kungfu learn godoctor -g
 # Overwrite existing installation
 kungfu learn godoctor -f
 
-# Install and output instructions simultaneously
+# Install and stream instructions simultaneously
 kungfu learn godoctor --load
 ```
 
 ### Inspect Status (`status`)
 
-View installed skills, paths, versions, and load history:
+View installed skills, versions, and local usage history:
 
 ```bash
-# Check workspace skills
 kungfu status
-
-# Check global skills
 kungfu status -g
-
-# Output as JSON
+kungfu status godoctor
 kungfu status --json
 ```
 
-### Update Skills (`update`)
+### Update & Remove Skills (`update` / `forget`)
 
-Check for upstream updates or sync installed skills with their origin source:
+Check for upstream updates or uninstall skills:
 
 ```bash
 # Check for available updates (dry run)
 kungfu update
 
-# Update all workspace skills
+# Apply updates
 kungfu update --all
-
-# Update a specific skill
 kungfu update godoctor
-```
 
-### Remove Skills (`forget`)
-
-Uninstall skills from workspace or global directories:
-
-```bash
-# Remove from workspace
+# Remove skills from workspace or global scope
 kungfu forget godoctor
-
-# Remove all workspace skills
 kungfu forget --all
-
-# Remove global skill
 kungfu forget -g kungfu
 ```
 
 ### Manage Catalogs (`catalog`)
 
-Register, list, remove, and sync entire catalogs of skills from GitHub repositories, HTTP manifest endpoints, or local directories:
+Add, list, remove, and sync skill catalogs from GitHub repos, HTTP manifests, or local folders:
 
 ```bash
-# Add a GitHub skills repository (automatically discovers all SKILL.md packages across the tree)
+# Add a GitHub skills repository
 kungfu catalog add google/skills
 
-# Add a catalog from an HTTP manifest endpoint
+# Add an HTTP manifest or local directory
 kungfu catalog add https://example.com/catalog.json --name custom-catalog
-
-# Add a local directory containing skills
 kungfu catalog add ./my-team-skills --name team-skills
 
-# List all registered catalogs and default source
+# List, sync, or remove catalogs
 kungfu catalog list
-
-# Synchronize and refresh indexed skills for registered catalogs
 kungfu catalog sync
-
-# Remove a registered catalog
 kungfu catalog remove google/skills
 ```
 
-#### Catalog Discovery Order
+When indexing a catalog source, `kungfu` checks three formats in order:
+1. `catalog.json`: `skills.danicat.dev` manifest with items, tags, and digests.
+2. `index.json`: `google/skills` index file.
+3. Directory tree: `agentskills.io` folder scan for `SKILL.md` files.
 
-When discovering skills in a repository or remote host, `kungfu` automatically queries formats in the following precedence order:
-1. **`catalog.json`** (`skills.danicat.dev` standard): Explicit manifest containing items, tags, and category metadata.
-2. **`index.json`** (`google/skills` standard): Discovery envelope indexing available skills.
-3. **Directory Crawl** (`agentskills.io` standard): Recursive file-tree discovery searching for all valid `SKILL.md` bundles.
+### Opt-In Community Telemetry (`telemetry`)
 
-### Run Companion Scripts (`run`)
-
-Execute companion automation scripts bundled inside a skill (supports Python/uv, Node/Bun/Deno, Shell):
+`kungfu` supports opt-in anonymous usage counters for official `skills.danicat.dev` catalog skills (`loads`, `page_loads`, `subpath_loads`, `runs`, `learns`). It excludes custom, local, and third-party skills. `kungfu load` never makes network calls for telemetry; `kungfu catalog sync` and `kungfu telemetry sync` flush pending counter deltas:
 
 ```bash
-kungfu run godoctor analyze.sh --json
+# View telemetry status and pending official skill deltas
+kungfu telemetry status
+
+# Opt in (baselines existing local history so only future usage is sent)
+kungfu telemetry enable
+
+# Flush pending counter deltas to Cloud Firestore immediately
+kungfu telemetry sync
+
+# Opt out at any time
+kungfu telemetry disable
 ```
 
 ---
 
 ## User Configuration
 
-KungFu supports user-level configuration stored at `~/.config/kungfu/config.yaml` (or `.json`):
+`kungfu` reads user settings from `~/.config/kungfu/config.yaml` (or `.json`):
 
 ```yaml
-version: 1
 catalogs:
   default: https://skills.danicat.dev/catalog.json
 load:
   auto_update: true
+telemetry:
+  enabled: false
 ```
 
-- **`catalogs.default`**: Default catalog URL (defaults to `https://skills.danicat.dev/catalog.json`).
-- **`load.auto_update`**: Automatically update cached catalog metadata and downloaded skills when an upstream digest change is detected (default `true`).
-
-
+| Key | Default | Description |
+|---|---|---|
+| `catalogs.default` | `https://skills.danicat.dev/catalog.json` | Default catalog URL |
+| `load.auto_update` | `true` | Refresh cached skills when the upstream digest changes |
+| `telemetry.enabled` | `false` | Opt in to anonymous counters for official skills (`DO_NOT_TRACK=1` and `KUNGFU_TELEMETRY=0\|1` override) |
 
 ---
 
@@ -236,36 +204,20 @@ load:
 
 | Flag | Description |
 |---|---|
-| `--json` | Emit RFC 8259 structured JSON |
-| `--raw` | Emit verbatim raw markdown / text |
-| `--config <path>` | Path to custom configuration file |
+| `--json` | Emit JSON output |
+| `--raw` | Emit raw tab/text output |
+| `--config <path>` | Custom configuration file path |
 | `--cache-dir <dir>` | Custom cache directory (default `~/.cache/kungfu`) |
-| `-v`, `--verbose` | Enable verbose diagnostics on `stderr` |
+| `-v`, `--verbose` | Verbose diagnostics on `stderr` |
 | `--no-color` | Disable ANSI color styling |
-| `-V`, `--version` | Display version information |
-| `-h`, `--help` | Display help message |
-
----
-
-## Categories
-
-Skills in the catalog are organized into canonical categories:
-
-| Category | Description |
-|---|---|
-| `game-dev` | 2D game architecture, Ebitengine, procedural art, audio, WebAssembly |
-| `media` | Audio synthesis, visual generation, asset pipelines |
-| `coding` | Code quality enforcement, AST refactoring, testing, static analysis |
-| `agents` | Agent skills authoring, evaluation suites, swarms, discovery gateway |
-| `writing` | Technical writing, review workflows, style guidelines |
-| `analytics` | Search console, analytics data warehousing, SQL querying |
-| `standards` | RFCs, architecture decision records, QA gates |
+| `-V`, `--version` | Print version |
+| `-h`, `--help` | Show help |
 
 ---
 
 ## Testing
 
-Run unit and integration tests:
+Run the test suite with the race detector enabled:
 
 ```bash
 go test -v -race ./...

@@ -16,6 +16,8 @@ package main
 
 import (
 	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,9 +30,15 @@ func TestMain(m *testing.M) {
 		_ = os.Setenv("HOME", tempHome)
 		_ = os.Setenv("KUNGFU_CONFIG_DIR", filepath.Join(tempHome, ".config", "kungfu"))
 		_ = os.Setenv("KUNGFU_STATE_PATH", filepath.Join(tempHome, ".config", "kungfu", "state.json"))
-		defer func() { _ = os.RemoveAll(tempHome) }()
+		_ = os.Setenv("KUNGFU_CONFIG", "")
+		_ = os.Setenv("KUNGFU_TELEMETRY", "0")
+		_ = os.Setenv("DO_NOT_TRACK", "")
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	if tempHome != "" {
+		_ = os.RemoveAll(tempHome)
+	}
+	os.Exit(code)
 }
 
 func TestRun_CLI_Basics(t *testing.T) {
@@ -75,6 +83,13 @@ func TestRun_CLI_UnknownCommand(t *testing.T) {
 }
 
 func TestRun_CLI_ListAndShow(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"version":"1.0.0","items":[]}`))
+	}))
+	defer srv.Close()
+	t.Setenv("KUNGFU_URL", srv.URL)
+
 	var stdout, stderr bytes.Buffer
 	code := Run([]string{"list"}, &stdout, &stderr)
 	if code != ExitSuccess {
@@ -96,6 +111,13 @@ func TestRun_CLI_ListAndShow(t *testing.T) {
 }
 
 func TestRun_CLI_Load(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"version":"1.0.0","items":[]}`))
+	}))
+	defer srv.Close()
+	t.Setenv("KUNGFU_URL", srv.URL)
+
 	var stdout, stderr bytes.Buffer
 	code := Run([]string{"load", "kungfu"}, &stdout, &stderr)
 	if code != ExitSuccess {

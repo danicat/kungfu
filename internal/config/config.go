@@ -36,18 +36,28 @@ type LoadConfig struct {
 	AutoUpdate *bool `json:"auto_update,omitempty" yaml:"auto_update,omitempty"`
 }
 
-// Config represents the user-level configuration (~/.config/kungfu/config.yaml or config.json).
-type Config struct {
-	Load     LoadConfig        `json:"load,omitempty" yaml:"load,omitempty"`
-	Catalogs map[string]string `json:"catalogs,omitempty" yaml:"catalogs,omitempty"`
+// TelemetryConfig holds configuration options for opt-in community usage telemetry.
+type TelemetryConfig struct {
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 }
 
-// DefaultConfig returns the default configuration.
+// Config represents the user-level configuration (~/.config/kungfu/config.yaml or config.json).
+type Config struct {
+	Load      LoadConfig        `json:"load,omitempty" yaml:"load,omitempty"`
+	Telemetry TelemetryConfig   `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
+	Catalogs  map[string]string `json:"catalogs,omitempty" yaml:"catalogs,omitempty"`
+}
+
+// DefaultConfig returns the default configuration (telemetry strictly opt-in / false by default).
 func DefaultConfig() *Config {
 	autoUpdate := true
+	telemetryEnabled := false
 	return &Config{
 		Load: LoadConfig{
 			AutoUpdate: &autoUpdate,
+		},
+		Telemetry: TelemetryConfig{
+			Enabled: &telemetryEnabled,
 		},
 		Catalogs: map[string]string{
 			"default": DefaultCatalogURL,
@@ -62,6 +72,30 @@ func (c *Config) IsAutoUpdate() bool {
 		return true
 	}
 	return *c.Load.AutoUpdate
+}
+
+// IsTelemetryEnabled returns true only if community telemetry is explicitly enabled via config or KUNGFU_TELEMETRY=1/true,
+// and DO_NOT_TRACK is not set to 1/true.
+func (c *Config) IsTelemetryEnabled() bool {
+	if dnt := strings.ToLower(strings.TrimSpace(os.Getenv("DO_NOT_TRACK"))); dnt == "1" || dnt == "true" {
+		return false
+	}
+	if env := strings.ToLower(strings.TrimSpace(os.Getenv("KUNGFU_TELEMETRY"))); env != "" {
+		return env == "1" || env == "true" || env == "on" || env == "yes"
+	}
+	if c == nil || c.Telemetry.Enabled == nil {
+		return false
+	}
+	return *c.Telemetry.Enabled
+}
+
+// SetTelemetryEnabled updates the telemetry enabled flag on the Config struct.
+func (c *Config) SetTelemetryEnabled(enabled bool) {
+	if c == nil {
+		return
+	}
+	v := enabled
+	c.Telemetry.Enabled = &v
 }
 
 // GetCatalogURL returns the URL for a catalog name, or empty string if not found.
@@ -131,12 +165,13 @@ func ResolveConfigPath(customPath string) string {
 }
 
 // Load reads and parses user configuration from the resolved path.
-// If the file does not exist, DefaultConfig is returned without error.
+// If no explicit customPath or KUNGFU_CONFIG is set and the default file does not exist, DefaultConfig is returned.
 func Load(customPath string) (*Config, error) {
+	explicit := customPath != "" || os.Getenv("KUNGFU_CONFIG") != ""
 	path := ResolveConfigPath(customPath)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, os.ErrNotExist) && !explicit {
 			return DefaultConfig(), nil
 		}
 		return nil, fmt.Errorf("config: reading %s: %w", path, err)
@@ -165,4 +200,56 @@ func Load(customPath string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// Save writes the given configuration atomically to the resolved config path and returns the path written.
+func Save(customPath string, cfg *Config) (string, error) {
+	if cfg == nil {
+		return "", fmt.Errorf("config: cannot save nil config")
+	}
+	path := ResolveConfigPath(customPath)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", fmt.Errorf("config: creating directory %s: %w", dir, err)
+	}
+
+	var data []byte
+	var err error
+	if strings.HasSuffix(path, ".json") {
+		data, err = json.MarshalIndent(cfg, "", "  ")
+		if err != nil {
+			return "", fmt.Errorf("config: encoding JSON: %w", err)
+		}
+		data = append(data, '\n')
+	} else {
+		data, err = yaml.Marshal(cfg)
+		if err != nil {
+			return "", fmt.Errorf("config: encoding YAML: %w", err)
+		}
+	}
+
+	tmpFile, err := os.CreateTemp(dir, ".config-*.tmp")
+	if err != nil {
+		return "", fmt.Errorf("config: creating temp file in %s: %w", dir, err)
+	}
+	tmpPath := tmpFile.Name()
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("config: writing temp file %s: %w", tmpPath, err)
+	}
+	if err := tmpFile.Chmod(0644); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("config: setting permissions on %s: %w", tmpPath, err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("config: closing temp file %s: %w", tmpPath, err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("config: renaming %s -> %s: %w", tmpPath, path, err)
+	}
+	return path, nil
 }

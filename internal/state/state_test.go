@@ -31,9 +31,15 @@ func TestMain(m *testing.M) {
 		_ = os.Setenv("HOME", tempHome)
 		_ = os.Setenv("KUNGFU_CONFIG_DIR", filepath.Join(tempHome, ".config", "kungfu"))
 		_ = os.Setenv("KUNGFU_STATE_PATH", filepath.Join(tempHome, ".config", "kungfu", "state.json"))
-		defer func() { _ = os.RemoveAll(tempHome) }()
+		_ = os.Setenv("KUNGFU_CONFIG", "")
+		_ = os.Setenv("KUNGFU_TELEMETRY", "0")
+		_ = os.Setenv("DO_NOT_TRACK", "")
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	if tempHome != "" {
+		_ = os.RemoveAll(tempHome)
+	}
+	os.Exit(code)
 }
 
 func TestState_LifecycleAndPersistence(t *testing.T) {
@@ -313,5 +319,28 @@ func TestState_WithLockedStateAndDetailedTelemetry(t *testing.T) {
 	}
 	if h.RunCount != 4 {
 		t.Errorf("expected RunCount=4, got %d", h.RunCount)
+	}
+}
+
+func TestState_TelemetryDeltaClampingAndSnapping(t *testing.T) {
+	s := state.NewState()
+	for i := 0; i < 150; i++ {
+		s.RecordLoadDetailed("godoctor", "", 1)
+	}
+	deltas := s.ComputeTelemetryDeltas(func(name string) (string, bool) {
+		return "coding", name == "godoctor"
+	})
+	if len(deltas) != 1 || deltas[0].Loads != state.MaxTelemetryDelta {
+		t.Fatalf("expected Loads clamped to %d, got %+v", state.MaxTelemetryDelta, deltas)
+	}
+	s.ApplySyncedDeltas(deltas, time.Now().UTC())
+	if s.History["godoctor"].SyncedLoadCount != 150 {
+		t.Errorf("expected SyncedLoadCount snapped to 150, got %d", s.History["godoctor"].SyncedLoadCount)
+	}
+	after := s.ComputeTelemetryDeltas(func(name string) (string, bool) {
+		return "coding", name == "godoctor"
+	})
+	if len(after) != 0 {
+		t.Errorf("expected 0 pending deltas after ApplySyncedDeltas, got %+v", after)
 	}
 }

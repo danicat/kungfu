@@ -23,12 +23,12 @@
         "jit"
       ],
       "author": "Daniela Petruzalek (daniela@danicat.dev)",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "license": "Apache-2.0",
       "url": "https://raw.githubusercontent.com/danicat/kungfu/main/skills/kungfu/SKILL.md",
       "relativePath": "skills/kungfu/SKILL.md",
-      "digest": "sha256:a799fb525006092a44ca4e8e40b626af184f493274d5bdd9e445dafb0739af85",
-      "sha256": "a799fb525006092a44ca4e8e40b626af184f493274d5bdd9e445dafb0739af85",
+      "digest": "sha256:eee655d943fbbb947117e0f4b3ef79f8d9d99ca3742f04934e86aafdb8375755",
+      "sha256": "eee655d943fbbb947117e0f4b3ef79f8d9d99ca3742f04934e86aafdb8375755",
       "source": "github:danicat/kungfu",
       "metadata": {
         "author": "Daniela Petruzalek (daniela@danicat.dev)",
@@ -38,7 +38,7 @@
         "repo": "danicat/kungfu",
         "ref": "main",
         "tags": "gateway, agent-skills, discovery, search, catalog, cli, learn, jit",
-        "version": "0.5.1"
+        "version": "0.5.2"
       }
     }
   ]

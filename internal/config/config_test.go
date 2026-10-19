@@ -17,21 +17,60 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/danicat/kungfu/internal/config"
 )
 
+func TestMain(m *testing.M) {
+	tempHome, err := os.MkdirTemp("", "kungfu-config-test-*")
+	if err == nil {
+		_ = os.Setenv("HOME", tempHome)
+		_ = os.Setenv("KUNGFU_CONFIG_DIR", filepath.Join(tempHome, ".config", "kungfu"))
+		_ = os.Setenv("KUNGFU_CONFIG", "")
+		_ = os.Setenv("KUNGFU_TELEMETRY", "")
+		_ = os.Setenv("DO_NOT_TRACK", "")
+	}
+	code := m.Run()
+	if tempHome != "" {
+		_ = os.RemoveAll(tempHome)
+	}
+	os.Exit(code)
+}
+
 func TestConfig_Default(t *testing.T) {
-	cfg, err := config.Load("/path/that/does/not/exist.yaml")
+	t.Setenv("KUNGFU_CONFIG_DIR", t.TempDir())
+	cfg, err := config.Load("")
 	if err != nil {
-		t.Fatalf("expected no error for missing file, got %v", err)
+		t.Fatalf("expected no error for missing default file, got %v", err)
 	}
 	if !cfg.IsAutoUpdate() {
 		t.Errorf("expected auto_update to default to true")
 	}
 	if u := cfg.GetCatalogURL("default"); u != config.DefaultCatalogURL {
 		t.Errorf("expected default catalog URL %q, got %q", config.DefaultCatalogURL, u)
+	}
+	if _, err := config.Load("/path/that/does/not/exist.yaml"); err == nil {
+		t.Errorf("expected error for missing explicit config path")
+	}
+}
+
+func TestConfig_SaveDoesNotLeakKeys(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("KUNGFU_CONFIG_DIR", tmpDir)
+	cfg := config.DefaultConfig()
+	cfg.SetTelemetryEnabled(true)
+	savedPath, err := config.Save("", cfg)
+	if err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	raw, err := os.ReadFile(savedPath)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if strings.Contains(string(raw), "api_key") || strings.Contains(string(raw), "project_id") {
+		t.Errorf("saved config should not contain api_key or project_id, got:\n%s", string(raw))
 	}
 }
 

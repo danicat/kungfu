@@ -83,13 +83,33 @@ type WorkspaceState struct {
 	Skills map[string]SkillRecord `json:"skills"`
 }
 
-// HistoryRecord tracks JIT load and script execution activity for a skill.
+// HistoryRecord tracks JIT load, learn, and script execution activity for a skill,
+// along with synced watermarks for opt-in community telemetry.
 type HistoryRecord struct {
 	LastSeenAt       time.Time `json:"last_seen_at"`
 	LoadCount        int       `json:"load_count"`
 	PageLoadCount    int       `json:"page_load_count,omitempty"`
 	SubpathLoadCount int       `json:"subpath_load_count,omitempty"`
 	RunCount         int       `json:"run_count,omitempty"`
+	LearnCount       int       `json:"learn_count,omitempty"`
+
+	SyncedLoadCount        int        `json:"synced_load_count,omitempty"`
+	SyncedPageLoadCount    int        `json:"synced_page_load_count,omitempty"`
+	SyncedSubpathLoadCount int        `json:"synced_subpath_load_count,omitempty"`
+	SyncedRunCount         int        `json:"synced_run_count,omitempty"`
+	SyncedLearnCount       int        `json:"synced_learn_count,omitempty"`
+	LastSyncedAt           *time.Time `json:"last_synced_at,omitempty"`
+}
+
+// TelemetryDelta represents unsent positive counter increments for an official catalog skill.
+type TelemetryDelta struct {
+	Skill        string `json:"skill"`
+	Category     string `json:"category"`
+	Loads        int    `json:"loads"`
+	PageLoads    int    `json:"page_loads"`
+	SubpathLoads int    `json:"subpath_loads"`
+	Runs         int    `json:"runs"`
+	Learns       int    `json:"learns"`
 }
 
 // State represents the complete root manifest in ~/.config/kungfu/state.json.
@@ -243,14 +263,29 @@ func SaveState(filePath string, s *State) error {
 	}
 	data = append(data, '\n')
 
-	tmpFile := filePath + fmt.Sprintf(".tmp-%d", time.Now().UnixNano())
-	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
-		return fmt.Errorf("state: writing temp file %s: %w", tmpFile, err)
+	tmpFile, err := os.CreateTemp(dir, ".state-*.tmp")
+	if err != nil {
+		return fmt.Errorf("state: creating temp file in %s: %w", dir, err)
+	}
+	tmpPath := tmpFile.Name()
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("state: writing temp file %s: %w", tmpPath, err)
+	}
+	if err := tmpFile.Chmod(0644); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("state: setting permissions on %s: %w", tmpPath, err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("state: closing temp file %s: %w", tmpPath, err)
 	}
 
-	if err := os.Rename(tmpFile, filePath); err != nil {
-		_ = os.Remove(tmpFile)
-		return fmt.Errorf("state: renaming %s -> %s: %w", tmpFile, filePath, err)
+	if err := os.Rename(tmpPath, filePath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("state: renaming %s -> %s: %w", tmpPath, filePath, err)
 	}
 
 	return nil
@@ -274,13 +309,15 @@ func WithLockedState(filePath string, fn func(s *State) error) error {
 		return fmt.Errorf("state: opening lock file %s: %w", lockPath, err)
 	}
 	defer func() {
-		_ = unlockFile(lockFile)
 		_ = lockFile.Close()
 	}()
 
 	if err := lockFileExclusive(lockFile); err != nil {
 		return fmt.Errorf("state: acquiring exclusive lock on %s: %w", lockPath, err)
 	}
+	defer func() {
+		_ = unlockFile(lockFile)
+	}()
 
 	s, err := LoadState(filePath)
 	if err != nil {
@@ -414,6 +451,126 @@ func (s *State) RecordRun(skillName string) {
 	} else {
 		rec.LastSeenAt = now
 		rec.RunCount++
+	}
+}
+
+// RecordLearn updates the last seen timestamp and increments the learn count for a skill.
+func (s *State) RecordLearn(skillName string) {
+	if skillName == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC()
+	rec, ok := s.History[skillName]
+	if !ok || rec == nil {
+		rec = &HistoryRecord{
+			LastSeenAt: now,
+			LearnCount: 1,
+		}
+		s.History[skillName] = rec
+	} else {
+		rec.LastSeenAt = now
+		rec.LearnCount++
+	}
+}
+
+// MaxTelemetryDelta caps each counter increment in a single flush to match Firestore security rule bounds.
+const MaxTelemetryDelta = 100
+
+func clampTelemetryDelta(v int) int {
+	return min(MaxTelemetryDelta, max(0, v))
+}
+
+// ComputeTelemetryDeltas computes positive unsent counter deltas (clamped to MaxTelemetryDelta) for all skills that pass resolveCategory.
+func (s *State) ComputeTelemetryDeltas(resolveCategory func(skillName string) (string, bool)) []TelemetryDelta {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.History == nil || resolveCategory == nil {
+		return nil
+	}
+
+	var names []string
+	for name := range s.History {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var deltas []TelemetryDelta
+	for _, name := range names {
+		rec := s.History[name]
+		if rec == nil {
+			continue
+		}
+		cat, ok := resolveCategory(name)
+		if !ok || cat == "" {
+			continue
+		}
+
+		dLoads := clampTelemetryDelta(rec.LoadCount - rec.SyncedLoadCount)
+		dPageLoads := clampTelemetryDelta(rec.PageLoadCount - rec.SyncedPageLoadCount)
+		dSubpathLoads := clampTelemetryDelta(rec.SubpathLoadCount - rec.SyncedSubpathLoadCount)
+		dRuns := clampTelemetryDelta(rec.RunCount - rec.SyncedRunCount)
+		dLearns := clampTelemetryDelta(rec.LearnCount - rec.SyncedLearnCount)
+
+		if dLoads == 0 && dPageLoads == 0 && dSubpathLoads == 0 && dRuns == 0 && dLearns == 0 {
+			continue
+		}
+
+		deltas = append(deltas, TelemetryDelta{
+			Skill:        name,
+			Category:     cat,
+			Loads:        dLoads,
+			PageLoads:    dPageLoads,
+			SubpathLoads: dSubpathLoads,
+			Runs:         dRuns,
+			Learns:       dLearns,
+		})
+	}
+	return deltas
+}
+
+// ApplySyncedDeltas snaps synced watermarks to current counter values for synced skills and records last_synced_at.
+func (s *State) ApplySyncedDeltas(applied []TelemetryDelta, syncedAt time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.History == nil {
+		return
+	}
+	ts := syncedAt.UTC()
+	for _, d := range applied {
+		rec, ok := s.History[d.Skill]
+		if !ok || rec == nil {
+			continue
+		}
+		rec.SyncedLoadCount = rec.LoadCount
+		rec.SyncedPageLoadCount = rec.PageLoadCount
+		rec.SyncedSubpathLoadCount = rec.SubpathLoadCount
+		rec.SyncedRunCount = rec.RunCount
+		rec.SyncedLearnCount = rec.LearnCount
+		rec.LastSyncedAt = &ts
+	}
+}
+
+// BaselineTelemetryWatermarks sets all synced watermarks equal to current counts so only future events produce deltas.
+func (s *State) BaselineTelemetryWatermarks(now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ts := now.UTC()
+	for _, rec := range s.History {
+		if rec == nil {
+			continue
+		}
+		rec.SyncedLoadCount = rec.LoadCount
+		rec.SyncedPageLoadCount = rec.PageLoadCount
+		rec.SyncedSubpathLoadCount = rec.SubpathLoadCount
+		rec.SyncedRunCount = rec.RunCount
+		rec.SyncedLearnCount = rec.LearnCount
+		rec.LastSyncedAt = &ts
 	}
 }
 

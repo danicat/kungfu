@@ -117,7 +117,7 @@ func (a *App) runCatalogAdd(args []string) int {
 		}
 		m, err := catalog.DiscoverLocalCatalog(source)
 		if err != nil {
-			a.logError("discovering local catalog %s: %v", source, err)
+			_, _ = fmt.Fprintf(a.Stderr, "error: discovering local catalog %s: %v\n", source, err)
 			return ExitGeneral
 		}
 		manifest = m
@@ -133,7 +133,7 @@ func (a *App) runCatalogAdd(args []string) int {
 		}
 		m, tag, err := catalog.FetchHTTPCatalog(ctx, source, a.getHTTPClient())
 		if err != nil {
-			a.logError("fetching http catalog %s: %v", source, err)
+			_, _ = fmt.Fprintf(a.Stderr, "error: fetching http catalog %s: %v\n", source, err)
 			return ExitGeneral
 		}
 		manifest = m
@@ -163,7 +163,7 @@ func (a *App) runCatalogAdd(args []string) int {
 
 		m, err := catalog.FetchGitHubCatalog(ctx, target, a.getHTTPClient())
 		if err != nil {
-			a.logError("fetching github catalog %s: %v", source, err)
+			_, _ = fmt.Fprintf(a.Stderr, "error: fetching github catalog %s: %v\n", source, err)
 			return ExitGeneral
 		}
 		manifest = m
@@ -571,12 +571,10 @@ func (a *App) runCatalogSync(args []string) int {
 		enc := json.NewEncoder(a.Stdout)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(results)
-		return exitCode
 	case OutputModeRaw:
 		for _, r := range results {
 			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%d\n", r.Status, r.Name, r.Type, r.SkillCount)
 		}
-		return exitCode
 	default:
 		_, _ = fmt.Fprintf(a.Stdout, "Synchronized %d catalogs:\n", len(results))
 		for _, r := range results {
@@ -586,6 +584,14 @@ func (a *App) runCatalogSync(args []string) int {
 				_, _ = fmt.Fprintf(a.Stderr, "  ✗ %-22s (%s: %s)\n", r.Name, r.Type, r.Message)
 			}
 		}
-		return exitCode
 	}
+
+	if err := a.syncTelemetryIfEnabled(ctx, mode); err != nil {
+		_, _ = fmt.Fprintf(a.Stderr, "error: %v\n", err)
+		if exitCode == ExitSuccess {
+			exitCode = MapErrorToExitCode(err)
+		}
+	}
+
+	return exitCode
 }

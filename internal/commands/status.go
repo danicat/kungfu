@@ -70,6 +70,16 @@ func (a *App) RunStatus(args []string) int {
 	globalInstalled = filterSkills(globalInstalled)
 	globalForgotten = filterSkills(globalForgotten)
 
+	filteredHistory := st.History
+	if len(targetNames) > 0 && st.History != nil {
+		filteredHistory = make(map[string]*state.HistoryRecord)
+		for name, rec := range st.History {
+			if targetNames[name] {
+				filteredHistory[name] = rec
+			}
+		}
+	}
+
 	type StatusOutput struct {
 		Workspace       string                          `json:"workspace,omitempty"`
 		WorkspaceSkills map[string]state.SkillRecord    `json:"workspace_skills,omitempty"`
@@ -80,7 +90,7 @@ func (a *App) RunStatus(args []string) int {
 
 	out := StatusOutput{
 		GlobalSkills: globalInstalled,
-		History:      st.History,
+		History:      filteredHistory,
 	}
 	if !globalFlag {
 		out.Workspace = wsDir
@@ -202,17 +212,17 @@ func (a *App) RunStatus(args []string) int {
 			}
 		}
 
-		// Recent JIT Loads
-		if len(st.History) > 0 {
-			_, _ = fmt.Fprintf(a.Stdout, "\nRecent JIT Loads:\n")
+		// Skill Usage History
+		if len(filteredHistory) > 0 {
+			_, _ = fmt.Fprintf(a.Stdout, "\nSkill Usage History:\n")
 			var histNames []string
-			for n := range st.History {
+			for n := range filteredHistory {
 				histNames = append(histNames, n)
 			}
 			sort.Strings(histNames)
 			for _, n := range histNames {
-				h := st.History[n]
-				details := fmt.Sprintf("loaded %d times", h.LoadCount)
+				h := filteredHistory[n]
+				details := fmt.Sprintf("%d loads", h.LoadCount)
 				if h.PageLoadCount > 0 {
 					details += fmt.Sprintf(", +%d pages", h.PageLoadCount)
 				}
@@ -222,7 +232,10 @@ func (a *App) RunStatus(args []string) int {
 				if h.RunCount > 0 {
 					details += fmt.Sprintf(", %d runs", h.RunCount)
 				}
-				_, _ = fmt.Fprintf(a.Stdout, "  • %-20s (last seen %s, %s)\n", n, h.LastSeenAt.Format("2006-01-02 15:04"), details)
+				if h.LearnCount > 0 {
+					details += fmt.Sprintf(", %d learns", h.LearnCount)
+				}
+				_, _ = fmt.Fprintf(a.Stdout, "  • %-20s (%s, %s)\n", n, h.LastSeenAt.Format("2006-01-02 15:04"), details)
 			}
 		}
 

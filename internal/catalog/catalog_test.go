@@ -31,9 +31,12 @@ func TestMain(m *testing.M) {
 	tempHome, err := os.MkdirTemp("", "kungfu-catalog-test-*")
 	if err == nil {
 		_ = os.Setenv("HOME", tempHome)
-		defer func() { _ = os.RemoveAll(tempHome) }()
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	if tempHome != "" {
+		_ = os.RemoveAll(tempHome)
+	}
+	os.Exit(code)
 }
 
 func TestSchemaTypesAndErrors(t *testing.T) {

@@ -213,4 +213,3 @@ func TestRunUpdate_ConflictAndForce(t *testing.T) {
 		t.Errorf("expected successful update message, got: %s", stdout.String())
 	}
 }
-
