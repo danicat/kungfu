@@ -209,7 +209,7 @@ func (a *App) RunLoad(args []string) int {
 				_, _ = fmt.Fprintf(a.Stderr, "  - Load local cached copy:   kungfu load %s --local\n", target.item.Name)
 				_, _ = fmt.Fprintf(a.Stderr, "  - Check upstream update:    kungfu load %s --update\n", target.item.Name)
 				_, _ = fmt.Fprintf(a.Stderr, "  - Ignore digest check:      kungfu load %s --force\n", target.item.Name)
-				_, _ = fmt.Fprintf(a.Stderr, "  - Synchronize catalog:      kungfu catalog sync\n")
+				_, _ = fmt.Fprintf(a.Stderr, "  - Synchronize catalogs:     kungfu update\n")
 			}
 			return MapErrorToExitCode(err)
 		}

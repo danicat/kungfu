@@ -77,12 +77,13 @@ func TestRunCatalog(t *testing.T) {
 		t.Errorf("expected mock-cat in catalog list, got: %s", stdout.String())
 	}
 
-	// 3. Sync catalog
+	// 3. Synchronize all catalogs via RunUpdate (using mock server URL so tests never hit live internet)
+	app.Config.Catalogs["default"] = server.URL
 	stdout.Reset()
 	stderr.Reset()
-	code = app.RunCatalog([]string{"sync", "mock-cat"})
+	code = app.RunUpdate([]string{})
 	if code != ExitSuccess {
-		t.Fatalf("RunCatalog sync = %d; stderr: %s", code, stderr.String())
+		t.Fatalf("RunUpdate = %d; stderr: %s", code, stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "Synchronized") {
 		t.Errorf("expected synchronized confirmation, got: %s", stdout.String())
@@ -107,15 +108,11 @@ func TestRunCatalog(t *testing.T) {
 		t.Errorf("expected default catalog removal to be prevented")
 	}
 
-	// 6. Sync default catalog (using mock server URL so tests never hit live internet)
-	app.Config.Catalogs["default"] = server.URL
+	// 6. Legacy catalog sync subcommand should fail with ExitUsage
 	stdout.Reset()
 	stderr.Reset()
-	code = app.RunCatalog([]string{"sync", "default"})
-	if code != ExitSuccess {
-		t.Fatalf("RunCatalog sync default = %d; stderr: %s", code, stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "Synchronized") {
-		t.Errorf("expected synchronized confirmation for default, got: %s", stdout.String())
+	code = app.RunCatalog([]string{"sync"})
+	if code != ExitUsage {
+		t.Fatalf("RunCatalog sync = %d, want %d", code, ExitUsage)
 	}
 }

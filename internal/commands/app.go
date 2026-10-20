@@ -303,20 +303,75 @@ func (a *App) logError(format string, args ...any) {
 	}
 }
 
+func truncateSuggestionDescription(desc string) string {
+	clean := strings.Join(strings.Fields(desc), " ")
+	runes := []rune(clean)
+	if len(runes) > 69 {
+		return string(runes[:66]) + "..."
+	}
+	return clean
+}
+
 func (a *App) printNotFoundWithSuggestions(cmd, query string) {
 	_, _ = fmt.Fprintf(a.Stderr, "error: skill %q not found.\n", query)
 
-	var suggestions []string
+	const maxSuggestions = 5
+	searchQuery := query
+	if idx := strings.LastIndex(searchQuery, "@"); idx > 0 {
+		searchQuery = searchQuery[:idx]
+	}
 
-	// 1. Fuzzy match against all known skill names
 	allItems := a.Store.All()
+	itemByName := make(map[string]catalog.Item, len(allItems))
 	var skillNames []string
 	for _, it := range allItems {
 		skillNames = append(skillNames, it.Name)
+		itemByName[strings.ToLower(strings.TrimSpace(it.Name))] = it
 	}
-	skillSuggestions := search.Suggest(query, skillNames, 3)
-	for _, s := range skillSuggestions {
-		suggestions = append(suggestions, fmt.Sprintf("  - kungfu %s %s", cmd, s))
+
+	var matchedItems []catalog.Item
+	seen := make(map[string]bool)
+	addCandidate := func(it catalog.Item) {
+		key := strings.ToLower(strings.TrimSpace(it.Name))
+		if key == "" || seen[key] || len(matchedItems) >= maxSuggestions {
+			return
+		}
+		seen[key] = true
+		matchedItems = append(matchedItems, it)
+	}
+
+	// 1. Fuzzy and substring match against all known skill names
+	for _, s := range search.Suggest(searchQuery, skillNames, maxSuggestions) {
+		if it, ok := itemByName[strings.ToLower(strings.TrimSpace(s))]; ok {
+			addCandidate(it)
+		} else {
+			addCandidate(catalog.Item{Name: s})
+		}
+	}
+
+	// 2. Hybrid semantic/keyword search across Name, Category, Tags, and Description
+	if len(matchedItems) < maxSuggestions && a.Searcher != nil && len(allItems) > 0 {
+		_ = a.Searcher.Index(allItems)
+		for _, r := range a.Searcher.Search(searchQuery, "hybrid", maxSuggestions, 0.0) {
+			addCandidate(r.Item)
+		}
+	}
+
+	maxNameLen := 0
+	for _, it := range matchedItems {
+		if len(it.Name) > maxNameLen {
+			maxNameLen = len(it.Name)
+		}
+	}
+
+	var suggestions []string
+	for _, it := range matchedItems {
+		desc := truncateSuggestionDescription(it.Description)
+		if desc != "" {
+			suggestions = append(suggestions, fmt.Sprintf("  - kungfu %s %-*s # %s", cmd, maxNameLen, it.Name, desc))
+		} else {
+			suggestions = append(suggestions, fmt.Sprintf("  - kungfu %s %s", cmd, it.Name))
+		}
 	}
 
 	if cmd != "find" {
@@ -518,10 +573,10 @@ COMMANDS:
   status    [skill...] [-g] [--json] [--raw]
             Show installed skills and usage history.
   update    [skill...] [-g] [--all] [-y] [-f] [--refresh]
-            Check for or apply skill updates.
+            Synchronize catalogs and check for or apply skill updates.
   forget    <skill...> [-g] [-f] [--all]
             Uninstall skills from workspace or global scope.
-  catalog   <add|list|remove|sync> [source] [flags]
+  catalog   <add|list|remove> [source] [flags]
             Manage external skill catalogs.
   telemetry [status|enable|disable|sync] [--json] [--raw]
             Manage opt-in anonymous community usage counters.

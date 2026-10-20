@@ -145,6 +145,47 @@ func TestDidYouMeanSuggestions(t *testing.T) {
 					"category": "writing",
 					"url": "https://skills.danicat.dev/writing/tech-writer/SKILL.md",
 					"digest": "sha256:234567"
+				},
+				{
+					"name": "developing-genkit-go",
+					"type": "skill-md",
+					"description": "Develop AI-powered applications using Genkit in Go",
+					"category": "coding",
+					"url": "https://skills.danicat.dev/coding/developing-genkit-go/SKILL.md",
+					"digest": "sha256:456781"
+				},
+				{
+					"name": "developing-genkit-js",
+					"type": "skill-md",
+					"description": "Develop AI-powered applications using Genkit in Node.js/TypeScript",
+					"category": "coding",
+					"url": "https://skills.danicat.dev/coding/developing-genkit-js/SKILL.md",
+					"digest": "sha256:456782"
+				},
+				{
+					"name": "developing-genkit-python",
+					"type": "skill-md",
+					"description": "Develop AI-powered applications using Genkit in Python",
+					"category": "coding",
+					"url": "https://skills.danicat.dev/coding/developing-genkit-python/SKILL.md",
+					"digest": "sha256:456783"
+				},
+				{
+					"name": "developing-genkit-dart",
+					"type": "skill-md",
+					"description": "Generates code and provides documentation for the Genkit Dart SDK",
+					"category": "coding",
+					"url": "https://skills.danicat.dev/coding/developing-genkit-dart/SKILL.md",
+					"digest": "sha256:456784"
+				},
+				{
+					"name": "lyria",
+					"type": "skill-md",
+					"description": "Generative music and audio synthesis from text prompts or reference images",
+					"category": "media",
+					"tags": ["audio", "music", "lyria"],
+					"url": "https://skills.danicat.dev/media/lyria/SKILL.md",
+					"digest": "sha256:567890"
 				}
 			]
 		}`))
@@ -156,25 +197,56 @@ func TestDidYouMeanSuggestions(t *testing.T) {
 		name       string
 		args       []string
 		wantCode   int
-		wantStderr string
+		wantStderr []string
 	}{
 		{
-			name:       "typo kungfuu suggests kungfu",
-			args:       []string{"load", "kungfuu"},
-			wantCode:   ExitNotFound,
-			wantStderr: "kungfu load kungfu",
+			name:     "typo kungfuu suggests kungfu with description",
+			args:     []string{"load", "kungfuu"},
+			wantCode: ExitNotFound,
+			wantStderr: []string{
+				"kungfu load kungfu",
+				"# Agent skills gateway",
+			},
 		},
 		{
-			name:       "prefix godoc suggests godoctor",
-			args:       []string{"load", "godoc"},
-			wantCode:   ExitNotFound,
-			wantStderr: "kungfu load godoctor",
+			name:     "prefix godoc suggests godoctor",
+			args:     []string{"load", "godoc"},
+			wantCode: ExitNotFound,
+			wantStderr: []string{
+				"kungfu load godoctor",
+				"# Go doctor",
+			},
 		},
 		{
-			name:       "show unknown name suggests find",
-			args:       []string{"show", "agents"},
-			wantCode:   ExitNotFound,
-			wantStderr: "kungfu find agents",
+			name:     "genkit suggests all 4 genkit skills (up to 5)",
+			args:     []string{"load", "genkit"},
+			wantCode: ExitNotFound,
+			wantStderr: []string{
+				"developing-genkit-go",
+				"developing-genkit-js",
+				"developing-genkit-python",
+				"developing-genkit-dart",
+				"kungfu find genkit",
+			},
+		},
+		{
+			name:     "concept/tag query audio suggests lyria via hybrid search",
+			args:     []string{"load", "audio"},
+			wantCode: ExitNotFound,
+			wantStderr: []string{
+				"kungfu load lyria",
+				"# Generative music and audio synthesis",
+				"kungfu find audio",
+			},
+		},
+		{
+			name:     "show unknown name suggests category match and find",
+			args:     []string{"show", "agents"},
+			wantCode: ExitNotFound,
+			wantStderr: []string{
+				"kungfu show kungfu",
+				"kungfu find agents",
+			},
 		},
 	}
 
@@ -185,9 +257,22 @@ func TestDidYouMeanSuggestions(t *testing.T) {
 			if code != tt.wantCode {
 				t.Fatalf("Run(%v) = %d, want %d; stderr: %s", tt.args, code, tt.wantCode, stderr.String())
 			}
-			if !strings.Contains(stderr.String(), tt.wantStderr) {
-				t.Errorf("Run(%v) stderr %q does not contain %q", tt.args, stderr.String(), tt.wantStderr)
+			for _, sub := range tt.wantStderr {
+				if !strings.Contains(stderr.String(), sub) {
+					t.Errorf("Run(%v) stderr %q does not contain %q", tt.args, stderr.String(), sub)
+				}
 			}
 		})
+	}
+}
+
+func TestCatalogSyncRemoved(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"catalog", "sync"}, &stdout, &stderr)
+	if code != ExitUsage {
+		t.Fatalf("Run(catalog sync) = %d, want %d", code, ExitUsage)
+	}
+	if !strings.Contains(stderr.String(), "unknown catalog subcommand") {
+		t.Errorf("expected unknown catalog subcommand error, got %q", stderr.String())
 	}
 }

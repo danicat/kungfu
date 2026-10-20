@@ -41,8 +41,6 @@ SUBCOMMANDS:
       List all registered skill catalogs and default sources.
   remove <name> [--json] [--raw]
       Remove a registered catalog source.
-  sync [name] [--json] [--raw]
-      Synchronize and refresh skill indexes for one or all registered catalogs.
 
 ALIASES:
   ls (list), rm / delete (remove)`)
@@ -59,8 +57,6 @@ ALIASES:
 		return a.runCatalogList(subArgs)
 	case "remove", "rm", "delete":
 		return a.runCatalogRemove(subArgs)
-	case "sync", "refresh", "update":
-		return a.runCatalogSync(subArgs)
 	default:
 		_, _ = fmt.Fprintf(a.Stderr, "error: unknown catalog subcommand %q. Run 'kungfu catalog --help' for usage.\n", subcmd)
 		return ExitUsage
@@ -438,43 +434,8 @@ func (a *App) runCatalogRemove(args []string) int {
 	}
 }
 
-func (a *App) runCatalogSync(args []string) int {
-	fs := flag.NewFlagSet("catalog sync", flag.ContinueOnError)
-	fs.SetOutput(a.Stderr)
-	var jsonFlag, rawFlag bool
-	fs.BoolVar(&jsonFlag, "json", false, "Output in JSON format")
-	fs.BoolVar(&rawFlag, "raw", false, "Output in raw format")
-
-	posArgs, err := parseFlagsWithArgs(fs, args)
-	if err != nil {
-		return ExitUsage
-	}
-
-	mode := a.resolveMode(jsonFlag, rawFlag)
-	st := a.loadState()
+func (a *App) syncRegisteredCatalogs(ctx context.Context, st *state.State, mode OutputMode) int {
 	targets := st.GetCatalogs()
-
-	if len(posArgs) > 0 {
-		targetMap := make(map[string]bool)
-		for _, p := range posArgs {
-			targetMap[p] = true
-		}
-		var filtered []state.CatalogRecord
-		for _, c := range targets {
-			if targetMap[c.Name] {
-				filtered = append(filtered, c)
-			}
-		}
-		targets = filtered
-	}
-
-	if len(targets) == 0 && len(posArgs) > 0 {
-		_, _ = fmt.Fprintf(a.Stderr, "error: none of the specified catalogs were found in registry\n")
-		return ExitNotFound
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
 
 	type SyncResult struct {
 		Name       string `json:"name"`
@@ -493,7 +454,11 @@ func (a *App) runCatalogSync(args []string) int {
 		switch cat.Type {
 		case state.CatalogTypeDefault:
 			defaultURL := config.DefaultCatalogURL
-			if a.Config != nil && a.Config.GetCatalogURL("default") != "" {
+			if envURL := os.Getenv("KUNGFU_URL"); envURL != "" {
+				defaultURL = envURL
+			} else if envURL := os.Getenv("KUNGFU_REMOTE_URL"); envURL != "" {
+				defaultURL = envURL
+			} else if a.Config != nil && a.Config.GetCatalogURL("default") != "" {
 				defaultURL = a.Config.GetCatalogURL("default")
 			}
 			defaultURL = catalog.ResolveCatalogURL(defaultURL)
@@ -571,16 +536,7 @@ func (a *App) runCatalogSync(args []string) int {
 		exitCode = ExitGeneral
 	}
 
-	switch mode {
-	case OutputModeJSON:
-		enc := json.NewEncoder(a.Stdout)
-		enc.SetIndent("", "  ")
-		_ = enc.Encode(results)
-	case OutputModeRaw:
-		for _, r := range results {
-			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%d\n", r.Status, r.Name, r.Type, r.SkillCount)
-		}
-	default:
+	if mode == OutputModeHuman && len(results) > 0 {
 		_, _ = fmt.Fprintf(a.Stdout, "Synchronized %d catalogs:\n", len(results))
 		for _, r := range results {
 			if r.Status == "synced" {
@@ -589,6 +545,7 @@ func (a *App) runCatalogSync(args []string) int {
 				_, _ = fmt.Fprintf(a.Stderr, "  ✗ %-22s (%s: %s)\n", r.Name, r.Type, r.Message)
 			}
 		}
+		_, _ = fmt.Fprintln(a.Stdout)
 	}
 
 	if err := a.syncTelemetryIfEnabled(ctx, mode); err != nil {

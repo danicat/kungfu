@@ -123,7 +123,7 @@ func TestRun_CLI_Load(t *testing.T) {
 	if code != ExitSuccess {
 		t.Fatalf("Run(load kungfu) = %d; stderr: %s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "# KungFu: Agent Skills Gateway") {
+	if !strings.Contains(stdout.String(), "# KungFu gateway") {
 		t.Errorf("expected markdown content: %s", stdout.String())
 	}
 }

@@ -52,19 +52,6 @@ func (a *App) RunUpdate(args []string) int {
 		return ExitUsage
 	}
 
-	if cat, ok := a.Store.(*catalog.Catalog); ok {
-		syncCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		_ = cat.Sync(syncCtx, true)
-		cancel()
-	} else if refreshFlag {
-		if store, err := catalog.NewCatalog(
-			catalog.WithRemoteSync(true),
-			catalog.WithForceRefresh(),
-		); err == nil {
-			a.Store = store
-		}
-	}
-
 	scope := state.ScopeWorkspace
 	wsDir, _ := os.Getwd()
 	if globalFlag {
@@ -73,9 +60,13 @@ func (a *App) RunUpdate(args []string) int {
 	}
 
 	st := a.loadState()
-	installed := st.GetInstalledSkills(scope, wsDir)
-
 	mode := a.resolveMode(jsonFlag, rawFlag)
+
+	syncCtx, syncCancel := context.WithTimeout(context.Background(), 120*time.Second)
+	syncExitCode := a.syncRegisteredCatalogs(syncCtx, st, mode)
+	syncCancel()
+
+	installed := st.GetInstalledSkills(scope, wsDir)
 
 	if len(installed) == 0 && len(posArgs) == 0 {
 		switch mode {
@@ -86,7 +77,7 @@ func (a *App) RunUpdate(args []string) int {
 		default:
 			_, _ = fmt.Fprintf(a.Stdout, "No installed skills found in %s scope.\n", scope)
 		}
-		return ExitSuccess
+		return syncExitCode
 	}
 
 	type SkillUpdateCheck struct {
@@ -469,7 +460,7 @@ func (a *App) RunUpdate(args []string) int {
 	if hasGeneralError {
 		return ExitGeneral
 	}
-	return ExitSuccess
+	return syncExitCode
 }
 
 func parseSemver(v string) []int {

@@ -10,6 +10,12 @@ This backlog tracks roadmap items and completed releases for `kungfu`.
 ### 2. Skill Dependency Graph
 - Support `dependencies` in skill frontmatter (`dependencies: [ebitengineer, procedural-art]`) and chained loading (`kungfu load --with-deps <skill>`).
 
+## Completed (`v0.6.1`)
+
+- [x] Centralized updates (`kungfu update`): Removed `kungfu catalog sync` so `kungfu update` synchronizes all registered catalogs (`default`, `github`, `http`, `local`), flushes opt-in telemetry, and checks or updates installed skills.
+- [x] Top-5 Hybrid "Did You Mean" (`kungfu load`, `show`, `run`, `learn`): Expanded `Did you mean` suggestions to combine `search.Suggest` with hybrid BM25 + TF-IDF search (`Searcher.Search(..., "hybrid", 5, 0.0)`) and 1-line `# <description>` summaries.
+- [x] Simplified Shortcut Language (`skills/kungfu/SKILL.md`): Consolidated Section 5 around the four organic operators (`::skill`, `::?keyword`, `::skill(params...)`, `A -> B`) and three core language rules (First-Mention Hint Rule, Non-Rigid Specialization, Catalog & Reference Scoping).
+
 ## Completed (`v0.6.0`)
 
 - [x] RFC v0.2.0 Discovery Index (`.well-known/agent-skills/index.json`): Switched default catalog URL and discovery precedence to `.well-known/agent-skills/index.json` -> `index.json` -> `catalog.json` (kept for 2 versions through `v0.7.0`) -> directory scan.

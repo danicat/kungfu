@@ -291,7 +291,7 @@ func (a *App) renderTelemetrySyncResult(mode OutputMode, status string, deltas [
 }
 
 // syncTelemetryIfEnabled flushes pending official catalog skill deltas when opt-in telemetry is enabled.
-// Piggybacked onto 'kungfu catalog sync'.
+// Piggybacked onto 'kungfu update'.
 func (a *App) syncTelemetryIfEnabled(ctx context.Context, mode OutputMode) error {
 	if a.Config == nil || !a.Config.IsTelemetryEnabled() {
 		return nil

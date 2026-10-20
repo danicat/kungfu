@@ -1,10 +1,10 @@
-# KungFu (`kungfu`)
+# KungFu
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/danicat/kungfu.svg)](https://pkg.go.dev/github.com/danicat/kungfu)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.6.0-green.svg)](https://github.com/danicat/kungfu/releases)
+[![Release](https://img.shields.io/badge/release-v0.6.1-green.svg)](https://github.com/danicat/kungfu/releases)
 
-`kungfu` is a command-line tool for discovering, streaming, running, and installing **Agent Skills** (`SKILL.md`). Coding agents can stream skill instructions and reference files into context on demand (`kungfu load`) or install them into workspace and global directories (`kungfu learn`).
+`kungfu` is a command-line tool for finding, streaming, running, and installing **Agent Skills** (`SKILL.md`). Coding agents can stream skill instructions and reference files into a session on demand (`kungfu load`) or install them into workspace and global folders (`kungfu learn`).
 
 ## Installation
 
@@ -22,7 +22,7 @@ kungfu --version
 
 ## Commands
 
-### Search Skills (`find`)
+### Search skills (`find`)
 
 Search across skill names, descriptions, categories, and tags:
 
@@ -37,7 +37,7 @@ kungfu find "audio" --limit 5
 kungfu find "testing@go-skills"
 ```
 
-### Load Instructions (`load`)
+### Load instructions (`load`)
 
 Stream `SKILL.md` instructions, references, or assets to `stdout`. Output pages at ~6,000 bytes to fit within 8 KiB agent buffers:
 
@@ -60,7 +60,7 @@ kungfu load godoctor --update --force
 kungfu load godoctor/references/architecture.md
 ```
 
-### Run Companion Scripts (`run`)
+### Run companion scripts (`run`)
 
 Run scripts bundled inside a skill (`uv`, `python3`, `bun`, `deno`, `node`, or `bash`):
 
@@ -68,7 +68,7 @@ Run scripts bundled inside a skill (`uv`, `python3`, `bun`, `deno`, `node`, or `
 kungfu run godoctor analyze.sh --json
 ```
 
-### List & Inspect Skills (`list` / `show`)
+### List and inspect skills (`list` / `show`)
 
 List available skills or inspect metadata, references, and scripts for a skill:
 
@@ -82,9 +82,9 @@ kungfu show godoctor
 kungfu show anthropics/anthropic-quickstarts/evals
 ```
 
-### Install Skills (`learn` / `add`)
+### Install skills (`learn` / `add`)
 
-Install skills to the workspace (`.agents/skills/`) or globally (`~/.agents/skills/`):
+Save skills to the workspace (`.agents/skills/`) or globally (`~/.agents/skills/`):
 
 ```bash
 # Install to workspace (.agents/skills/<skill>/)
@@ -103,7 +103,7 @@ kungfu learn godoctor -f
 kungfu learn godoctor --load
 ```
 
-### Inspect Status (`status`)
+### Inspect status (`status`)
 
 View installed skills, versions, and local usage history:
 
@@ -114,15 +114,15 @@ kungfu status godoctor
 kungfu status --json
 ```
 
-### Update & Remove Skills (`update` / `forget`)
+### Update and remove skills (`update` / `forget`)
 
-Check for upstream updates or uninstall skills:
+Sync all catalogs, flush opt-in telemetry, and check or apply skill updates:
 
 ```bash
-# Check for available updates (dry run)
+# Synchronize all catalogs and check for available skill updates (dry run)
 kungfu update
 
-# Apply updates
+# Synchronize all catalogs and apply updates to installed skills
 kungfu update --all
 kungfu update godoctor
 
@@ -132,9 +132,9 @@ kungfu forget --all
 kungfu forget -g kungfu
 ```
 
-### Manage Catalogs (`catalog`)
+### Manage catalogs (`catalog`)
 
-Add, list, remove, and sync skill catalogs from GitHub repos, HTTP manifests, or local folders:
+Add, list, and remove skill catalogs from GitHub repositories, HTTP manifests, or local folders:
 
 ```bash
 # Add a GitHub skills repository
@@ -144,9 +144,8 @@ kungfu catalog add google/skills
 kungfu catalog add https://example.com/.well-known/agent-skills/index.json --name custom-catalog
 kungfu catalog add ./my-team-skills --name team-skills
 
-# List, sync, or remove catalogs
+# List or remove catalogs
 kungfu catalog list
-kungfu catalog sync
 kungfu catalog remove google/skills
 ```
 
@@ -156,9 +155,9 @@ When indexing a catalog source, `kungfu` checks four formats in order:
 3. `catalog.json`: Legacy manifest (supported through `v0.7.0`).
 4. Directory tree: `agentskills.io` folder scan for `SKILL.md` files.
 
-### Opt-In Community Telemetry (`telemetry`)
+### Opt-in community telemetry (`telemetry`)
 
-`kungfu` supports opt-in anonymous usage counters for official `skills.danicat.dev` catalog skills (`loads`, `page_loads`, `subpath_loads`, `runs`, `learns`). It excludes custom, local, and third-party skills. `kungfu load` never makes network calls for telemetry; `kungfu catalog sync` and `kungfu telemetry sync` flush pending counter deltas:
+`kungfu` supports opt-in anonymous usage counters for official `skills.danicat.dev` catalog skills (`loads`, `page_loads`, `subpath_loads`, `runs`, `learns`). It excludes custom, local, and third-party skills. `kungfu load` never makes network calls for telemetry; `kungfu update` and `kungfu telemetry sync` flush pending counter deltas:
 
 ```bash
 # View telemetry status and pending official skill deltas
@@ -174,7 +173,7 @@ kungfu telemetry sync
 kungfu telemetry disable
 ```
 
-## User Configuration
+## User configuration
 
 `kungfu` reads user settings from `~/.config/kungfu/config.yaml` (or `.json`):
 
@@ -193,14 +192,14 @@ telemetry:
 | `load.auto_update` | `true` | Refresh cached skills when the upstream digest changes |
 | `telemetry.enabled` | `false` | Opt in to anonymous counters for official skills (`DO_NOT_TRACK=1` and `KUNGFU_TELEMETRY=0\|1` override) |
 
-## Global Flags
+## Global flags
 
 | Flag | Description |
 |---|---|
 | `--json` | Emit JSON output |
 | `--raw` | Emit raw tab/text output |
-| `--config <path>` | Custom configuration file path |
-| `--cache-dir <dir>` | Custom cache directory (default `~/.cache/kungfu`) |
+| `--config <path>` | Custom config path |
+| `--cache-dir <dir>` | Custom cache folder (default `~/.cache/kungfu`) |
 | `-v`, `--verbose` | Verbose diagnostics on `stderr` |
 | `--no-color` | Disable ANSI color styling |
 | `-V`, `--version` | Print version |

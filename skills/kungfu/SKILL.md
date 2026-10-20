@@ -11,31 +11,31 @@ metadata:
   category: agents
   tags: "gateway, agent-skills, discovery, search, catalog, cli, learn, jit"
   author: Daniela Petruzalek (daniela@danicat.dev)
-  version: "0.6.0"
+  version: "0.6.1"
   catalog: https://skills.danicat.dev
 ---
 
-# KungFu: Agent Skills Gateway
+# KungFu gateway
 
-`kungfu` is a CLI gateway that streams Agent Skills, reference guides, and companion scripts into agent context on demand.
+`kungfu` is a CLI gateway that streams Agent Skills, reference guides, and companion scripts into your session on demand.
 
 > [!IMPORTANT]
-> **CLI Version Check (`v0.6.0`)**:
-> Compare `kungfu --version` against this skill's frontmatter `version` (`0.6.0`). If the installed `kungfu` binary is older than `0.6.0` (such as `<= 0.5.2` using the legacy `catalog.json` index), upgrade the CLI and sync all catalogs immediately:
+> **CLI Version Check (`v0.6.1`)**:
+> Compare `kungfu --version` against this skill's frontmatter `version` (`0.6.1`). If the installed `kungfu` binary is older than `0.6.1`, upgrade the CLI and synchronize all catalogs immediately:
 > ```bash
-> go install github.com/danicat/kungfu@latest && kungfu catalog sync
+> go install github.com/danicat/kungfu@latest && kungfu update
 > ```
 
-### Activation Triggers
+### Activation triggers
 Activate `kungfu` whenever you encounter:
-1. **Shortcut Notation**: `::notation` (such as `::godoctor`, `::go@go-skills`, `::?search`, or `::godoctor!test`).
-2. **Double Slash Commands**: `//<skill-name>` (such as `//godoctor` or `//ebitengineer`).
-3. **Unknown Commands**: A command or workflow not present in session context.
-4. **Domain Tasks**: Tasks in domains where a skill playbook exists (such as Go refactoring, 2D game physics, audio synthesis, or SEO audits).
+1. **Shortcut notation**: `::notation` (such as `::godoctor`, `::?genkit`, `::parallel(10)`, or `::discovery -> ::implementation`).
+2. **Double-slash commands**: `//<skill-name>` (such as `//godoctor` or `//ebitengineer`).
+3. **Unknown commands**: A command or workflow not present in your active session.
+4. **Domain tasks**: Tasks in domains where a skill playbook exists (such as Go refactoring, 2D game physics, audio synthesis, or SEO audits).
 
 ---
 
-## 1. Search & Discovery (`kungfu find` / `::?`)
+## 1. Search and discovery (`kungfu find` / `::?`)
 
 Use `kungfu find` to search skills by keyword using BM25 and TF-IDF ranking:
 
@@ -48,16 +48,16 @@ kungfu find ast
 
 ---
 
-## 2. Just-In-Time Loading (`kungfu load` / `::skill`)
+## 2. Just-in-time loading (`kungfu load` / `::skill`)
 
-Stream skill instructions into session context without installing files to the workspace.
+Stream skill instructions into your session without saving files to the workspace.
 
 > [!IMPORTANT]
-> **Buffer Limit & Pagination**:
+> **Buffer limit and pagination**:
 > - Command execution buffers cap output at **8,192 bytes** (8 KiB).
-> - Output above 8,192 bytes truncates from the top, dropping the title and initial instructions.
+> - Output over 8,192 bytes truncates from the top, dropping the title and initial instructions.
 > - `kungfu load` paginates automatically (~6,000 bytes per page) to prevent truncation.
-> - Load skills one at a time (`kungfu load skillA skillB` is disabled).
+> - Load skills one at a time (`kungfu load skillA skillB` returns an error).
 
 ```bash
 # Load page 1 of a skill
@@ -83,7 +83,7 @@ kungfu load godoctor -u -f
 
 ---
 
-## 3. Load References & Assets (`kungfu load <skill>/<subpath>`)
+## 3. Load references and assets (`kungfu load <skill>/<subpath>`)
 
 Load reference guides, playbooks, schemas, or assets bundled inside a skill:
 
@@ -96,7 +96,7 @@ kungfu load buffer-analytics/assets/schema.sql
 
 ---
 
-## 4. Run Companion Scripts (`kungfu run` / `::skill!script`)
+## 4. Run companion scripts (`kungfu run`)
 
 Run scripts bundled in a skill's `scripts/` directory.
 
@@ -114,35 +114,25 @@ kungfu run godoctor analyze_ast --package ./internal/...
 
 ---
 
-## 5. Shortcut Dialect (`::notation`)
+## 5. Shortcut language (`::notation`)
 
-Omitting `@catalog` targets the default catalog (`::godoctor` equals `::godoctor@default`). Add `@catalog` to target another registered catalog (`::go@go-skills`).
+KungFu uses four core patterns for human-agent pair programming:
 
-| Notation | Equivalent Command | Purpose |
+| Operator | Action | Purpose and examples |
 |---|---|---|
-| `::?keyword` | `kungfu find keyword` | Search skills by keyword |
-| `::?keyword@catalog` | `kungfu find keyword@catalog` | Search within a catalog |
-| `::skill` | `kungfu load skill` | Load a skill from the default catalog |
-| `::skill@catalog` | `kungfu load skill@catalog` | Load a skill from a specific catalog |
-| `::skill/subpath` | `kungfu load skill/subpath` | Load a reference file or asset |
-| `::skill!script [args]` | `kungfu run skill script [args]` | Run a bundled script |
-| `::*skill` | `kungfu load -u -f skill` | Force refresh and load from upstream |
-| `::>skill` | `kungfu show skill` | Show skill metadata and files |
-| `::+skill` | `kungfu learn skill` | Install skill to workspace (`.agents/skills/`) |
-| `::+skill@catalog` | `kungfu learn skill@catalog` | Install skill from a catalog to workspace |
-| `::++skill` | `kungfu learn -g skill` | Install skill globally (`~/.agents/skills/`) |
-| `::+*skill` | `kungfu learn -f skill` | Force overwrite install to workspace |
-| `::++*skill` | `kungfu learn -g -f skill` | Force overwrite install globally |
-| `::-skill` | `kungfu forget skill` | Uninstall skill from workspace |
-| `::--skill` | `kungfu forget -g skill` | Uninstall skill globally |
-| `::^` or `::^_^` | `kungfu update` | Check or apply updates to installed skills |
-| `::@` | `kungfu catalog list` | List registered catalogs |
-| `::@^` | `kungfu catalog sync` | Sync all registered catalogs |
-| `::@^catalog` | `kungfu catalog sync catalog` | Sync a specific catalog |
+| `::skill` *(or `//skill`)* | `kungfu load skill` | **JIT load** a skill into your session (such as `::godoctor`, `::uno-reverse`, `::go@go-skills`, or `::godoctor/references/arch.md`). If the name does not match an exact skill, `kungfu load` returns the top 5 fuzzy and hybrid `Did you mean` matches. |
+| `::?keyword` | `kungfu find keyword` | **Explicit discovery** by keyword without loading (such as `::?genkit`, `::?seo`, or `::?game@default`). |
+| `::skill(params...)` | Load + specialize skill | **Specialize** a skill with runtime arguments, worker budgets, or target skills. Order-free and non-rigid: `::parallel(10)`, `::double-diamond(10)`, `::parallel(10, ::discovery)` equals `::parallel(::discovery, 10)`. |
+| `A -> B` | Sequential pipeline | **Sequence** skills and slash commands left-to-right (such as `::discovery(10) -> /grill-me -> ::implementation(5)`). |
+
+### Core language rules
+1. **First-mention hint rule**: The `::` (or `//`) prefix is a JIT-loading hint required only on the first mention of a skill in a prompt. Once you name a skill in a prompt, later mentions in the same prompt or flow do not need the `::` prefix (such as `::parallel(10, ::discovery) -> /grill-me -> parallel(5, implementation)`).
+2. **Non-rigid arguments (`()`)**: Values inside `()` tune behavior without a fixed order. You can pass worker counts (`10`), tier or effort flags (`flash, low`), workspace modes (`branch`, `share`), or inner skills (`::discovery`).
+3. **Catalog and path scoping**: Omitting `@catalog` targets the default catalog (`::godoctor` equals `::godoctor@default`). Append `/subpath` to load a bundled guide or asset (`::godoctor/references/arch.md`).
 
 ---
 
-## 6. Persistence & Administration
+## 6. Persistence and administration
 
 ```bash
 # Install skills to workspace or global scope
@@ -159,7 +149,7 @@ kungfu show <skill>
 kungfu status
 kungfu status -g
 
-# Check for or apply updates
+# Synchronize catalogs, flush telemetry, and check or apply skill updates
 kungfu update
 kungfu update --all
 
@@ -170,7 +160,7 @@ kungfu forget <skill> -g
 # Manage skill catalogs
 kungfu catalog add google/skills
 kungfu catalog list
-kungfu catalog sync
+kungfu catalog remove google/skills
 
 # Manage opt-in anonymous community telemetry
 kungfu telemetry status
@@ -179,6 +169,6 @@ kungfu telemetry disable
 kungfu telemetry sync
 ```
 
-### Core Rules
-1. **Run Scripts via `kungfu run`**: Never search disk for skill scripts. Run `kungfu run <skill> <script> [args]`.
-2. **Stream by Default**: Use `kungfu load` unless the user asks to install a skill permanently with `kungfu learn`.
+### Core rules
+1. **Run scripts via `kungfu run`**: Never search disk for skill scripts. Run `kungfu run <skill> <script> [args]`.
+2. **Stream by default**: Use `kungfu load` unless the user asks to install a skill permanently with `kungfu learn`.
