@@ -174,6 +174,10 @@ func (a *App) RunUpdate(args []string) int {
 			}
 		} else {
 			item, err = a.Store.Get(name)
+			if item != nil && item.Source == "local" {
+				item = nil
+				err = catalog.ErrItemNotFound
+			}
 			catCandidate := rec.Catalog
 			if catCandidate == "" && item != nil && item.Source != "" && item.Source != "default" && !strings.HasPrefix(item.Source, "http") {
 				catCandidate = strings.TrimPrefix(item.Source, "github:")

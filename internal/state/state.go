@@ -749,7 +749,7 @@ func (s *State) ReconcileDisk(workspaceDir string, globalDir string, isCatalogKn
 				} else {
 					// Update existing record if files or digest changed
 					updated := false
-					if rec.Origin == "" {
+					if rec.Origin == "" || (rec.Origin == OriginCatalog && origin == OriginCustom && rec.Catalog == "" && rec.Repo == "" && rec.RawURL == "") {
 						rec.Origin = origin
 						updated = true
 					}
@@ -801,7 +801,7 @@ func (s *State) ReconcileDisk(workspaceDir string, globalDir string, isCatalogKn
 					changed = true
 				} else {
 					updated := false
-					if rec.Origin == "" {
+					if rec.Origin == "" || (rec.Origin == OriginCatalog && origin == OriginCustom && rec.Catalog == "" && rec.Repo == "" && rec.RawURL == "") {
 						rec.Origin = origin
 						updated = true
 					}

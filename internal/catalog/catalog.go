@@ -608,7 +608,7 @@ func (c *Catalog) discoverLocalSkillsLocked() {
 			if err != nil || len(data) == 0 {
 				continue
 			}
-			fm, body, err := ParseFrontmatter(data)
+			fm, _, err := ParseFrontmatter(data)
 			if err != nil || fm == nil {
 				continue
 			}
@@ -655,8 +655,8 @@ func (c *Catalog) discoverLocalSkillsLocked() {
 			if fm.AllowedTools != "" {
 				existing.AllowedTools = fm.AllowedTools
 			}
-			if body != "" && existing.Body == "" {
-				existing.Body = body
+			if len(data) > 0 && existing.Body == "" {
+				existing.Body = string(data)
 			}
 			if fm.Metadata != nil {
 				if existing.Metadata == nil {

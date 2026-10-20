@@ -168,7 +168,7 @@ func (a *App) loadState() *state.State {
 
 	isCatalogKnown := func(name string) bool {
 		if a.Store != nil {
-			if it, err := a.Store.Get(name); err == nil && it != nil {
+			if it, err := a.Store.Get(name); err == nil && it != nil && it.Source != "local" {
 				return true
 			}
 		}
