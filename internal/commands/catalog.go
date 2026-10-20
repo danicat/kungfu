@@ -128,6 +128,8 @@ func (a *App) runCatalogAdd(args []string) int {
 		catName = nameFlag
 		if catName == "" {
 			catName = strings.TrimPrefix(strings.TrimPrefix(source, "https://"), "http://")
+			catName = strings.TrimSuffix(catName, "/.well-known/agent-skills/index.json")
+			catName = strings.TrimSuffix(catName, "/index.json")
 			catName = strings.TrimSuffix(catName, "/catalog.json")
 			catName = strings.TrimSuffix(catName, "/")
 		}
@@ -494,6 +496,9 @@ func (a *App) runCatalogSync(args []string) int {
 			if a.Config != nil && a.Config.GetCatalogURL("default") != "" {
 				defaultURL = a.Config.GetCatalogURL("default")
 			}
+			defaultURL = catalog.ResolveCatalogURL(defaultURL)
+			cat.Source = defaultURL
+			cat.URL = defaultURL
 			m, etag, err = catalog.FetchHTTPCatalog(ctx, defaultURL, a.getHTTPClient())
 			if err == nil && m != nil {
 				// Save to index.json cache

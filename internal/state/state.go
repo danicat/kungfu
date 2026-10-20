@@ -124,7 +124,7 @@ type State struct {
 	mu sync.RWMutex `json:"-"`
 }
 
-const DefaultRemoteCatalogURL = "https://skills.danicat.dev/catalog.json"
+const DefaultRemoteCatalogURL = "https://skills.danicat.dev/.well-known/agent-skills/index.json"
 const DefaultGitHubCatalog = "danicat/kungfu"
 
 // NewState creates an initialized State struct.
@@ -753,7 +753,7 @@ func (s *State) ReconcileDisk(workspaceDir string, globalDir string, isCatalogKn
 						rec.Origin = origin
 						updated = true
 					}
-					if rec.Version == "" && version != "" {
+					if version != "" && rec.Version != version {
 						rec.Version = version
 						updated = true
 					}
@@ -805,7 +805,7 @@ func (s *State) ReconcileDisk(workspaceDir string, globalDir string, isCatalogKn
 						rec.Origin = origin
 						updated = true
 					}
-					if rec.Version == "" && version != "" {
+					if version != "" && rec.Version != version {
 						rec.Version = version
 						updated = true
 					}

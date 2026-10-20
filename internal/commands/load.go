@@ -32,6 +32,7 @@ import (
 	"github.com/danicat/kungfu/internal/config"
 	"github.com/danicat/kungfu/internal/runner"
 	"github.com/danicat/kungfu/internal/search"
+	"github.com/danicat/kungfu/internal/state"
 )
 
 type loadTarget struct {
@@ -349,6 +350,31 @@ func (a *App) loadItemContentWithOpts(item *catalog.Item, localOnly, forceUpdate
 		autoUpdate = a.Config.IsAutoUpdate()
 	}
 
+	resolveDefaultCatalogURL := func() string {
+		catURL := config.DefaultCatalogURL
+		if envURL := os.Getenv("KUNGFU_URL"); envURL != "" {
+			catURL = envURL
+		} else if envURL := os.Getenv("KUNGFU_REMOTE_URL"); envURL != "" {
+			catURL = envURL
+		} else if a.Config != nil && a.Config.GetCatalogURL("default") != "" {
+			catURL = a.Config.GetCatalogURL("default")
+		}
+		return catalog.ResolveCatalogURL(catURL)
+	}
+
+	if forceUpdate {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		freshItem := a.refreshCatalogForItem(ctx, item, resolveDefaultCatalogURL())
+		cancel()
+		if freshItem != nil {
+			tempItem := *freshItem
+			if tempItem.URL == "" && item.URL != "" {
+				tempItem.URL = item.URL
+			}
+			*item = tempItem
+		}
+	}
+
 	// Try standard loadContent
 	content, err := a.loadItemContent(item)
 	if err == nil {
@@ -361,54 +387,30 @@ func (a *App) loadItemContentWithOpts(item *catalog.Item, localOnly, forceUpdate
 
 	// If error is not digest mismatch or remote is not reachable, check if forceDigest is set
 	if errors.Is(err, catalog.ErrDigestMismatch) {
-		// Case A: Upstream may have updated! Check remote catalog.json to see if catalog has a new digest
+		// Case A: Upstream may have updated! Check remote catalog index to see if catalog has a new digest
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
-		catURL := config.DefaultCatalogURL
-		if a.Config != nil && a.Config.GetCatalogURL("default") != "" {
-			catURL = a.Config.GetCatalogURL("default")
-		}
-
-		freshManifest, freshETag, fetchErr := catalog.FetchHTTPCatalog(ctx, catURL, a.getHTTPClient())
-		if fetchErr == nil && freshManifest != nil {
-			// Find this item in fresh manifest
-			var freshItem *catalog.Item
-			for _, mItem := range freshManifest.Items {
-				if strings.EqualFold(mItem.Name, item.Name) || strings.EqualFold(mItem.ID, item.ID) {
-					it := mItem
-					freshItem = &it
-					break
-				}
+		freshItem := a.refreshCatalogForItem(ctx, item, resolveDefaultCatalogURL())
+		if freshItem != nil {
+			// Re-fetch content using the fresh digest
+			tempItem := *freshItem
+			if tempItem.URL == "" && item.URL != "" {
+				tempItem.URL = item.URL
 			}
+			freshContent, freshContentErr := a.loadItemContent(&tempItem)
+			if freshContentErr == nil {
+				// The new catalog manifest acknowledges this content!
+				if autoUpdate || forceUpdate {
+					runner.CacheSkillFile(freshItem.Name, "SKILL.md", []byte(freshContent))
+					*item = tempItem
 
-			if freshItem != nil {
-				// Re-fetch content using the fresh digest
-				tempItem := *freshItem
-				if tempItem.URL == "" && item.URL != "" {
-					tempItem.URL = item.URL
-				}
-				freshContent, freshContentErr := a.loadItemContent(&tempItem)
-				if freshContentErr == nil {
-					// The new catalog manifest acknowledges this content!
-					if autoUpdate || forceUpdate {
-						// Save fresh catalog cache
-						cachePath := catalog.GetCatalogCachePath()
-						if a.Options.CacheDir != "" {
-							cachePath = filepath.Join(a.Options.CacheDir, "index.json")
-						}
-						_ = catalog.SaveCachedCatalog(cachePath, catURL, *freshManifest, freshETag)
-						runner.CacheSkillFile(freshItem.Name, "SKILL.md", []byte(freshContent))
-						*item = tempItem
-
-						if !a.Options.NoColor && a.Options.Mode != OutputModeJSON && a.Options.Mode != OutputModeRaw {
-							_, _ = fmt.Fprintf(a.Stderr, "✓ Detected upstream update for %q; cache updated.\n", item.Name)
-						}
-						return freshContent, nil
-					} else {
-						return "", fmt.Errorf("%w: upstream content for %q has changed (new digest %s); run 'kungfu load %s --update' to update", catalog.ErrDigestMismatch, item.Name, freshItem.Digest, item.Name)
+					if !a.Options.NoColor && a.Options.Mode != OutputModeJSON && a.Options.Mode != OutputModeRaw {
+						_, _ = fmt.Fprintf(a.Stderr, "✓ Detected upstream update for %q; cache updated.\n", item.Name)
 					}
+					return freshContent, nil
 				}
+				return "", fmt.Errorf("%w: upstream content for %q has changed (new digest %s); run 'kungfu load %s --update' to update", catalog.ErrDigestMismatch, item.Name, freshItem.Digest, item.Name)
 			}
 		}
 
@@ -448,4 +450,84 @@ func (a *App) loadItemContentWithOpts(item *catalog.Item, localOnly, forceUpdate
 	}
 
 	return "", err
+}
+
+func (a *App) refreshCatalogForItem(ctx context.Context, item *catalog.Item, defaultCatURL string) *catalog.Item {
+	if item == nil {
+		return nil
+	}
+
+	findInManifest := func(m *catalog.Manifest) *catalog.Item {
+		if m == nil {
+			return nil
+		}
+		for _, mItem := range m.Items {
+			if strings.EqualFold(mItem.Name, item.Name) || strings.EqualFold(mItem.ID, item.ID) {
+				it := mItem
+				return &it
+			}
+		}
+		return nil
+	}
+
+	// 1. Check if item comes from a registered named catalog (e.g. "kungfu" -> github:danicat/kungfu)
+	st := a.loadState()
+	candidateCats := []string{
+		item.Source,
+		strings.TrimPrefix(item.Source, "github:"),
+		item.Name,
+	}
+	seenCats := make(map[string]bool)
+	for _, cand := range candidateCats {
+		cand = strings.TrimSpace(cand)
+		if cand == "" || cand == "default" || seenCats[cand] {
+			continue
+		}
+		seenCats[cand] = true
+		catRec, ok := st.GetCatalog(cand)
+		if !ok || catRec.Type == state.CatalogTypeDefault {
+			continue
+		}
+		switch catRec.Type {
+		case state.CatalogTypeGitHub:
+			if target, okTarget := catalog.ParseGitHubTarget(catRec.Source); okTarget {
+				if catRec.Ref != "" {
+					target.Ref = catRec.Ref
+				}
+				if freshManifest, err := catalog.FetchGitHubCatalog(ctx, target, a.getHTTPClient()); err == nil && freshManifest != nil {
+					_ = catalog.SaveNamedCatalogCache(catRec.Name, catRec.URL, *freshManifest, "")
+					if cat, ok := a.Store.(*catalog.Catalog); ok {
+						cat.AddCatalogManifest(catRec.Name, freshManifest)
+					}
+					if found := findInManifest(freshManifest); found != nil {
+						return found
+					}
+				}
+			}
+		case state.CatalogTypeHTTP:
+			if freshManifest, freshETag, err := catalog.FetchHTTPCatalog(ctx, catRec.Source, a.getHTTPClient()); err == nil && freshManifest != nil {
+				_ = catalog.SaveNamedCatalogCache(catRec.Name, catRec.URL, *freshManifest, freshETag)
+				if cat, ok := a.Store.(*catalog.Catalog); ok {
+					cat.AddCatalogManifest(catRec.Name, freshManifest)
+				}
+				if found := findInManifest(freshManifest); found != nil {
+					return found
+				}
+			}
+		}
+	}
+
+	// 2. Refresh default catalog
+	if freshManifest, freshETag, fetchErr := catalog.FetchHTTPCatalog(ctx, defaultCatURL, a.getHTTPClient()); fetchErr == nil && freshManifest != nil {
+		cachePath := catalog.GetCatalogCachePath()
+		if a.Options.CacheDir != "" {
+			cachePath = filepath.Join(a.Options.CacheDir, "index.json")
+		}
+		_ = catalog.SaveCachedCatalog(cachePath, defaultCatURL, *freshManifest, freshETag)
+		if found := findInManifest(freshManifest); found != nil {
+			return found
+		}
+	}
+
+	return nil
 }

@@ -11,13 +11,20 @@ metadata:
   category: agents
   tags: "gateway, agent-skills, discovery, search, catalog, cli, learn, jit"
   author: Daniela Petruzalek (daniela@danicat.dev)
-  version: "0.5.2"
+  version: "0.6.0"
   catalog: https://skills.danicat.dev
 ---
 
 # KungFu: Agent Skills Gateway
 
 `kungfu` is a CLI gateway that streams Agent Skills, reference guides, and companion scripts into agent context on demand.
+
+> [!IMPORTANT]
+> **CLI Version Check (`v0.6.0`)**:
+> Compare `kungfu --version` against this skill's frontmatter `version` (`0.6.0`). If the installed `kungfu` binary is older than `0.6.0` (such as `<= 0.5.2` using the legacy `catalog.json` index), upgrade the CLI and sync all catalogs immediately:
+> ```bash
+> go install github.com/danicat/kungfu@latest && kungfu catalog sync
+> ```
 
 ### Activation Triggers
 Activate `kungfu` whenever you encounter:

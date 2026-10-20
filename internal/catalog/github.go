@@ -280,9 +280,10 @@ type githubTreeResponse struct {
 
 // FetchGitHubCatalog discovers skills across a GitHub repository and returns a Manifest.
 // The discovery order is:
-// 1. catalog.json (skills.danicat.dev standard)
+// 1. .well-known/agent-skills/index.json (Cloudflare Agent Skills Discovery RFC v0.2.0)
 // 2. index.json (google/skills standard)
-// 3. Directory crawl / Git Tree API (agentskills.io standard)
+// 3. catalog.json (legacy backwards-compatibility fallback)
+// 4. Directory crawl / Git Tree API (agentskills.io standard)
 func FetchGitHubCatalog(ctx context.Context, target *GitHubTarget, client *http.Client) (*Manifest, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
@@ -327,6 +328,10 @@ func tryFetchManifest(ctx context.Context, target *GitHubTarget, ref, catPath st
 	}
 
 	for i := range m.Items {
+		if m.Items[i].URL != "" && !strings.HasPrefix(m.Items[i].URL, "http://") && !strings.HasPrefix(m.Items[i].URL, "https://") {
+			rel := strings.TrimPrefix(strings.TrimPrefix(m.Items[i].URL, "./"), "/")
+			m.Items[i].URL = fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", target.Owner, target.Repo, ref, rel)
+		}
 		m.Items[i].Normalize()
 		if m.Items[i].Source == "" {
 			m.Items[i].Source = fmt.Sprintf("github:%s/%s", target.Owner, target.Repo)
@@ -336,17 +341,16 @@ func tryFetchManifest(ctx context.Context, target *GitHubTarget, ref, catPath st
 }
 
 func probeGitHubCatalogRef(ctx context.Context, target *GitHubTarget, ref string, client *http.Client) (*Manifest, error) {
-	// 1. Try catalog.json endpoints first (skills.danicat.dev standard)
-	candidateCatalogPaths := []string{
-		"catalog.json",
-		"skills/catalog.json",
+	// 1. Try .well-known/agent-skills/index.json endpoints first (Agent Skills Discovery RFC v0.2.0)
+	candidateWellKnownPaths := []string{
+		".well-known/agent-skills/index.json",
 	}
 	if target.Subpath != "" {
-		candidateCatalogPaths = append([]string{target.Subpath + "/catalog.json"}, candidateCatalogPaths...)
+		candidateWellKnownPaths = append([]string{target.Subpath + "/.well-known/agent-skills/index.json"}, candidateWellKnownPaths...)
 	}
 
-	for _, catPath := range candidateCatalogPaths {
-		if m, err := tryFetchManifest(ctx, target, ref, catPath, client); err == nil && m != nil && len(m.Items) > 0 {
+	for _, wkPath := range candidateWellKnownPaths {
+		if m, err := tryFetchManifest(ctx, target, ref, wkPath, client); err == nil && m != nil && len(m.Items) > 0 {
 			return m, nil
 		}
 	}
@@ -366,7 +370,22 @@ func probeGitHubCatalogRef(ctx context.Context, target *GitHubTarget, ref string
 		}
 	}
 
-	// 3. Discover SKILL.md files via GitHub Git Tree API (agentskills.io standard directory crawl)
+	// 3. Try catalog.json endpoints (legacy backwards-compatibility fallback for 2 versions)
+	candidateCatalogPaths := []string{
+		"catalog.json",
+		"skills/catalog.json",
+	}
+	if target.Subpath != "" {
+		candidateCatalogPaths = append([]string{target.Subpath + "/catalog.json"}, candidateCatalogPaths...)
+	}
+
+	for _, catPath := range candidateCatalogPaths {
+		if m, err := tryFetchManifest(ctx, target, ref, catPath, client); err == nil && m != nil && len(m.Items) > 0 {
+			return m, nil
+		}
+	}
+
+	// 4. Discover SKILL.md files via GitHub Git Tree API (agentskills.io standard directory crawl)
 	treeURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/%s?recursive=1", target.Owner, target.Repo, ref)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, treeURL, nil)
 	if err != nil {
@@ -529,8 +548,9 @@ func probeGitHubCatalogRef(ctx context.Context, target *GitHubTarget, ref string
 
 // FetchHTTPCatalog fetches a remote catalog manifest via HTTP GET.
 // Discovery order:
-// 1. catalog.json (skills.danicat.dev standard)
-// 2. index.json (google/skills standard)
+// 1. /.well-known/agent-skills/index.json (Cloudflare Agent Skills Discovery RFC v0.2.0)
+// 2. /index.json (google/skills standard)
+// 3. /catalog.json (legacy backwards-compatibility fallback)
 func FetchHTTPCatalog(ctx context.Context, rawURL string, client *http.Client) (*Manifest, string, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
@@ -539,9 +559,14 @@ func FetchHTTPCatalog(ctx context.Context, rawURL string, client *http.Client) (
 	if strings.HasSuffix(strings.ToLower(rawURL), ".json") {
 		endpointsToTry = []string{rawURL}
 	} else {
+		base := strings.TrimRight(strings.TrimSpace(rawURL), "/")
+		if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
+			base = "https://" + base
+		}
 		endpointsToTry = []string{
-			ResolveCatalogURL(rawURL),
-			strings.TrimRight(rawURL, "/") + "/index.json",
+			ResolveCatalogURL(base),
+			base + "/index.json",
+			base + "/catalog.json",
 		}
 	}
 
@@ -581,12 +606,7 @@ func FetchHTTPCatalog(ctx context.Context, rawURL string, client *http.Client) (
 			continue
 		}
 
-		for i := range manifest.Items {
-			manifest.Items[i].Normalize()
-			if manifest.Items[i].Source == "" {
-				manifest.Items[i].Source = endpoint
-			}
-		}
+		ResolveManifestURLs(&manifest, endpoint)
 
 		return &manifest, etag, nil
 	}
@@ -596,9 +616,10 @@ func FetchHTTPCatalog(ctx context.Context, rawURL string, client *http.Client) (
 
 // DiscoverLocalCatalog discovers skills inside a local filesystem directory.
 // Discovery order:
-// 1. catalog.json (skills.danicat.dev standard)
+// 1. .well-known/agent-skills/index.json (Cloudflare Agent Skills Discovery RFC v0.2.0)
 // 2. index.json (google/skills standard)
-// 3. Directory crawl (agentskills.io standard)
+// 3. catalog.json (legacy backwards-compatibility fallback)
+// 4. Directory crawl (agentskills.io standard)
 func DiscoverLocalCatalog(dirPath string) (*Manifest, error) {
 	absDir, err := filepath.Abs(dirPath)
 	if err != nil {
@@ -612,9 +633,9 @@ func DiscoverLocalCatalog(dirPath string) (*Manifest, error) {
 		return nil, fmt.Errorf("%s is not a directory", absDir)
 	}
 
-	// 1. catalog.json (skills.danicat.dev standard)
-	catPath := filepath.Join(absDir, "catalog.json")
-	if data, err := os.ReadFile(catPath); err == nil {
+	// 1. .well-known/agent-skills/index.json (Agent Skills Discovery RFC v0.2.0)
+	wkPath := filepath.Join(absDir, ".well-known", "agent-skills", "index.json")
+	if data, err := os.ReadFile(wkPath); err == nil {
 		var m Manifest
 		if err := json.Unmarshal(data, &m); err == nil && len(m.Items) > 0 {
 			for i := range m.Items {
@@ -642,7 +663,22 @@ func DiscoverLocalCatalog(dirPath string) (*Manifest, error) {
 		}
 	}
 
-	// 3. Directory crawl (agentskills.io standard)
+	// 3. catalog.json (legacy backwards-compatibility fallback for 2 versions)
+	catPath := filepath.Join(absDir, "catalog.json")
+	if data, err := os.ReadFile(catPath); err == nil {
+		var m Manifest
+		if err := json.Unmarshal(data, &m); err == nil && len(m.Items) > 0 {
+			for i := range m.Items {
+				m.Items[i].Normalize()
+				if m.Items[i].Source == "" {
+					m.Items[i].Source = absDir
+				}
+			}
+			return &m, nil
+		}
+	}
+
+	// 4. Directory crawl (agentskills.io standard)
 	var items []Item
 	err = filepath.Walk(absDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {

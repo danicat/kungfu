@@ -58,6 +58,7 @@ func (a *App) resolveOfficialSkillCategory(skillName string) (string, bool) {
 	isOfficialSource := item.Source == "remote" ||
 		item.Source == "default" ||
 		item.Source == "github:danicat/kungfu" ||
+		strings.HasPrefix(item.Source, "https://skills.danicat.dev/") ||
 		(item.Source == "" && isOfficialURL)
 	if !isOfficialSource || !isOfficialURL {
 		return "", false

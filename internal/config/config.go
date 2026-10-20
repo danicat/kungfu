@@ -26,7 +26,7 @@ import (
 )
 
 // DefaultCatalogURL is the default remote catalog URL.
-const DefaultCatalogURL = "https://skills.danicat.dev/catalog.json"
+const DefaultCatalogURL = "https://skills.danicat.dev/.well-known/agent-skills/index.json"
 
 // DefaultGitHubCatalog is the default GitHub catalog repository.
 const DefaultGitHubCatalog = "danicat/kungfu"

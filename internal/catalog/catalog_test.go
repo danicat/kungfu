@@ -303,11 +303,60 @@ func TestCatalog_Options(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCatalog with options failed: %v", err)
 	}
-	if cat.remoteURL != "https://custom.example.com/catalog.json" {
+	if cat.remoteURL != "https://custom.example.com/.well-known/agent-skills/index.json" {
 		t.Errorf("remoteURL option failed: %s", cat.remoteURL)
 	}
 	if cat.enableRemote {
 		t.Errorf("WithRemoteSync(false) failed")
+	}
+}
+
+func TestResolveManifestURLsAndCompareSemver(t *testing.T) {
+	rawJSON := `{
+		"$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
+		"skills": [
+			{
+				"name": "godoctor",
+				"type": "skill-md",
+				"url": "/.well-known/agent-skills/godoctor/SKILL.md",
+				"digest": "sha256:abc123",
+				"freshnessScore": 98,
+				"freshnessTier": "fresh",
+				"freshnessEmoji": "🟢",
+				"lastCommitAt": "2026-10-20T00:00:00Z",
+				"files": ["SKILL.md", "references/arch.md"]
+			}
+		]
+	}`
+
+	var m Manifest
+	if err := json.Unmarshal([]byte(rawJSON), &m); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	ResolveManifestURLs(&m, "https://skills.danicat.dev/.well-known/agent-skills/index.json")
+
+	if len(m.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(m.Items))
+	}
+	it := m.Items[0]
+	if it.URL != "https://skills.danicat.dev/.well-known/agent-skills/godoctor/SKILL.md" {
+		t.Errorf("expected resolved absolute URL, got %q", it.URL)
+	}
+	if it.Entrypoint != "https://skills.danicat.dev/.well-known/agent-skills/godoctor/SKILL.md" {
+		t.Errorf("expected resolved Entrypoint, got %q", it.Entrypoint)
+	}
+	if it.FreshnessScore == nil || *it.FreshnessScore != 98 || it.FreshnessTier != "fresh" {
+		t.Errorf("unexpected freshness fields: score=%v tier=%q", it.FreshnessScore, it.FreshnessTier)
+	}
+
+	if CompareSemver("0.6.0", "0.5.2") <= 0 {
+		t.Errorf("expected 0.6.0 > 0.5.2")
+	}
+	if CompareSemver("1.1.0", "1.1.0") != 0 {
+		t.Errorf("expected 1.1.0 == 1.1.0")
+	}
+	if CompareSemver("0.4.0", "0.6.0") >= 0 {
+		t.Errorf("expected 0.4.0 < 0.6.0")
 	}
 }
 

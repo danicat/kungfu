@@ -52,7 +52,11 @@ func (a *App) RunUpdate(args []string) int {
 		return ExitUsage
 	}
 
-	if refreshFlag {
+	if cat, ok := a.Store.(*catalog.Catalog); ok {
+		syncCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		_ = cat.Sync(syncCtx, true)
+		cancel()
+	} else if refreshFlag {
 		if store, err := catalog.NewCatalog(
 			catalog.WithRemoteSync(true),
 			catalog.WithForceRefresh(),
@@ -126,6 +130,7 @@ func (a *App) RunUpdate(args []string) int {
 		}
 	}
 
+	syncedNamedCatalogs := make(map[string]bool)
 	for name, rec := range installed {
 		if !targetMap[name] {
 			continue
@@ -169,6 +174,21 @@ func (a *App) RunUpdate(args []string) int {
 			}
 		} else {
 			item, err = a.Store.Get(name)
+			catCandidate := rec.Catalog
+			if catCandidate == "" && item != nil && item.Source != "" && item.Source != "default" && !strings.HasPrefix(item.Source, "http") {
+				catCandidate = strings.TrimPrefix(item.Source, "github:")
+			}
+			if catCandidate != "" && !syncedNamedCatalogs[catCandidate] {
+				syncedNamedCatalogs[catCandidate] = true
+				if catRec, ok := st.GetCatalog(catCandidate); ok && catRec.Type != state.CatalogTypeDefault {
+					ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					if freshItem := a.refreshCatalogForItem(ctx, &catalog.Item{ID: name, Name: name, Source: catRec.Name}, ""); freshItem != nil {
+						item = freshItem
+						err = nil
+					}
+					cancel()
+				}
+			}
 			if err != nil || item == nil || (item.URL == "" && item.Body == "") {
 				lookupCatalogs := []string{rec.Catalog, name, "kungfu"}
 				for _, catName := range lookupCatalogs {

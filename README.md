@@ -2,11 +2,9 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/danicat/kungfu.svg)](https://pkg.go.dev/github.com/danicat/kungfu)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.5.2-green.svg)](https://github.com/danicat/kungfu/releases)
+[![Release](https://img.shields.io/badge/release-v0.6.0-green.svg)](https://github.com/danicat/kungfu/releases)
 
 `kungfu` is a command-line tool for discovering, streaming, running, and installing **Agent Skills** (`SKILL.md`). Coding agents can stream skill instructions and reference files into context on demand (`kungfu load`) or install them into workspace and global directories (`kungfu learn`).
-
----
 
 ## Installation
 
@@ -21,8 +19,6 @@ Verify the installation:
 ```bash
 kungfu --version
 ```
-
----
 
 ## Commands
 
@@ -145,7 +141,7 @@ Add, list, remove, and sync skill catalogs from GitHub repos, HTTP manifests, or
 kungfu catalog add google/skills
 
 # Add an HTTP manifest or local directory
-kungfu catalog add https://example.com/catalog.json --name custom-catalog
+kungfu catalog add https://example.com/.well-known/agent-skills/index.json --name custom-catalog
 kungfu catalog add ./my-team-skills --name team-skills
 
 # List, sync, or remove catalogs
@@ -154,10 +150,11 @@ kungfu catalog sync
 kungfu catalog remove google/skills
 ```
 
-When indexing a catalog source, `kungfu` checks three formats in order:
-1. `catalog.json`: `skills.danicat.dev` manifest with items, tags, and digests.
+When indexing a catalog source, `kungfu` checks four formats in order:
+1. `.well-known/agent-skills/index.json`: Agent Skills Discovery RFC v0.2.0 manifest (`skills` array with SHA-256 digests).
 2. `index.json`: `google/skills` index file.
-3. Directory tree: `agentskills.io` folder scan for `SKILL.md` files.
+3. `catalog.json`: Legacy manifest (supported through `v0.7.0`).
+4. Directory tree: `agentskills.io` folder scan for `SKILL.md` files.
 
 ### Opt-In Community Telemetry (`telemetry`)
 
@@ -177,15 +174,13 @@ kungfu telemetry sync
 kungfu telemetry disable
 ```
 
----
-
 ## User Configuration
 
 `kungfu` reads user settings from `~/.config/kungfu/config.yaml` (or `.json`):
 
 ```yaml
 catalogs:
-  default: https://skills.danicat.dev/catalog.json
+  default: https://skills.danicat.dev/.well-known/agent-skills/index.json
 load:
   auto_update: true
 telemetry:
@@ -194,11 +189,9 @@ telemetry:
 
 | Key | Default | Description |
 |---|---|---|
-| `catalogs.default` | `https://skills.danicat.dev/catalog.json` | Default catalog URL |
+| `catalogs.default` | `https://skills.danicat.dev/.well-known/agent-skills/index.json` | Default catalog URL |
 | `load.auto_update` | `true` | Refresh cached skills when the upstream digest changes |
 | `telemetry.enabled` | `false` | Opt in to anonymous counters for official skills (`DO_NOT_TRACK=1` and `KUNGFU_TELEMETRY=0\|1` override) |
-
----
 
 ## Global Flags
 
@@ -213,8 +206,6 @@ telemetry:
 | `-V`, `--version` | Print version |
 | `-h`, `--help` | Show help |
 
----
-
 ## Testing
 
 Run the test suite with the race detector enabled:
@@ -223,13 +214,9 @@ Run the test suite with the race detector enabled:
 go test -v -race ./...
 ```
 
----
-
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE) for details.
-
----
 
 ## Disclaimer
 

@@ -577,6 +577,55 @@ func TestFetchGitHubCatalog_GoogleIndexJSON(t *testing.T) {
 	}
 }
 
+func TestFetchGitHubCatalog_WellKnownAgentSkillsIndexJSON(t *testing.T) {
+	wellKnownJSON := `{
+  "$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
+  "version": "1.0.0",
+  "name": "danicat/kungfu",
+  "skills": [
+    {
+      "name": "kungfu",
+      "type": "skill-md",
+      "description": "KungFu CLI gateway",
+      "version": "0.6.0",
+      "url": "https://raw.githubusercontent.com/danicat/kungfu/main/skills/kungfu/SKILL.md",
+      "digest": "sha256:808b8f76640610211c8b5d37927edaa0fd18e488b920efe795ddf088e3917423"
+    }
+  ]
+}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/.well-known/agent-skills/index.json") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(wellKnownJSON))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := server.Client()
+	client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		req.URL.Scheme = "http"
+		req.URL.Host = server.Listener.Addr().String()
+		return http.DefaultTransport.RoundTrip(req)
+	})
+
+	target := &GitHubTarget{
+		Owner: "danicat",
+		Repo:  "kungfu",
+		Ref:   "main",
+	}
+
+	m, err := FetchGitHubCatalog(context.Background(), target, client)
+	if err != nil {
+		t.Fatalf("FetchGitHubCatalog .well-known/agent-skills/index.json failed: %v", err)
+	}
+	if len(m.Items) != 1 || m.Items[0].Name != "kungfu" || m.Items[0].Version != "0.6.0" {
+		t.Fatalf("unexpected items from well-known index.json: %+v", m.Items)
+	}
+}
+
 type roundTripperFunc func(req *http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {

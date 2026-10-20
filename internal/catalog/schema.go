@@ -36,6 +36,8 @@ type ItemType string
 const (
 	// ItemTypeSkill represents an Agent Skill (SKILL.md package).
 	ItemTypeSkill ItemType = "skill"
+	// ItemTypeSkillMD represents an Agent Skill in the Cloudflare RFC v0.2.0 discovery schema.
+	ItemTypeSkillMD ItemType = "skill-md"
 )
 
 // Item represents a discoverable Agent Skill in the catalog.
@@ -63,6 +65,10 @@ type Item struct {
 	NpxInstallCommand  string            `json:"npxInstallCommand,omitempty" yaml:"npxInstallCommand,omitempty"`
 	KungfuLoadCommand  string            `json:"kungfuLoadCommand,omitempty" yaml:"kungfuLoadCommand,omitempty"`
 	KungfuLearnCommand string            `json:"kungfuLearnCommand,omitempty" yaml:"kungfuLearnCommand,omitempty"`
+	FreshnessScore     *int              `json:"freshnessScore,omitempty" yaml:"freshnessScore,omitempty"`
+	FreshnessTier      string            `json:"freshnessTier,omitempty" yaml:"freshnessTier,omitempty"`
+	FreshnessEmoji     string            `json:"freshnessEmoji,omitempty" yaml:"freshnessEmoji,omitempty"`
+	LastCommitAt       string            `json:"lastCommitAt,omitempty" yaml:"lastCommitAt,omitempty"`
 	AllowedTools       string            `json:"allowed_tools,omitempty" yaml:"allowed-tools,omitempty"`
 	Body               string            `json:"body,omitempty" yaml:"body,omitempty"`
 	Metadata           map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
@@ -91,13 +97,17 @@ func (it *Item) Normalize() {
 	if it.URL == "" && it.Entrypoint != "" {
 		it.URL = it.Entrypoint
 	}
-	if it.Entrypoint == "" && it.URL != "" {
+	if (it.Entrypoint == "" || (!strings.HasPrefix(it.Entrypoint, "http://") && !strings.HasPrefix(it.Entrypoint, "https://"))) && (strings.HasPrefix(it.URL, "http://") || strings.HasPrefix(it.URL, "https://")) {
+		it.Entrypoint = it.URL
+	} else if it.Entrypoint == "" && it.URL != "" {
 		it.Entrypoint = it.URL
 	}
 	if it.Metadata == nil {
 		it.Metadata = make(map[string]string)
 	}
-	if it.Entrypoint != "" && it.Metadata["canonical"] == "" {
+	if (it.Metadata["canonical"] == "" || (!strings.HasPrefix(it.Metadata["canonical"], "http://") && !strings.HasPrefix(it.Metadata["canonical"], "https://"))) && (strings.HasPrefix(it.Entrypoint, "http://") || strings.HasPrefix(it.Entrypoint, "https://")) {
+		it.Metadata["canonical"] = it.Entrypoint
+	} else if it.Entrypoint != "" && it.Metadata["canonical"] == "" {
 		it.Metadata["canonical"] = it.Entrypoint
 	}
 	if it.Category == "" {
@@ -235,6 +245,78 @@ func (m *Manifest) UnmarshalJSON(data []byte) error {
 		m.Skills[i].Normalize()
 	}
 	return nil
+}
+
+// ResolveManifestURLs resolves any relative skill URLs in a manifest against the manifest endpoint URL.
+func ResolveManifestURLs(m *Manifest, endpoint string) {
+	if m == nil || endpoint == "" {
+		return
+	}
+	baseURL, err := url.Parse(endpoint)
+	if err != nil || baseURL == nil {
+		return
+	}
+	for i := range m.Items {
+		if m.Items[i].URL != "" && !strings.HasPrefix(m.Items[i].URL, "http://") && !strings.HasPrefix(m.Items[i].URL, "https://") {
+			relPath := m.Items[i].URL
+			if strings.Contains(endpoint, "/.well-known/agent-skills/") && !strings.HasPrefix(relPath, "/") && !strings.HasPrefix(relPath, "./") {
+				relPath = "/" + relPath
+			}
+			if refURL, err := url.Parse(relPath); err == nil {
+				m.Items[i].URL = baseURL.ResolveReference(refURL).String()
+			}
+		}
+		m.Items[i].Normalize()
+		if m.Items[i].Source == "" {
+			m.Items[i].Source = endpoint
+		}
+	}
+	m.Skills = m.Items
+}
+
+// CompareSemver compares two semantic version strings (v1 vs v2).
+// Returns > 0 if v1 > v2, < 0 if v1 < v2, and 0 if equal.
+func CompareSemver(v1, v2 string) int {
+	p1 := parseSemverParts(v1)
+	p2 := parseSemverParts(v2)
+	for i := 0; i < len(p1) && i < len(p2); i++ {
+		if p1[i] > p2[i] {
+			return 1
+		}
+		if p1[i] < p2[i] {
+			return -1
+		}
+	}
+	if len(p1) > len(p2) {
+		return 1
+	}
+	if len(p1) < len(p2) {
+		return -1
+	}
+	return 0
+}
+
+func parseSemverParts(v string) []int {
+	v = strings.TrimSpace(v)
+	v = strings.TrimPrefix(v, "v")
+	v = strings.TrimPrefix(v, "V")
+	parts := strings.Split(v, ".")
+	var res []int
+	for _, p := range parts {
+		var n int
+		for _, r := range p {
+			if r >= '0' && r <= '9' {
+				n = n*10 + int(r-'0')
+			} else {
+				break
+			}
+		}
+		res = append(res, n)
+	}
+	for len(res) < 3 {
+		res = append(res, 0)
+	}
+	return res
 }
 
 // CacheMeta stores HTTP caching headers and timestamps for catalog persistence.

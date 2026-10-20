@@ -32,7 +32,7 @@ import (
 )
 
 // DefaultRemoteURL is the default endpoint for the skills catalog manifest.
-const DefaultRemoteURL = "https://skills.danicat.dev/catalog.json"
+const DefaultRemoteURL = "https://skills.danicat.dev/.well-known/agent-skills/index.json"
 
 const defaultRemoteURL = DefaultRemoteURL
 
@@ -49,7 +49,7 @@ func ResolveCatalogURL(raw string) string {
 	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
 		raw = "https://" + raw
 	}
-	return raw + "/catalog.json"
+	return raw + "/.well-known/agent-skills/index.json"
 }
 
 // Option configures the Catalog instance.
@@ -260,7 +260,9 @@ func (c *Catalog) Sync(ctx context.Context, force bool) error {
 	if err := c.fetchRemoteLocked(ctx); err != nil {
 		return err
 	}
-	c.discoverLocalSkillsLocked()
+	if c.enableLocal {
+		c.discoverLocalSkillsLocked()
+	}
 	return nil
 }
 
@@ -279,6 +281,7 @@ func (c *Catalog) fetchRemoteLocked(ctx context.Context) error {
 
 	// If cache is fresh and not forced refresh, use cached manifest immediately
 	if cached != nil && !c.forceRefresh && time.Since(cached.FetchedAt) < DefaultCatalogTTL {
+		ResolveManifestURLs(&cached.Manifest, c.remoteURL)
 		c.manifest = &cached.Manifest
 		for _, it := range cached.Manifest.Items {
 			c.items[strings.ToLower(it.ID)] = it
@@ -303,6 +306,7 @@ func (c *Catalog) fetchRemoteLocked(ctx context.Context) error {
 		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode == http.StatusNotModified && cached != nil {
 			// 304 Not Modified: refresh fetched timestamp and use cache
+			ResolveManifestURLs(&cached.Manifest, c.remoteURL)
 			_ = SaveCachedCatalog(cachePath, c.remoteURL, cached.Manifest, cached.ETag)
 			c.manifest = &cached.Manifest
 			for _, it := range cached.Manifest.Items {
@@ -318,6 +322,7 @@ func (c *Catalog) fetchRemoteLocked(ctx context.Context) error {
 			if err := json.Unmarshal(data, &manifest); err != nil {
 				return fmt.Errorf("catalog: parsing %s JSON: %w", c.remoteURL, err)
 			}
+			ResolveManifestURLs(&manifest, c.remoteURL)
 			c.manifest = &manifest
 			etag := resp.Header.Get("ETag")
 			if !c.noCache {
@@ -345,7 +350,14 @@ func (c *Catalog) loadNamedCatalogsLocked() {
 	if err != nil || len(namedCaches) == 0 {
 		return
 	}
-	for catName, cached := range namedCaches {
+	var catNames []string
+	for catName := range namedCaches {
+		catNames = append(catNames, catName)
+	}
+	sort.Strings(catNames)
+
+	for _, catName := range catNames {
+		cached := namedCaches[catName]
 		if cached == nil {
 			continue
 		}
@@ -354,16 +366,23 @@ func (c *Catalog) loadNamedCatalogsLocked() {
 			it.Source = catName
 			lowID := strings.ToLower(it.ID)
 			lowName := strings.ToLower(it.Name)
-			if _, exists := c.items[lowID]; !exists {
+			if existing, exists := c.items[lowID]; !exists || shouldPreferCatalogItem(existing, it) {
 				c.items[lowID] = it
 			}
-			if _, exists := c.items[lowName]; !exists {
+			if existing, exists := c.items[lowName]; !exists || shouldPreferCatalogItem(existing, it) {
 				c.items[lowName] = it
 			}
 			c.items[fmt.Sprintf("%s@%s", lowID, strings.ToLower(catName))] = it
 			c.items[fmt.Sprintf("%s@%s", lowName, strings.ToLower(catName))] = it
 		}
 	}
+}
+
+func shouldPreferCatalogItem(existing, candidate Item) bool {
+	if candidate.Version != "" && existing.Version != "" {
+		return CompareSemver(candidate.Version, existing.Version) > 0
+	}
+	return false
 }
 
 // AddCatalogManifest dynamically registers items from a newly added or updated catalog manifest.

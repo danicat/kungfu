@@ -254,6 +254,19 @@ version: "2.0.0"
 		t.Errorf("godoctor global skill incorrect: %+v", goRec)
 	}
 
+	// Update godoctor version on disk without changing anything else and verify ReconcileDisk updates Version
+	_ = os.WriteFile(filepath.Join(globalSkillDir, "SKILL.md"), []byte(`---
+name: godoctor
+version: "2.1.0"
+---
+# GoDoctor`), 0644)
+	if !s.ReconcileDisk(wsDir, globalDir, isKnown) {
+		t.Fatalf("expected ReconcileDisk to return true when version changes on disk")
+	}
+	if gotVer := s.GetInstalledSkills(state.ScopeGlobal, "")["godoctor"].Version; gotVer != "2.1.0" {
+		t.Errorf("expected reconciled version 2.1.0, got %q", gotVer)
+	}
+
 	// Now delete godoctor from disk and test reconciliation
 	_ = os.RemoveAll(globalSkillDir)
 	changed = s.ReconcileDisk(wsDir, globalDir, isKnown)
