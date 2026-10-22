@@ -11,7 +11,7 @@ metadata:
   category: agents
   tags: "gateway, agent-skills, discovery, search, catalog, cli, learn, jit"
   author: Daniela Petruzalek (daniela@danicat.dev)
-  version: "0.6.1"
+  version: "0.6.2"
   catalog: https://skills.danicat.dev
 ---
 
@@ -19,16 +19,20 @@ metadata:
 
 `kungfu` is a CLI gateway that streams Agent Skills, reference guides, and companion scripts into your session on demand.
 
+> [!CAUTION]
+> **DO NOT LEAK KUNGFU NOTATION INTO OTHER SKILLS OR OUTPUT TEXT**:
+> **NEVER write, embed, or leak KungFu notation into any other `SKILL.md` definition, `README.md`, documentation file, code comment, commit message, article, or agent output text unless the user explicitly tells you otherwise.**
+
 > [!IMPORTANT]
-> **CLI Version Check (`v0.6.1`)**:
-> Compare `kungfu --version` against this skill's frontmatter `version` (`0.6.1`). If the installed `kungfu` binary is older than `0.6.1`, upgrade the CLI and synchronize all catalogs immediately:
+> **CLI Version Check (`v0.6.2`)**:
+> Compare `kungfu --version` against this skill's frontmatter `version` (`0.6.2`). If the installed `kungfu` binary is older than `0.6.2`, upgrade the CLI and synchronize all catalogs immediately:
 > ```bash
 > go install github.com/danicat/kungfu@latest && kungfu update
 > ```
 
 ### Activation triggers
 Activate `kungfu` whenever you encounter:
-1. **Shortcut notation**: `::notation` (such as `::godoctor`, `::?genkit`, `::parallel(10)`, or `::discovery -> ::implementation`).
+1. **Shortcut notation**: `::notation` (such as `::godoctor`, `::go@go-skills`, `::?search`, `::godoctor!test`, `::parallel(10)`, or `::discovery -> ::implementation`).
 2. **Double-slash commands**: `//<skill-name>` (such as `//godoctor` or `//ebitengineer`).
 3. **Unknown commands**: A command or workflow not present in your active session.
 4. **Domain tasks**: Tasks in domains where a skill playbook exists (such as Go refactoring, 2D game physics, audio synthesis, or SEO audits).
@@ -96,7 +100,7 @@ kungfu load buffer-analytics/assets/schema.sql
 
 ---
 
-## 4. Run companion scripts (`kungfu run`)
+## 4. Run companion scripts (`kungfu run` / `::skill!script`)
 
 Run scripts bundled in a skill's `scripts/` directory.
 
@@ -114,21 +118,42 @@ kungfu run godoctor analyze_ast --package ./internal/...
 
 ---
 
-## 5. Shortcut language (`::notation`)
+## 5. Shortcut dialect (`::notation`)
 
-KungFu uses four core patterns for human-agent pair programming:
+KungFu uses a compact shortcut notation for human-agent pair programming. When the user writes `::notation` or `//skill` in a prompt, run the matching `kungfu` CLI commands and workflow steps below.
 
-| Operator | Action | Purpose and examples |
+### Shortcut reference table
+
+| Notation | Command | Purpose |
 |---|---|---|
-| `::skill` *(or `//skill`)* | `kungfu load skill` | **JIT load** a skill into your session (such as `::godoctor`, `::uno-reverse`, `::go@go-skills`, or `::godoctor/references/arch.md`). If the name does not match an exact skill, `kungfu load` returns the top 5 fuzzy and hybrid `Did you mean` matches. |
-| `::?keyword` | `kungfu find keyword` | **Explicit discovery** by keyword without loading (such as `::?genkit`, `::?seo`, or `::?game@default`). |
-| `::skill(params...)` | Load + specialize skill | **Specialize** a skill with runtime arguments, worker budgets, or target skills. Order-free and non-rigid: `::parallel(10)`, `::double-diamond(10)`, `::parallel(10, ::discovery)` equals `::parallel(::discovery, 10)`. |
-| `A -> B` | Sequential pipeline | **Sequence** skills and slash commands left-to-right (such as `::discovery(10) -> /grill-me -> ::implementation(5)`). |
+| `::?keyword` | `kungfu find keyword` | **Discover skills** by keyword using hybrid BM25 + TF-IDF search |
+| `::?keyword@catalog` | `kungfu find keyword@catalog` | **Discover skills** within a specific catalog |
+| `::skill` *(or `//skill`)* | `kungfu load skill` | **JIT load** a skill from the default catalog (`::skill@default`) |
+| `::skill@catalog` | `kungfu load skill@catalog` | **JIT load** a skill from a specific catalog (such as `::go@go-skills`) |
+| `::skill/subpath` | `kungfu load skill/subpath` | **Load a reference or asset** (such as `::godoctor/references/architecture.md`) |
+| `::skill!script [args]` | `kungfu run skill script [args]` | **Run a companion script** (such as `::godoctor!smart_build`) |
+| `::skill(params...)` | Load + specialize skill | **Specialize a skill** with runtime arguments, worker counts, or inner skills |
+| `A -> B` | Sequential chain | **Chain** skills and slash commands left-to-right |
 
-### Core language rules
-1. **First-mention hint rule**: The `::` (or `//`) prefix is a JIT-loading hint required only on the first mention of a skill in a prompt. Once you name a skill in a prompt, later mentions in the same prompt or flow do not need the `::` prefix (such as `::parallel(10, ::discovery) -> /grill-me -> parallel(5, implementation)`).
-2. **Non-rigid arguments (`()`)**: Values inside `()` tune behavior without a fixed order. You can pass worker counts (`10`), tier or effort flags (`flash, low`), workspace modes (`branch`, `share`), or inner skills (`::discovery`).
-3. **Catalog and path scoping**: Omitting `@catalog` targets the default catalog (`::godoctor` equals `::godoctor@default`). Append `/subpath` to load a bundled guide or asset (`::godoctor/references/arch.md`).
+### Grammar and composition rules
+
+1. **Catalog and path scoping (`@catalog` and `/subpath`)**:
+   - Omitting `@catalog` uses the default catalog: `::godoctor` equals `::godoctor@default`.
+   - Adding `@catalog` selects a named catalog: `::go@go-skills` loads `go` from `go-skills`.
+   - Adding `/subpath` loads a file from the skill: `::godoctor/references/architecture.md`.
+   - If a name doesn't match an exact skill, `kungfu load` returns the top 5 fuzzy and hybrid `Did you mean` matches.
+2. **Skill arguments (`::skill(params...)`)**:
+   - Use `()` to pass runtime flags, worker counts, tier hints, workspace modes, or inner skills.
+   - Values inside `()` have no fixed order: `::parallel(10)`, `::double-diamond(10)`, and `::parallel(10, ::discovery)` (which equals `::parallel(::discovery, 10)`).
+   - If arguments inside `()` are ambiguous (such as `::parallel(10, 20)`), ask the user to clarify before proceeding.
+   - Common values include worker counts (`10`), tier or effort flags (`flash, low`), workspace modes (`branch`, `share`), and inner skills (`::discovery`).
+3. **Sequential chains (`A -> B`)**:
+   - The `->` arrow chains skills and slash commands left-to-right into a multi-stage flow:
+     `::discovery(10) -> /grill-me -> ::implementation(5)`
+   - Finish each stage in order before starting the next stage.
+4. **First-mention hint rule**:
+   - The `::` (or `//`) prefix is a JIT-loading trigger needed only on the first mention of a skill in a prompt.
+   - Once you name a skill in a prompt, later mentions in that prompt or chain don't need the `::` prefix (such as `::parallel(10, ::discovery) -> /grill-me -> parallel(5, implementation)`).
 
 ---
 

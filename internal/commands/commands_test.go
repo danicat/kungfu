@@ -117,6 +117,7 @@ func TestUnknownCommand(t *testing.T) {
 }
 
 func TestDidYouMeanSuggestions(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{

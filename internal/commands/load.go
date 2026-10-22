@@ -475,7 +475,9 @@ func (a *App) refreshCatalogForItem(ctx context.Context, item *catalog.Item, def
 	candidateCats := []string{
 		item.Source,
 		strings.TrimPrefix(item.Source, "github:"),
-		item.Name,
+	}
+	if os.Getenv("KUNGFU_URL") == "" && os.Getenv("KUNGFU_REMOTE_URL") == "" {
+		candidateCats = append(candidateCats, item.Name)
 	}
 	seenCats := make(map[string]bool)
 	for _, cand := range candidateCats {
