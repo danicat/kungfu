@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -410,13 +411,7 @@ See [Extra Docs](references/extra.md) and ![Diagram](assets/arch.png).
 	}
 
 	for _, exp := range expected {
-		found := false
-		for _, c := range candidates {
-			if c == exp {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(candidates, exp)
 		if !found {
 			t.Errorf("expected candidate %q to be extracted, got candidates: %v", exp, candidates)
 		}

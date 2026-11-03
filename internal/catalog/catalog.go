@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -662,9 +663,7 @@ func (c *Catalog) discoverLocalSkillsLocked() {
 				if existing.Metadata == nil {
 					existing.Metadata = make(map[string]string)
 				}
-				for mk, mv := range fm.Metadata {
-					existing.Metadata[mk] = mv
-				}
+				maps.Copy(existing.Metadata, fm.Metadata)
 				if cat, ok := fm.Metadata["category"]; ok && cat != "" {
 					existing.Category = cat
 				}

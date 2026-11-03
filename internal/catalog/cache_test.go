@@ -25,10 +25,10 @@ import (
 )
 
 func TestCatalogCache_ETagAndFailFast(t *testing.T) {
-	var requestCount int32
+	var requestCount atomic.Int32
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&requestCount, 1)
+		requestCount.Add(1)
 		if r.Header.Get("If-None-Match") == "v1-etag" {
 			w.WriteHeader(http.StatusNotModified)
 			return
@@ -64,8 +64,8 @@ func TestCatalogCache_ETagAndFailFast(t *testing.T) {
 	if err != nil || item == nil {
 		t.Fatalf("expected cached-skill, err: %v", err)
 	}
-	if atomic.LoadInt32(&requestCount) != 1 {
-		t.Errorf("expected 1 request, got %d", atomic.LoadInt32(&requestCount))
+	if requestCount.Load() != 1 {
+		t.Errorf("expected 1 request, got %d", requestCount.Load())
 	}
 
 	// 2. Second fetch with fresh TTL: hits cache directly without network request
@@ -79,8 +79,8 @@ func TestCatalogCache_ETagAndFailFast(t *testing.T) {
 	if _, err := c2.Get("cached-skill"); err != nil {
 		t.Fatalf("expected cached-skill in c2, err: %v", err)
 	}
-	if atomic.LoadInt32(&requestCount) != 1 {
-		t.Errorf("expected still 1 request due to TTL cache hit, got %d", atomic.LoadInt32(&requestCount))
+	if requestCount.Load() != 1 {
+		t.Errorf("expected still 1 request due to TTL cache hit, got %d", requestCount.Load())
 	}
 
 	// 3. Force refresh sends If-None-Match header and handles 304 Not Modified
@@ -95,8 +95,8 @@ func TestCatalogCache_ETagAndFailFast(t *testing.T) {
 	if _, err := c3.Get("cached-skill"); err != nil {
 		t.Fatalf("expected cached-skill in c3, err: %v", err)
 	}
-	if atomic.LoadInt32(&requestCount) != 2 {
-		t.Errorf("expected 2 requests (1 full + 1 304 conditional), got %d", atomic.LoadInt32(&requestCount))
+	if requestCount.Load() != 2 {
+		t.Errorf("expected 2 requests (1 full + 1 304 conditional), got %d", requestCount.Load())
 	}
 
 	// 4. Server closed: force refresh fails fast and does not fallback to stale cache

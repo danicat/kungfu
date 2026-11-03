@@ -71,9 +71,6 @@ kungfu load ebitengineer
 kungfu load ebitengineer -p 2
 kungfu load ebitengineer --page 3
 
-# Stream full unpaginated content
-kungfu load ebitengineer --full
-
 # Load from a specific catalog
 kungfu load go@go-skills
 

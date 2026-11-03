@@ -56,12 +56,10 @@ func MapErrorToExitCode(err error) int {
 	if errors.Is(err, catalog.ErrDigestMismatch) || errors.Is(err, catalog.ErrInvalidFrontmatter) {
 		return ExitIntegrity
 	}
-	var netErr net.Error
-	if errors.As(err, &netErr) {
+	if _, ok := errors.AsType[net.Error](err); ok {
 		return ExitNetwork
 	}
-	var sysErr syscall.Errno
-	if errors.As(err, &sysErr) {
+	if sysErr, ok := errors.AsType[syscall.Errno](err); ok {
 		if sysErr == syscall.ECONNREFUSED || sysErr == syscall.ENETUNREACH || sysErr == syscall.ETIMEDOUT {
 			return ExitNetwork
 		}
@@ -505,6 +503,24 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		opts.Mode = OutputModeRaw
 	}
 
+	switch cmdName {
+	case "list", "ls", "find", "search", "show", "info", "load", "get", "learn", "install", "add", "forget", "unlearn", "update", "upgrade", "status", "catalog", "catalogs", "telemetry", "run", "exec":
+	default:
+		validCommands := []string{
+			"list", "find", "show", "load", "learn", "forget", "update", "status", "catalog", "telemetry", "run", "version", "help",
+		}
+		_, _ = fmt.Fprintf(stderr, "error: unknown command %q.\n", cmdName)
+		suggs := search.Suggest(cmdName, validCommands, 2)
+		if len(suggs) > 0 {
+			_, _ = fmt.Fprintln(stderr, "\nDid you mean:")
+			for _, s := range suggs {
+				_, _ = fmt.Fprintf(stderr, "  - kungfu %s\n", s)
+			}
+		}
+		_, _ = fmt.Fprintln(stderr, "\nRun 'kungfu --help' for available commands and usage.")
+		return ExitUsage
+	}
+
 	app, err := NewApp(opts, stdout, stderr)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
@@ -535,18 +551,6 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "run", "exec":
 		return app.RunRun(cmdArgs)
 	default:
-		validCommands := []string{
-			"list", "find", "show", "load", "learn", "forget", "update", "status", "catalog", "telemetry", "run", "version", "help",
-		}
-		_, _ = fmt.Fprintf(stderr, "error: unknown command %q.\n", cmdName)
-		suggs := search.Suggest(cmdName, validCommands, 2)
-		if len(suggs) > 0 {
-			_, _ = fmt.Fprintln(stderr, "\nDid you mean:")
-			for _, s := range suggs {
-				_, _ = fmt.Fprintf(stderr, "  - kungfu %s\n", s)
-			}
-		}
-		_, _ = fmt.Fprintln(stderr, "\nRun 'kungfu --help' for available commands and usage.")
 		return ExitUsage
 	}
 }

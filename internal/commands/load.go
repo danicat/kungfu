@@ -283,7 +283,7 @@ func (a *App) RunLoad(args []string) int {
 
 	var sb strings.Builder
 	if totalPages > 1 && !fullFlag && pageFlag > 1 && mode != OutputModeRaw {
-		sb.WriteString(fmt.Sprintf("[Page %d of %d (continued)]\n\n", pageFlag, totalPages))
+		_, _ = fmt.Fprintf(&sb, "[Page %d of %d (continued)]\n\n", pageFlag, totalPages)
 	}
 
 	sb.WriteString(currentPageContent)
@@ -294,9 +294,9 @@ func (a *App) RunLoad(args []string) int {
 	if totalPages > 1 && !fullFlag && mode != OutputModeRaw {
 		sb.WriteString("\n---\n")
 		if pageFlag < totalPages {
-			sb.WriteString(fmt.Sprintf("[Page %d of %d • Next: kungfu load %s -p %d • Use --full to display all]\n", pageFlag, totalPages, spec, pageFlag+1))
+			_, _ = fmt.Fprintf(&sb, "[Page %d of %d • Next: kungfu load %s -p %d]\n", pageFlag, totalPages, spec, pageFlag+1)
 		} else {
-			sb.WriteString(fmt.Sprintf("[Page %d of %d • End of document]\n", pageFlag, totalPages))
+			_, _ = fmt.Fprintf(&sb, "[Page %d of %d • End of document]\n", pageFlag, totalPages)
 		}
 	}
 

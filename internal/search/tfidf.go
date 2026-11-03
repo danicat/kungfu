@@ -68,7 +68,7 @@ func (s *TFIDFScorer) Build(numDocs int, docTermFreqs []map[uint32]float32, docF
 		s.idfCache[termID] = ComputeTFIDFIDF(int(df), numDocs)
 	}
 
-	for docID := 0; docID < numDocs; docID++ {
+	for docID := range numDocs {
 		if docID >= len(docTermFreqs) {
 			continue
 		}

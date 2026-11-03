@@ -331,7 +331,7 @@ func TestEngine_ConcurrentAccess(t *testing.T) {
 	_ = eng.Index(sampleCatalogItems)
 
 	var wg sync.WaitGroup
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		wg.Add(1)
 		go func(iter int) {
 			defer wg.Done()

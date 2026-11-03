@@ -43,8 +43,8 @@ type TelemetryConfig struct {
 
 // Config represents the user-level configuration (~/.config/kungfu/config.yaml or config.json).
 type Config struct {
-	Load      LoadConfig        `json:"load,omitempty" yaml:"load,omitempty"`
-	Telemetry TelemetryConfig   `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
+	Load      LoadConfig        `json:"load" yaml:"load,omitempty"`
+	Telemetry TelemetryConfig   `json:"telemetry" yaml:"telemetry,omitempty"`
 	Catalogs  map[string]string `json:"catalogs,omitempty" yaml:"catalogs,omitempty"`
 }
 

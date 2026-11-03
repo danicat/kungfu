@@ -27,6 +27,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -55,10 +56,8 @@ func GetCandidateBaseDirs(item catalog.Item) []string {
 		}
 		d = filepath.Clean(d)
 		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
-			for _, existing := range dirs {
-				if existing == d {
-					return
-				}
+			if slices.Contains(dirs, d) {
+				return
 			}
 			dirs = append(dirs, d)
 		}
@@ -217,7 +216,7 @@ func detectInterpreter(scriptPath string) (string, []string, error) {
 				case strings.HasPrefix(base, "python"):
 					return resolvePythonCommand(scriptPath)
 				case strings.HasPrefix(base, "node") || strings.HasPrefix(base, "bun") || strings.HasPrefix(base, "deno") || strings.HasPrefix(base, "tsx"):
-					bin := interpName
+					var bin string
 					if found, err := exec.LookPath(base); err == nil {
 						bin = found
 					} else if found, err := exec.LookPath(interpName); err == nil {
@@ -227,7 +226,7 @@ func detectInterpreter(scriptPath string) (string, []string, error) {
 					}
 					return bin, append(append([]string{}, interpFlags...), scriptPath), nil
 				case strings.HasPrefix(base, "bash") || strings.HasPrefix(base, "sh") || strings.HasPrefix(base, "zsh"):
-					bin := interpName
+					var bin string
 					if found, err := exec.LookPath(base); err == nil {
 						bin = found
 					} else if found, err := exec.LookPath(interpName); err == nil {
@@ -237,7 +236,7 @@ func detectInterpreter(scriptPath string) (string, []string, error) {
 					}
 					return bin, append(append([]string{}, interpFlags...), scriptPath), nil
 				default:
-					bin := interpName
+					var bin string
 					if found, err := exec.LookPath(base); err == nil {
 						bin = found
 					} else if found, err := exec.LookPath(interpName); err == nil {
@@ -434,8 +433,8 @@ func appendEnvPath(env []string, key string, dirs ...string) []string {
 
 	prefix := key + "="
 	for i, e := range env {
-		if strings.HasPrefix(e, prefix) {
-			current := strings.TrimPrefix(e, prefix)
+		if after, ok := strings.CutPrefix(e, prefix); ok {
+			current := after
 			if current != "" {
 				env[i] = prefix + extra + string(os.PathListSeparator) + current
 			} else {

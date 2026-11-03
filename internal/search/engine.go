@@ -196,14 +196,14 @@ func parseQueryFilters(query string) parsedFilter {
 
 	for _, p := range parts {
 		low := strings.ToLower(p)
-		if strings.HasPrefix(low, "category:") {
-			filter.category = strings.TrimPrefix(low, "category:")
-		} else if strings.HasPrefix(low, "cat:") {
-			filter.category = strings.TrimPrefix(low, "cat:")
-		} else if strings.HasPrefix(low, "tag:") {
-			filter.tags = append(filter.tags, strings.TrimPrefix(low, "tag:"))
-		} else if strings.HasPrefix(low, "type:") {
-			filter.itemType = strings.TrimPrefix(low, "type:")
+		if after, ok := strings.CutPrefix(low, "category:"); ok {
+			filter.category = after
+		} else if after, ok := strings.CutPrefix(low, "cat:"); ok {
+			filter.category = after
+		} else if after, ok := strings.CutPrefix(low, "tag:"); ok {
+			filter.tags = append(filter.tags, after)
+		} else if after, ok := strings.CutPrefix(low, "type:"); ok {
+			filter.itemType = after
 		} else {
 			cleanParts = append(cleanParts, p)
 		}
@@ -555,10 +555,7 @@ func (e *Engine) searchExact(query string, candidateDocIDs []uint32, limit int, 
 			// Fuzzy match (edit distance <= 2) on name/id
 			dist := Levenshtein(normQuery, normName)
 			distComp := Levenshtein(compQuery, compName)
-			minDist := dist
-			if distComp < minDist {
-				minDist = distComp
-			}
+			minDist := min(distComp, dist)
 			if minDist == 1 && len(compQuery) >= 3 {
 				score += 8.0 * WeightName
 				mask |= FieldMaskName
@@ -712,10 +709,7 @@ func (e *Engine) searchHybrid(query string, candidateDocIDs []uint32, limit int,
 			// Fuzzy match (edit distance 1 or 2)
 			dist := Levenshtein(normQuery, normName)
 			distComp := Levenshtein(compQuery, compName)
-			minDist := dist
-			if distComp < minDist {
-				minDist = distComp
-			}
+			minDist := min(distComp, dist)
 			if minDist == 1 && len(compQuery) >= 3 {
 				rrfScores[id] += 1.6 // 1 edit distance away
 				matchMasks[id] |= FieldMaskName

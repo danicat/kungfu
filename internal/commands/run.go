@@ -72,8 +72,7 @@ func (a *App) RunRun(args []string) int {
 			_, _ = fmt.Fprintf(a.Stderr, "error: %v\n", err)
 			return ExitGeneral
 		}
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			return exitErr.ExitCode()
 		}
 		_, _ = fmt.Fprintf(a.Stderr, "error: running script %q: %v\n", scriptName, err)

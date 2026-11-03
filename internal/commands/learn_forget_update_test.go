@@ -38,7 +38,7 @@ func startMockKungfuServer(t *testing.T) (*httptest.Server, string) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(fmt.Sprintf(`{
+		_, _ = fmt.Fprintf(w, `{
 			"$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
 			"skills": [
 				{
@@ -50,7 +50,7 @@ func startMockKungfuServer(t *testing.T) (*httptest.Server, string) {
 					"digest": "%s"
 				}
 			]
-		}`, server.URL, catalog.ComputeDigest([]byte(skillContent)))))
+		}`, server.URL, catalog.ComputeDigest([]byte(skillContent)))
 	}))
 	return server, skillContent
 }

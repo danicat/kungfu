@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -62,8 +63,8 @@ func ParseGitHubTarget(input string) (*GitHubTarget, bool) {
 	raw = strings.TrimPrefix(raw, "git@github.com:")
 
 	// Handle raw.githubusercontent.com URLs
-	if strings.HasPrefix(raw, "raw.githubusercontent.com/") {
-		raw = strings.TrimPrefix(raw, "raw.githubusercontent.com/")
+	if after, ok := strings.CutPrefix(raw, "raw.githubusercontent.com/"); ok {
+		raw = after
 		raw = strings.Trim(raw, "/")
 		parts := strings.Split(raw, "/")
 		if len(parts) < 3 {
@@ -241,9 +242,7 @@ func probeGitHubRef(ctx context.Context, target *GitHubTarget, ref string, clien
 		}
 
 		if fm.Metadata != nil {
-			for k, v := range fm.Metadata {
-				item.Metadata[k] = v
-			}
+			maps.Copy(item.Metadata, fm.Metadata)
 		}
 		if item.Metadata["version"] != "" {
 			item.Version = item.Metadata["version"]
@@ -526,9 +525,7 @@ func probeGitHubCatalogRef(ctx context.Context, target *GitHubTarget, ref string
 			},
 		}
 		if fm.Metadata != nil {
-			for k, v := range fm.Metadata {
-				item.Metadata[k] = v
-			}
+			maps.Copy(item.Metadata, fm.Metadata)
 			if item.Metadata["version"] != "" {
 				item.Version = item.Metadata["version"]
 			}
@@ -734,9 +731,7 @@ func DiscoverLocalCatalog(dirPath string) (*Manifest, error) {
 				if item.Metadata == nil {
 					item.Metadata = make(map[string]string)
 				}
-				for k, v := range fm.Metadata {
-					item.Metadata[k] = v
-				}
+				maps.Copy(item.Metadata, fm.Metadata)
 				if item.Metadata["version"] != "" {
 					item.Version = item.Metadata["version"]
 				}

@@ -38,7 +38,7 @@ func TestRunLoad(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(fmt.Sprintf(`{
+		_, _ = fmt.Fprintf(w, `{
 			"$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
 			"skills": [
 				{
@@ -50,7 +50,7 @@ func TestRunLoad(t *testing.T) {
 					"digest": "%s"
 				}
 			]
-		}`, server.URL, catalog.ComputeDigest([]byte(skillContent)))))
+		}`, server.URL, catalog.ComputeDigest([]byte(skillContent)))
 	}))
 	defer server.Close()
 	t.Setenv("KUNGFU_URL", server.URL)
@@ -257,7 +257,7 @@ func TestRunLoad_Pagination(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(fmt.Sprintf(`{
+		_, _ = fmt.Fprintf(w, `{
 			"$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
 			"skills": [
 				{
@@ -269,7 +269,7 @@ func TestRunLoad_Pagination(t *testing.T) {
 					"digest": "%s"
 				}
 			]
-		}`, server.URL, catalog.ComputeDigest([]byte(skillContent)))))
+		}`, server.URL, catalog.ComputeDigest([]byte(skillContent)))
 	}))
 	defer server.Close()
 	t.Setenv("KUNGFU_URL", server.URL)
@@ -288,8 +288,11 @@ func TestRunLoad_Pagination(t *testing.T) {
 		t.Fatalf("RunLoad page 1 failed: %d, stderr: %s", code, stderr.String())
 	}
 	out1 := stdout.String()
-	if !strings.Contains(out1, "[Page 1 of") || !strings.Contains(out1, "Next: kungfu load kungfu -p 2") {
+	if !strings.Contains(out1, "[Page 1 of") || !strings.Contains(out1, "Next: kungfu load kungfu -p 2]") {
 		t.Errorf("expected page 1 footer with next page hint, got: %s", out1)
+	}
+	if strings.Contains(out1, "--full") {
+		t.Errorf("did not expect --full hint in page 1 footer, got: %s", out1)
 	}
 
 	// 2. Load kungfu with page-size 500 (page 2)

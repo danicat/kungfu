@@ -165,7 +165,7 @@ func TestState_ConcurrentAccess(t *testing.T) {
 	s := state.NewState()
 	var wg sync.WaitGroup
 
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		wg.Add(2)
 		go func(id int) {
 			defer wg.Done()
@@ -289,7 +289,7 @@ func TestState_WithLockedStateAndDetailedTelemetry(t *testing.T) {
 
 	// Parallel WithLockedState invocations simulating concurrent ::parallel(N subagent loads
 	var wg sync.WaitGroup
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -337,7 +337,7 @@ func TestState_WithLockedStateAndDetailedTelemetry(t *testing.T) {
 
 func TestState_TelemetryDeltaClampingAndSnapping(t *testing.T) {
 	s := state.NewState()
-	for i := 0; i < 150; i++ {
+	for range 150 {
 		s.RecordLoadDetailed("godoctor", "", 1)
 	}
 	deltas := s.ComputeTelemetryDeltas(func(name string) (string, bool) {

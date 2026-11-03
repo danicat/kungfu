@@ -325,8 +325,8 @@ type CacheMeta struct {
 	ETag         string    `json:"etag,omitempty"`
 	LastModified string    `json:"last_modified,omitempty"`
 	FetchedAt    time.Time `json:"fetched_at"`
-	LastChecked  time.Time `json:"last_checked,omitempty"`
-	ExpiresAt    time.Time `json:"expires_at,omitempty"`
+	LastChecked  time.Time `json:"last_checked"`
+	ExpiresAt    time.Time `json:"expires_at"`
 	Digest       string    `json:"digest,omitempty"`
 	HTTPStatus   int       `json:"http_status,omitempty"`
 }

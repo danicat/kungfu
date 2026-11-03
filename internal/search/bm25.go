@@ -80,7 +80,7 @@ func (s *BM25Scorer) Build(numDocs int, avgDocLen float32, docLengths []float32,
 		avgDocLen = 1.0
 	}
 
-	for i := 0; i < numDocs; i++ {
+	for i := range numDocs {
 		docLen := float32(0)
 		if i < len(docLengths) {
 			docLen = docLengths[i]

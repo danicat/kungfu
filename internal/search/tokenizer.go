@@ -286,7 +286,7 @@ func (s *porterStemmer) ends(suffix string) bool {
 	if o < s.k0 {
 		return false
 	}
-	for i := 0; i < l; i++ {
+	for i := range l {
 		if s.b[o+i] != sufRunes[i] {
 			return false
 		}
@@ -299,7 +299,7 @@ func (s *porterStemmer) setto(suffix string) {
 	sufRunes := []rune(suffix)
 	l := len(sufRunes)
 	o := s.j + 1
-	for i := 0; i < l; i++ {
+	for i := range l {
 		if o+i < len(s.b) {
 			s.b[o+i] = sufRunes[i]
 		} else {

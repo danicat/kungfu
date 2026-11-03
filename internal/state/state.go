@@ -926,8 +926,8 @@ func extractVersion(content string) string {
 			break
 		}
 		if inFrontmatter {
-			if strings.HasPrefix(line, "version:") {
-				v := strings.TrimSpace(strings.TrimPrefix(line, "version:"))
+			if after, ok := strings.CutPrefix(line, "version:"); ok {
+				v := strings.TrimSpace(after)
 				return strings.Trim(v, "\"'")
 			}
 		}
