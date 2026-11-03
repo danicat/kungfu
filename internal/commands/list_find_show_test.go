@@ -216,6 +216,9 @@ func TestRunShow(t *testing.T) {
 			if tt.wantSub != "" && !strings.Contains(stdout.String(), tt.wantSub) {
 				t.Errorf("Run(%v) output %q does not contain %q", tt.args, stdout.String(), tt.wantSub)
 			}
+			if strings.Contains(stdout.String(), "Scripts:") {
+				t.Errorf("Run(%v) unexpectedly listed Scripts from markdown text when no scripts/ directory exists on disk:\n%s", tt.args, stdout.String())
+			}
 		})
 	}
 }

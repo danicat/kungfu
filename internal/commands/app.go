@@ -618,7 +618,7 @@ func (a *App) listReferences(item catalog.Item) []string {
 		}
 	}
 
-	// 1. Check local candidate directories
+	// Check local candidate directories on disk
 	baseDirs := runner.GetCandidateBaseDirs(item)
 	for _, baseDir := range baseDirs {
 		refsDir := filepath.Join(baseDir, "references")
@@ -627,21 +627,6 @@ func (a *App) listReferences(item catalog.Item) []string {
 				if !e.IsDir() {
 					add(e.Name())
 				}
-			}
-		}
-	}
-
-	// 2. Check item body content for referenced markdown documents
-	content := item.Body
-	if content == "" && a.Store != nil {
-		if c, err := a.Store.LoadContent(&item); err == nil {
-			content = c
-		}
-	}
-	if content != "" {
-		for _, c := range runner.ExtractCandidates(content) {
-			if strings.HasPrefix(c, "references/") {
-				add(c)
 			}
 		}
 	}
@@ -668,7 +653,7 @@ func (a *App) listScripts(item catalog.Item) []string {
 		}
 	}
 
-	// 1. Check local candidate directories
+	// Check local candidate directories on disk
 	baseDirs := runner.GetCandidateBaseDirs(item)
 	for _, baseDir := range baseDirs {
 		scriptsDir := filepath.Join(baseDir, "scripts")
@@ -677,21 +662,6 @@ func (a *App) listScripts(item catalog.Item) []string {
 				if !e.IsDir() {
 					add(e.Name())
 				}
-			}
-		}
-	}
-
-	// 2. Check item body content
-	content := item.Body
-	if content == "" && a.Store != nil {
-		if c, err := a.Store.LoadContent(&item); err == nil {
-			content = c
-		}
-	}
-	if content != "" {
-		for _, c := range runner.ExtractCandidates(content) {
-			if strings.HasPrefix(c, "scripts/") {
-				add(c)
 			}
 		}
 	}
