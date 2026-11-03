@@ -6,6 +6,8 @@
 
 `kungfu` is a command-line tool for finding, streaming, running, and installing **Agent Skills** (`SKILL.md`). Coding agents can stream skill instructions and reference files into a session on demand (`kungfu load`) or install them into workspace and global folders (`kungfu learn`).
 
+`kungfu` implements the [Cloudflare Agent Skills Discovery RFC (`v0.2.0`)](https://github.com/cloudflare/agent-skills-discovery-rfc) (`/.well-known/agent-skills/index.json`) from [Cloudflare's Agent Readiness guide](https://blog.cloudflare.com/agent-readiness/). It loads both single-file (`type: "skill-md"`) and `.tar.gz` (`type: "archive"`) skills and checks their `sha256` digests.
+
 ## Installation
 
 Install with Go 1.27 or newer:
@@ -150,7 +152,7 @@ kungfu catalog remove google/skills
 ```
 
 When indexing a catalog source, `kungfu` checks four formats in order:
-1. `.well-known/agent-skills/index.json`: Agent Skills Discovery RFC v0.2.0 manifest (`skills` array with SHA-256 digests).
+1. `.well-known/agent-skills/index.json`: [Cloudflare Agent Skills Discovery RFC v0.2.0](https://github.com/cloudflare/agent-skills-discovery-rfc) manifest (`skills` array with `skill-md` or `archive` entries and SHA-256 digests; see [Is your site agent-ready?](https://blog.cloudflare.com/agent-readiness/)).
 2. `index.json`: `google/skills` index file.
 3. `catalog.json`: Legacy manifest (supported through `v0.7.0`).
 4. Directory tree: `agentskills.io` folder scan for `SKILL.md` files.
