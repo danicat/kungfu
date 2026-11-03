@@ -30,16 +30,23 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	defaultServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"$schema":"https://schemas.agentskills.io/discovery/0.2.0/schema.json","skills":[]}`))
+	}))
+
 	tempHome, err := os.MkdirTemp("", "kungfu-cmd-test-home-*")
 	if err == nil {
 		_ = os.Setenv("HOME", tempHome)
 		_ = os.Setenv("KUNGFU_CONFIG_DIR", filepath.Join(tempHome, ".config", "kungfu"))
 		_ = os.Setenv("KUNGFU_STATE_PATH", filepath.Join(tempHome, ".config", "kungfu", "state.json"))
 		_ = os.Setenv("KUNGFU_CONFIG", "")
+		_ = os.Setenv("KUNGFU_URL", defaultServer.URL)
 		_ = os.Setenv("KUNGFU_TELEMETRY", "0")
 		_ = os.Setenv("DO_NOT_TRACK", "")
 	}
 	code := m.Run()
+	defaultServer.Close()
 	if tempHome != "" {
 		_ = os.RemoveAll(tempHome)
 	}

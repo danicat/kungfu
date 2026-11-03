@@ -73,8 +73,12 @@ func TestRunCatalog(t *testing.T) {
 	if code != ExitSuccess {
 		t.Fatalf("RunCatalog list = %d; stderr: %s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "mock-cat") {
-		t.Errorf("expected mock-cat in catalog list, got: %s", stdout.String())
+	listOut := stdout.String()
+	if !strings.Contains(listOut, "mock-cat") {
+		t.Errorf("expected mock-cat in catalog list, got: %s", listOut)
+	}
+	if strings.Contains(listOut, "https://") || strings.Contains(listOut, "http://") {
+		t.Errorf("expected catalog list to omit http(s):// prefix in SOURCE column, got: %s", listOut)
 	}
 
 	// 3. Synchronize all catalogs via RunUpdate (using mock server URL so tests never hit live internet)

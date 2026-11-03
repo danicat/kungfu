@@ -308,18 +308,46 @@ func (a *App) runCatalogList(args []string) int {
 		}
 		return ExitSuccess
 	default:
+		nameW, typeW, srcW, skillsW, updatedW := 22, 10, 42, 8, 19
+		for _, v := range views {
+			nameW = max(nameW, len(v.Name))
+			typeW = max(typeW, len(v.Type))
+			dispSrc := formatDisplaySource(v.Source)
+			srcW = max(srcW, len(dispSrc))
+			skillsStr := fmt.Sprintf("%d", v.SkillCount)
+			skillsW = max(skillsW, len(skillsStr))
+			up := v.UpdatedAt
+			if up == "" {
+				up = "built-in"
+			}
+			updatedW = max(updatedW, len(up))
+		}
+
 		_, _ = fmt.Fprintf(a.Stdout, "CONFIGURED CATALOGS (%d total):\n\n", len(views))
-		_, _ = fmt.Fprintf(a.Stdout, "%-22s %-10s %-42s %-8s %s\n", "NAME", "TYPE", "SOURCE", "SKILLS", "UPDATED")
-		_, _ = fmt.Fprintf(a.Stdout, "%-22s %-10s %-42s %-8s %s\n", "----------------------", "----------", "------------------------------------------", "--------", "-------------------")
+		_, _ = fmt.Fprintf(a.Stdout, "%-*s %-*s %-*s %-*s %s\n", nameW, "NAME", typeW, "TYPE", srcW, "SOURCE", skillsW, "SKILLS", "UPDATED")
+		_, _ = fmt.Fprintf(a.Stdout, "%s %s %s %s %s\n",
+			strings.Repeat("-", nameW),
+			strings.Repeat("-", typeW),
+			strings.Repeat("-", srcW),
+			strings.Repeat("-", skillsW),
+			strings.Repeat("-", updatedW),
+		)
 		for _, v := range views {
 			up := v.UpdatedAt
 			if up == "" {
 				up = "built-in"
 			}
-			_, _ = fmt.Fprintf(a.Stdout, "%-22s %-10s %-42s %-8d %s\n", v.Name, v.Type, v.Source, v.SkillCount, up)
+			dispSrc := formatDisplaySource(v.Source)
+			_, _ = fmt.Fprintf(a.Stdout, "%-*s %-*s %-*s %-*d %s\n", nameW, v.Name, typeW, v.Type, srcW, dispSrc, skillsW, v.SkillCount, up)
 		}
 		return ExitSuccess
 	}
+}
+
+func formatDisplaySource(src string) string {
+	src = strings.TrimPrefix(src, "https://")
+	src = strings.TrimPrefix(src, "http://")
+	return src
 }
 
 func (a *App) runCatalogRemove(args []string) int {

@@ -11,7 +11,7 @@ metadata:
   category: agents
   tags: "gateway, agent-skills, discovery, search, catalog, cli, learn, jit"
   author: Daniela Petruzalek (daniela@danicat.dev)
-  version: "0.6.2"
+  version: "0.6.3"
   catalog: https://skills.danicat.dev
 ---
 
@@ -24,8 +24,8 @@ metadata:
 > **NEVER write, embed, or leak KungFu notation into any other `SKILL.md` definition, `README.md`, documentation file, code comment, commit message, article, or agent output text unless the user explicitly tells you otherwise.**
 
 > [!IMPORTANT]
-> **CLI Version Check (`v0.6.2`)**:
-> Compare `kungfu --version` against this skill's frontmatter `version` (`0.6.2`). If the installed `kungfu` binary is older than `0.6.2`, upgrade the CLI and synchronize all catalogs immediately:
+> **CLI Version Check (`v0.6.3`)**:
+> Compare `kungfu --version` against this skill's frontmatter `version` (`0.6.3`). If the installed `kungfu` binary is older than `0.6.3`, upgrade the CLI and synchronize all catalogs immediately:
 > ```bash
 > go install github.com/danicat/kungfu@latest && kungfu update
 > ```
@@ -74,7 +74,7 @@ kungfu load ebitengineer --page 3
 # Load from a specific catalog
 kungfu load go@go-skills
 
-# Stream raw markdown without frontmatter
+# Stream raw markdown including frontmatter
 kungfu load godoctor --raw
 
 # Read from local cache only or force an upstream refresh
