@@ -15,12 +15,20 @@
 package commands
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/danicat/kungfu/internal/catalog"
 )
 
 func setupTestCatalogServer(t *testing.T) *httptest.Server {
@@ -220,5 +228,159 @@ func TestRunShow(t *testing.T) {
 				t.Errorf("Run(%v) unexpectedly listed Scripts from markdown text when no scripts/ directory exists on disk:\n%s", tt.args, stdout.String())
 			}
 		})
+	}
+}
+
+func buildTestTarGz(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	for name, body := range files {
+		hdr := &tar.Header{
+			Name: name,
+			Mode: 0644,
+			Size: int64(len(body)),
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("tar WriteHeader(%s): %v", name, err)
+		}
+		if _, err := tw.Write([]byte(body)); err != nil {
+			t.Fatalf("tar Write(%s): %v", name, err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar Close: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("gzip Close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestRunShow_ArchiveAndSkillMDScripts(t *testing.T) {
+	archiveBytes := buildTestTarGz(t, map[string]string{
+		"SKILL.md": `---
+name: archiveskill
+description: Packaged archive skill with real scripts
+---
+# Archive Skill
+
+Example commands in prose that should not cause duplicates or false positives:
+uv run ./scripts/outline.py
+uv run scripts/fake_in_docs.py
+python3 -m py_compile scripts/outline.py
+`,
+		"scripts/outline.py":      "print('outline')\n",
+		"scripts/sub/helper.py":   "print('helper')\n",
+		"scripts/go.mod":          "module example.com/test\n",
+		"scripts/go.sum":          "\n",
+		"scripts/visualizer.html": "<html></html>\n",
+		"references/guide.md":     "# Guide\n",
+		"references/sub/deep.md":  "# Deep\n",
+	})
+	archiveDigest := catalog.ComputeDigest(archiveBytes)
+
+	skillMDContent := `---
+name: doconlyskill
+description: Single-file skill-md that mentions scripts in examples
+---
+# Doc-Only Skill
+
+Run example:
+uv run scripts/not_bundled.py
+`
+	skillMDDigest := catalog.ComputeDigest([]byte(skillMDContent))
+
+	var serverURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/agent-skills/index.json":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{
+				"$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
+				"skills": [
+					{
+						"name": "archiveskill",
+						"type": "archive",
+						"description": "Packaged archive skill with real scripts",
+						"url": "%s/.well-known/agent-skills/archiveskill.tar.gz",
+						"digest": "%s"
+					},
+					{
+						"name": "doconlyskill",
+						"type": "skill-md",
+						"description": "Single-file skill-md that mentions scripts in examples",
+						"url": "%s/skills/doconlyskill/SKILL.md",
+						"digest": "%s"
+					}
+				]
+			}`, serverURL, archiveDigest, serverURL, skillMDDigest)
+		case "/.well-known/agent-skills/archiveskill.tar.gz":
+			w.Header().Set("Content-Type", "application/gzip")
+			_, _ = w.Write(archiveBytes)
+		case "/skills/doconlyskill/SKILL.md":
+			w.Header().Set("Content-Type", "text/markdown")
+			_, _ = w.Write([]byte(skillMDContent))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+	t.Setenv("KUNGFU_URL", server.URL+"/.well-known/agent-skills/index.json")
+
+	// Seed a stale cache entry for doconlyskill to verify skill-md ignores stale cache scripts
+	homeDir, err := os.UserHomeDir()
+	if err == nil && homeDir != "" {
+		staleScriptDir := filepath.Join(homeDir, ".cache", "kungfu", "skills", "doconlyskill", "scripts")
+		_ = os.MkdirAll(staleScriptDir, 0755)
+		_ = os.WriteFile(filepath.Join(staleScriptDir, "stale.py"), []byte("print('stale')\n"), 0644)
+	}
+
+	// 1. Verify archive skill unpacks and lists only real scripts and references
+	var stdout, stderr bytes.Buffer
+	cacheDir := t.TempDir()
+	code := Run([]string{"--cache-dir", cacheDir, "show", "archiveskill", "--json"}, &stdout, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("Run(show archiveskill) = %d; stderr: %s", code, stderr.String())
+	}
+	var archiveDetail struct {
+		Name       string   `json:"name"`
+		Scripts    []string `json:"scripts"`
+		References []string `json:"references"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &archiveDetail); err != nil {
+		t.Fatalf("json.Unmarshal(archiveskill): %v; out=%s", err, stdout.String())
+	}
+	wantScripts := []string{"outline.py", "sub/helper.py"}
+	if !reflect.DeepEqual(archiveDetail.Scripts, wantScripts) {
+		t.Errorf("archiveskill scripts = %v, want %v", archiveDetail.Scripts, wantScripts)
+	}
+	wantRefs := []string{"guide", "sub/deep"}
+	if !reflect.DeepEqual(archiveDetail.References, wantRefs) {
+		t.Errorf("archiveskill references = %v, want %v", archiveDetail.References, wantRefs)
+	}
+
+	// 2. Verify skill-md item reports no scripts even when SKILL.md mentions scripts or stale cache exists
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{"--cache-dir", cacheDir, "show", "doconlyskill", "--json"}, &stdout, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("Run(show doconlyskill) = %d; stderr: %s", code, stderr.String())
+	}
+	var docDetail struct {
+		Name       string   `json:"name"`
+		Scripts    []string `json:"scripts"`
+		References []string `json:"references"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &docDetail); err != nil {
+		t.Fatalf("json.Unmarshal(doconlyskill): %v; out=%s", err, stdout.String())
+	}
+	if len(docDetail.Scripts) != 0 {
+		t.Errorf("doconlyskill scripts = %v, want empty", docDetail.Scripts)
+	}
+	if len(docDetail.References) != 0 {
+		t.Errorf("doconlyskill references = %v, want empty", docDetail.References)
 	}
 }

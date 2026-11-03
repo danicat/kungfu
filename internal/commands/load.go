@@ -332,12 +332,12 @@ func (a *App) loadItemContentWithOpts(item *catalog.Item, localOnly, forceUpdate
 			}
 		}
 
-		// Check local disk cache (~/.cache/kungfu/skills/<name>/SKILL.md)
-		homeDir, err := os.UserHomeDir()
-		if err != nil || homeDir == "" {
-			return "", fmt.Errorf("load --local: unable to determine user home directory: %w", err)
+		// Check local disk cache (<cacheRoot>/skills/<name>/SKILL.md)
+		cacheRoot := a.cacheRootDir()
+		if cacheRoot == "" {
+			return "", fmt.Errorf("load --local: unable to determine cache directory")
 		}
-		cachedMD := filepath.Join(homeDir, ".cache", "kungfu", "skills", item.Name, "SKILL.md")
+		cachedMD := filepath.Join(cacheRoot, "skills", item.Name, "SKILL.md")
 		if data, err := os.ReadFile(cachedMD); err == nil && len(data) > 0 {
 			return string(data), nil
 		}
@@ -437,11 +437,21 @@ func (a *App) loadItemContentWithOpts(item *catalog.Item, localOnly, forceUpdate
 				if resp.StatusCode != http.StatusOK {
 					return "", fmt.Errorf("fetching %s (--force): HTTP %d", remoteURL, resp.StatusCode)
 				}
-				b, readErr := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
+				b, readErr := io.ReadAll(io.LimitReader(resp.Body, catalog.DefaultMaxUnpackedBytes))
 				if readErr != nil {
 					return "", fmt.Errorf("reading %s (--force): %w", remoteURL, readErr)
 				}
 				if len(b) > 0 {
+					if catalog.IsArchiveItem(*item) || catalog.DetectArchiveFormat(b, remoteURL) != "" {
+						md, exErr := catalog.ExtractSkillMDFromArchive(b)
+						if exErr != nil {
+							return "", fmt.Errorf("extracting SKILL.md from archive %s (--force): %w", remoteURL, exErr)
+						}
+						if cacheRoot := a.cacheRootDir(); cacheRoot != "" && item.Name != "" {
+							_, _ = catalog.UnpackArchiveToCache(b, cacheRoot, item.Name, catalog.ComputeDigest(b))
+						}
+						return md, nil
+					}
 					runner.CacheSkillFile(item.Name, "SKILL.md", b)
 					return string(b), nil
 				}

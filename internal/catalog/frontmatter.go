@@ -77,20 +77,68 @@ func ComputeDigest(data []byte) string {
 	return fmt.Sprintf("sha256:%x", sum)
 }
 
+// NormalizeDigest normalizes a digest string to the canonical sha256:<hex> format.
+func NormalizeDigest(d string) string {
+	clean := strings.TrimSpace(d)
+	if clean == "" {
+		return ""
+	}
+	if !strings.HasPrefix(clean, "sha256:") {
+		return "sha256:" + clean
+	}
+	return clean
+}
+
 // VerifyDigest verifies whether the content matches the expected sha256 digest.
 func VerifyDigest(data []byte, expected string) error {
 	if expected == "" {
 		return nil
 	}
 	actual := ComputeDigest(data)
-	cleanExpected := strings.TrimSpace(expected)
-	if !strings.HasPrefix(cleanExpected, "sha256:") {
-		cleanExpected = "sha256:" + cleanExpected
-	}
+	cleanExpected := NormalizeDigest(expected)
 	if actual != cleanExpected {
 		return fmt.Errorf("%w: expected %s, computed %s", ErrDigestMismatch, cleanExpected, actual)
 	}
 	return nil
+}
+
+// EnrichItemFromSkillMD populates missing metadata fields on item from a SKILL.md document's frontmatter.
+func EnrichItemFromSkillMD(item *Item, data []byte) {
+	if item == nil || len(data) == 0 {
+		return
+	}
+	fm, _, err := ParseFrontmatter(data)
+	if err != nil || fm == nil {
+		return
+	}
+	if item.License == "" && fm.License != "" {
+		item.License = fm.License
+	}
+	if item.AllowedTools == "" && fm.AllowedTools != "" {
+		item.AllowedTools = fm.AllowedTools
+	}
+	if fm.Metadata != nil {
+		if item.Metadata == nil {
+			item.Metadata = make(map[string]string)
+		}
+		for k, v := range fm.Metadata {
+			if item.Metadata[k] == "" {
+				item.Metadata[k] = v
+			}
+		}
+		if (item.Category == "" || item.Category == "agents") && fm.Metadata["category"] != "" {
+			item.Category = fm.Metadata["category"]
+		}
+		if item.Version == "" && fm.Metadata["version"] != "" {
+			item.Version = fm.Metadata["version"]
+		}
+		if item.Author == "" && fm.Metadata["author"] != "" {
+			item.Author = fm.Metadata["author"]
+		}
+		if len(item.Tags) == 0 && fm.Metadata["tags"] != "" {
+			item.Tags = ParseTags(fm.Metadata["tags"])
+		}
+	}
 }
 
 type rawFrontmatter struct {

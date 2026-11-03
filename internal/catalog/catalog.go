@@ -628,7 +628,8 @@ func (c *Catalog) discoverLocalSkillsLocked() {
 				if len(existing.Tags) == 0 && fm.Metadata != nil && fm.Metadata["tags"] != "" {
 					existing.Tags = ParseTags(fm.Metadata["tags"])
 				}
-				if existing.Path == "" {
+				isCachePath := strings.Contains(filepath.ToSlash(skillFile), "/.cache/kungfu/skills/")
+				if existing.Path == "" && !isCachePath {
 					existing.Path = skillFile
 				}
 				c.items[key] = existing
@@ -690,6 +691,17 @@ func (c *Catalog) discoverLocalSkillsLocked() {
 	}
 }
 
+func (c *Catalog) resolveCacheRoot() string {
+	if c.cacheDir != "" {
+		return c.cacheDir
+	}
+	home, err := os.UserHomeDir()
+	if err == nil && home != "" {
+		return filepath.Join(home, ".cache", "kungfu")
+	}
+	return ""
+}
+
 // LoadContent retrieves the full raw markdown content for an item.
 // It loads in-memory bodies or streams live from remote URLs.
 // Kungfu does not load skills from local filesystem paths; local paths are only used for installation via learn.
@@ -724,7 +736,7 @@ func (c *Catalog) LoadContent(item *Item) (string, error) {
 		if resp.StatusCode != http.StatusOK {
 			return "", fmt.Errorf("failed to download skill %q from %s: HTTP %d", item.Name, remoteURL, resp.StatusCode)
 		}
-		data, err := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
+		data, err := io.ReadAll(io.LimitReader(resp.Body, DefaultMaxUnpackedBytes))
 		if err != nil {
 			return "", fmt.Errorf("failed to read response for %q: %w", item.Name, err)
 		}
@@ -741,6 +753,22 @@ func (c *Catalog) LoadContent(item *Item) (string, error) {
 			}
 		}
 
+		// If item is an archive (.tar.gz, .zip or type == "archive"), extract SKILL.md and unpack to cache
+		if IsArchiveItem(*item) || DetectArchiveFormat(data, remoteURL) != "" {
+			extractedMD, err := ExtractSkillMDFromArchive(data)
+			if err != nil {
+				return "", fmt.Errorf("failed to extract SKILL.md from archive for %q: %w", item.Name, err)
+			}
+			EnrichItemFromSkillMD(item, []byte(extractedMD))
+			if !c.noCache && item.Name != "" {
+				if cacheRoot := c.resolveCacheRoot(); cacheRoot != "" {
+					_, _ = UnpackArchiveToCache(data, cacheRoot, item.Name, expectedDigest)
+				}
+			}
+			return extractedMD, nil
+		}
+
+		EnrichItemFromSkillMD(item, data)
 		return string(data), nil
 	}
 

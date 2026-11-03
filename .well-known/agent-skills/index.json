@@ -1,46 +1,12 @@
 {
   "$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
-  "version": "1.0.0",
-  "name": "danicat/kungfu",
-  "title": "KungFu CLI & Agent Skills Catalog",
-  "repository": "https://github.com/danicat/kungfu",
-  "url": "https://github.com/danicat/kungfu",
   "skills": [
     {
-      "id": "kungfu",
       "name": "kungfu",
       "type": "skill-md",
-      "title": "KungFu: Agent Skills Gateway",
       "description": "\"I know Kung Fu!\": Activate this skill to acquire knowledge about anything immediately. It teaches how to discover skills with keywords, JIT load skills into context, load reference guides and assets, execute companion scripts, and use the KungFu pair-programming shortcut dialect. When encountering unknown commands, niche domains, or ::notation, activate kungfu.",
-      "category": "agents",
-      "tags": [
-        "gateway",
-        "agent-skills",
-        "discovery",
-        "search",
-        "catalog",
-        "cli",
-        "learn",
-        "jit"
-      ],
-      "author": "Daniela Petruzalek (daniela@danicat.dev)",
-      "version": "0.6.4",
-      "license": "Apache-2.0",
       "url": "https://raw.githubusercontent.com/danicat/kungfu/main/skills/kungfu/SKILL.md",
-      "relativePath": "skills/kungfu/SKILL.md",
-      "digest": "sha256:6cd8ef9bb46dcdedf7f149f12a160725c88668994a7238cd99bf8748c2b8ab16",
-      "sha256": "6cd8ef9bb46dcdedf7f149f12a160725c88668994a7238cd99bf8748c2b8ab16",
-      "source": "github:danicat/kungfu",
-      "metadata": {
-        "author": "Daniela Petruzalek (daniela@danicat.dev)",
-        "category": "agents",
-        "canonical": "https://raw.githubusercontent.com/danicat/kungfu/main/skills/kungfu/SKILL.md",
-        "origin": "https://github.com/danicat/kungfu",
-        "repo": "danicat/kungfu",
-        "ref": "main",
-        "tags": "gateway, agent-skills, discovery, search, catalog, cli, learn, jit",
-        "version": "0.6.4"
-      }
+      "digest": "sha256:0cd8feb751ebb21a2364291ffad9d8fdaa04d6be58563ff6a6808cb12e173d9b"
     }
   ]
 }

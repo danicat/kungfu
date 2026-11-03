@@ -48,6 +48,7 @@ func TestRunCatalog(t *testing.T) {
 		}`))
 	}))
 	defer server.Close()
+	t.Setenv("KUNGFU_URL", server.URL)
 
 	var stdout, stderr bytes.Buffer
 	app, err := NewApp(GlobalOptions{}, &stdout, &stderr)

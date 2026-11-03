@@ -88,6 +88,8 @@ func (a *App) renderShowItems(items []catalog.Item, mode OutputMode) int {
 
 	var details []ShowDetail
 	for _, it := range items {
+		a.ensureArchiveUnpacked(&it)
+		status := a.getSkillStatus(&it)
 		refs := a.listReferences(it)
 		scripts := a.listScripts(it)
 
@@ -109,7 +111,7 @@ func (a *App) renderShowItems(items []catalog.Item, mode OutputMode) int {
 			Description:  it.Description,
 			Author:       author,
 			License:      it.License,
-			Status:       a.getSkillStatus(&it),
+			Status:       status,
 			Tags:         it.Tags,
 			AllowedTools: it.AllowedTools,
 			References:   refs,

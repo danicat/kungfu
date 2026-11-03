@@ -564,6 +564,8 @@ func (a *App) syncRegisteredCatalogs(ctx context.Context, st *state.State, mode 
 		exitCode = ExitGeneral
 	}
 
+	a.pruneSkillCache(!hasError)
+
 	if mode == OutputModeHuman && len(results) > 0 {
 		_, _ = fmt.Fprintf(a.Stdout, "Synchronized %d catalogs:\n", len(results))
 		for _, r := range results {
@@ -585,3 +587,63 @@ func (a *App) syncRegisteredCatalogs(ctx context.Context, st *state.State, mode 
 
 	return exitCode
 }
+
+// pruneSkillCache cleans stale or orphaned entries under <cacheRoot>/skills/.
+// If removeOrphans is true (all registered catalogs synced cleanly), directories
+// not present in the active catalog store are removed.
+func (a *App) pruneSkillCache(removeOrphans bool) {
+	cacheRoot := a.cacheRootDir()
+	if cacheRoot == "" || a.Store == nil {
+		return
+	}
+	skillsDir := filepath.Join(cacheRoot, "skills")
+	entries, err := os.ReadDir(skillsDir)
+	if err != nil {
+		return
+	}
+
+	activeByName := make(map[string]catalog.Item)
+	for _, it := range a.Store.All() {
+		if it.Name != "" {
+			// Prefer archive or default catalog entry when duplicates exist across catalogs
+			if prev, exists := activeByName[it.Name]; !exists || catalog.IsArchiveItem(it) || prev.Type == "" {
+				activeByName[it.Name] = it
+			}
+		}
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		skillCachePath := filepath.Join(skillsDir, name)
+		it, exists := activeByName[name]
+		if !exists {
+			if removeOrphans {
+				_ = os.RemoveAll(skillCachePath)
+			}
+			continue
+		}
+
+		if catalog.IsArchiveItem(it) {
+			expected := it.EffectiveDigest()
+			if expected != "" && !catalog.IsArchiveCachedWithDigest(cacheRoot, name, expected) {
+				_ = os.RemoveAll(skillCachePath)
+			}
+			continue
+		}
+
+		if it.Type == catalog.ItemTypeSkillMD {
+			subEntries, sErr := os.ReadDir(skillCachePath)
+			if sErr == nil {
+				for _, sub := range subEntries {
+					if sub.Name() != "SKILL.md" {
+						_ = os.RemoveAll(filepath.Join(skillCachePath, sub.Name()))
+					}
+				}
+			}
+		}
+	}
+}
+

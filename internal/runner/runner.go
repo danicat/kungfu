@@ -84,12 +84,22 @@ func GetCandidateBaseDirs(item catalog.Item) []string {
 	}
 
 	// 3. Cache directory ~/.cache/kungfu/skills/<name> or <id>
-	if homeDir, err := os.UserHomeDir(); err == nil {
-		if item.Name != "" {
-			add(filepath.Join(homeDir, ".cache", "kungfu", "skills", item.Name))
+	if cacheRoot := resolveCacheRoot(); cacheRoot != "" {
+		expectedDigest := item.EffectiveDigest()
+		canUseCache := func(skillName string) bool {
+			if item.Type == catalog.ItemTypeSkillMD && item.Source != "local" {
+				return false
+			}
+			if catalog.IsArchiveItem(item) && expectedDigest != "" {
+				return catalog.IsArchiveCachedWithDigest(cacheRoot, skillName, expectedDigest)
+			}
+			return true
 		}
-		if item.ID != "" && item.ID != item.Name {
-			add(filepath.Join(homeDir, ".cache", "kungfu", "skills", item.ID))
+		if item.Name != "" && canUseCache(item.Name) {
+			add(filepath.Join(cacheRoot, "skills", item.Name))
+		}
+		if item.ID != "" && item.ID != item.Name && canUseCache(item.ID) {
+			add(filepath.Join(cacheRoot, "skills", item.ID))
 		}
 	}
 
@@ -105,6 +115,17 @@ func GetCandidateBaseDirs(item catalog.Item) []string {
 	}
 
 	return dirs
+}
+
+func resolveCacheRoot() string {
+	if envDir := os.Getenv("KUNGFU_CACHE_DIR"); envDir != "" {
+		return envDir
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil || homeDir == "" {
+		return ""
+	}
+	return filepath.Join(homeDir, ".cache", "kungfu")
 }
 
 // CacheSkillFile saves a skill file to ~/.cache/kungfu/skills/<skill>/<relPath>.
@@ -124,11 +145,11 @@ func cacheSkillFile(skillName, relPath string, data []byte) {
 	if strings.HasPrefix(cleanRel, "../") || strings.Contains(cleanRel, "/../") || strings.HasPrefix(cleanRel, "/") {
 		return
 	}
-	homeDir, err := os.UserHomeDir()
-	if err != nil || homeDir == "" {
+	cacheRoot := resolveCacheRoot()
+	if cacheRoot == "" {
 		return
 	}
-	targetPath := filepath.Join(homeDir, ".cache", "kungfu", "skills", cleanSkillName, filepath.FromSlash(cleanRel))
+	targetPath := filepath.Join(cacheRoot, "skills", cleanSkillName, filepath.FromSlash(cleanRel))
 	_ = os.MkdirAll(filepath.Dir(targetPath), 0755)
 	perm := os.FileMode(0644)
 	if strings.HasPrefix(cleanRel, "scripts/") || strings.HasSuffix(cleanRel, ".sh") || strings.HasSuffix(cleanRel, ".py") || strings.HasSuffix(cleanRel, ".js") {
@@ -357,11 +378,11 @@ func RunScriptContext(ctx context.Context, item catalog.Item, scriptName string,
 		}
 
 		if err == nil && len(data) > 0 {
-			homeDir, herr := os.UserHomeDir()
-			if herr != nil || homeDir == "" {
-				return fmt.Errorf("runner: unable to determine user home directory: %w", herr)
+			cacheRoot := resolveCacheRoot()
+			if cacheRoot == "" {
+				return fmt.Errorf("runner: unable to determine cache directory")
 			}
-			cachedPath := filepath.Join(homeDir, ".cache", "kungfu", "skills", item.Name, filepath.FromSlash(fetchTarget))
+			cachedPath := filepath.Join(cacheRoot, "skills", item.Name, filepath.FromSlash(fetchTarget))
 			if err := os.MkdirAll(filepath.Dir(cachedPath), 0755); err != nil {
 				return fmt.Errorf("runner: creating cache directory for %s: %w", cachedPath, err)
 			}
@@ -372,7 +393,7 @@ func RunScriptContext(ctx context.Context, item catalog.Item, scriptName string,
 				return fmt.Errorf("runner: setting permissions on %s: %w", cachedPath, err)
 			}
 			scriptPath = cachedPath
-			baseDir = filepath.Join(homeDir, ".cache", "kungfu", "skills", item.Name)
+			baseDir = filepath.Join(cacheRoot, "skills", item.Name)
 		}
 	}
 
@@ -554,6 +575,64 @@ func ReadBytesContext(ctx context.Context, item catalog.Item, filePath string, c
 	}
 
 	if remoteURL != "" {
+		// If the item is an archive (.tar.gz, .zip or ItemTypeArchive), fetch the archive,
+		// verify its digest, unpack it into ~/.cache/kungfu/skills/<item.Name>, and read the file!
+		isArchive := item.Type == catalog.ItemTypeArchive ||
+			strings.HasSuffix(strings.ToLower(remoteURL), ".tar.gz") ||
+			strings.HasSuffix(strings.ToLower(remoteURL), ".tgz") ||
+			strings.HasSuffix(strings.ToLower(remoteURL), ".zip")
+
+		if isArchive {
+			cacheRoot := resolveCacheRoot()
+			if cacheRoot != "" && item.Name != "" {
+				cacheDir := filepath.Join(cacheRoot, "skills", item.Name)
+				if client == nil {
+					client = &http.Client{Timeout: 30 * time.Second}
+				}
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, remoteURL, nil)
+				if err == nil {
+					req.Header.Set("User-Agent", version.UserAgent())
+					resp, err := client.Do(req)
+					if err == nil && resp.StatusCode == http.StatusOK {
+						data, readErr := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
+						_ = resp.Body.Close()
+						if readErr == nil && len(data) > 0 {
+							expectedDigest := item.Digest
+							if expectedDigest == "" {
+								expectedDigest = item.Sha256
+							}
+							if expectedDigest != "" {
+								if vErr := catalog.VerifyDigest(data, expectedDigest); vErr != nil {
+									return nil, fmt.Errorf("runner: %w: %v", catalog.ErrDigestMismatch, vErr)
+								}
+							}
+							// Unpack archive safely and record .digest
+							if _, uErr := catalog.UnpackArchiveToCache(data, cacheRoot, item.Name, expectedDigest); uErr == nil {
+								candidates := []string{
+									filepath.Join(cacheDir, filepath.FromSlash(cleanPath)),
+								}
+								if !strings.HasPrefix(cleanPath, "scripts/") {
+									candidates = append(candidates, filepath.Join(cacheDir, "scripts", filepath.FromSlash(cleanPath)))
+								}
+								if !strings.HasPrefix(cleanPath, "references/") {
+									candidates = append(candidates, filepath.Join(cacheDir, "references", filepath.FromSlash(cleanPath)))
+								}
+								for _, cachedTarget := range candidates {
+									if isContained(cacheDir, cachedTarget) {
+										if fileBytes, err := os.ReadFile(cachedTarget); err == nil {
+											return fileBytes, nil
+										}
+									}
+								}
+							}
+						}
+					} else if resp != nil {
+						_ = resp.Body.Close()
+					}
+				}
+			}
+		}
+
 		baseURL := deriveBaseURL(remoteURL)
 		if baseURL != "" {
 			if client == nil {
@@ -619,8 +698,8 @@ var (
 	markdownImgRegex   = regexp.MustCompile(`!\[[^\]]*\]\(([^)#?]+)(?:[#?][^)]*)?\)`)
 	backtickPathRegex  = regexp.MustCompile("`((?:scripts|references|assets|evals)/[^`\\s]+)`")
 	prosePathRegex     = regexp.MustCompile(`(?:^|[\s"'` + "`" + `\(\)\[\]])((?:scripts|references|assets|evals)/[a-zA-Z0-9_\-\./]+\.[a-zA-Z0-9_]+)`)
-	kungfuRunRegex     = regexp.MustCompile(`kungfu\s+run\s+[a-zA-Z0-9_\-]+\s+([a-zA-Z0-9_\-\.]+)`)
-	runnerCommandRegex = regexp.MustCompile(`(?:uv\s+run|python3?|bash|sh|node|bun(?:\s+run)?|deno(?:\s+run)?)\s+(?:scripts/)?([a-zA-Z0-9_\-\./]+\.[a-zA-Z0-9_]+)`)
+	kungfuRunRegex     = regexp.MustCompile(`kungfu\s+run\s+[a-zA-Z0-9_\-]+\s+([a-zA-Z0-9_\-\./]+)`)
+	runnerCommandRegex = regexp.MustCompile(`(?:uv\s+run|python3?|bash|sh|node|bun(?:\s+run)?|deno(?:\s+run)?)\s+(?:\./)?scripts/([a-zA-Z0-9_\-\./]+\.[a-zA-Z0-9_]+)`)
 )
 
 // ExtractCandidates scans markdown text and extracts all referenced script, reference, asset, and evaluation paths.
@@ -636,7 +715,7 @@ func ExtractCandidates(content string) []string {
 		if idx := strings.IndexAny(p, "?#"); idx != -1 {
 			p = p[:idx]
 		}
-		if strings.Contains(p, ":") || strings.HasPrefix(p, "\\") || filepath.IsAbs(p) {
+		if strings.ContainsAny(p, ":<>{}*") || strings.HasPrefix(p, "\\") || filepath.IsAbs(p) {
 			return
 		}
 		clean := filepath.ToSlash(filepath.Clean(p))
@@ -672,21 +751,19 @@ func ExtractCandidates(content string) []string {
 	}
 	for _, m := range kungfuRunRegex.FindAllStringSubmatch(content, -1) {
 		if len(m) > 1 {
-			scr := m[1]
-			if !strings.HasPrefix(scr, "scripts/") {
+			scr := strings.TrimPrefix(m[1], "./")
+			scr = strings.TrimPrefix(scr, "scripts/")
+			if scr != "" {
 				add("scripts/" + scr)
-			} else {
-				add(scr)
 			}
 		}
 	}
 	for _, m := range runnerCommandRegex.FindAllStringSubmatch(content, -1) {
 		if len(m) > 1 {
-			scr := m[1]
-			if !strings.HasPrefix(scr, "scripts/") {
+			scr := strings.TrimPrefix(m[1], "./")
+			scr = strings.TrimPrefix(scr, "scripts/")
+			if scr != "" {
 				add("scripts/" + scr)
-			} else {
-				add(scr)
 			}
 		}
 	}
@@ -716,6 +793,54 @@ func InstallSkillContext(ctx context.Context, item catalog.Item, destDir string,
 			installedMap[cleanRel] = true
 			installedFiles = append(installedFiles, cleanRel)
 		}
+	}
+
+	// 0. If item is an archive (ItemTypeArchive or .tar.gz/.zip URL), unpack directly into destDir
+	remoteURL := item.URL
+	if remoteURL == "" && item.Metadata != nil && item.Metadata["canonical"] != "" {
+		remoteURL = item.Metadata["canonical"]
+	}
+	isArchive := item.Type == catalog.ItemTypeArchive ||
+		strings.HasSuffix(strings.ToLower(remoteURL), ".tar.gz") ||
+		strings.HasSuffix(strings.ToLower(remoteURL), ".tgz") ||
+		strings.HasSuffix(strings.ToLower(remoteURL), ".zip")
+
+	if isArchive && remoteURL != "" {
+		if client == nil {
+			client = &http.Client{Timeout: 30 * time.Second}
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, remoteURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("runner: creating archive request for %s: %w", item.Name, err)
+		}
+		req.Header.Set("User-Agent", version.UserAgent())
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("runner: downloading archive for %s: %w", item.Name, err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("runner: downloading archive for %s: HTTP %d", item.Name, resp.StatusCode)
+		}
+		data, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
+		if err != nil {
+			return nil, fmt.Errorf("runner: reading archive data for %s: %w", item.Name, err)
+		}
+		expectedDigest := item.Digest
+		if expectedDigest == "" {
+			expectedDigest = item.Sha256
+		}
+		if expectedDigest != "" {
+			if vErr := catalog.VerifyDigest(data, expectedDigest); vErr != nil {
+				return nil, fmt.Errorf("runner: %w: %v", catalog.ErrDigestMismatch, vErr)
+			}
+		}
+		extracted, err := UnpackArchive(data, cleanDest, DefaultMaxUnpackedBytes)
+		if err != nil {
+			return nil, fmt.Errorf("runner: unpacking archive for %s: %w", item.Name, err)
+		}
+		sort.Strings(extracted)
+		return extracted, nil
 	}
 
 	// 1. Ensure SKILL.md is written

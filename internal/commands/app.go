@@ -19,6 +19,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -425,6 +426,11 @@ func (a *App) getSkillStatus(item *catalog.Item) string {
 			return "cached"
 		}
 	}
+	if cacheRoot := a.cacheRootDir(); cacheRoot != "" {
+		if _, err := os.Stat(filepath.Join(cacheRoot, "skills", item.Name, "SKILL.md")); err == nil {
+			return "cached"
+		}
+	}
 
 	return "catalog"
 }
@@ -504,7 +510,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	switch cmdName {
-	case "list", "ls", "find", "search", "show", "info", "load", "get", "learn", "install", "add", "forget", "unlearn", "update", "upgrade", "status", "catalog", "catalogs", "telemetry", "run", "exec":
+	case "list", "ls", "find", "search", "show", "info", "load", "get",
+		"learn", "install", "add", "forget", "unlearn", "update", "upgrade",
+		"status", "catalog", "catalogs", "telemetry", "run", "exec":
 	default:
 		validCommands := []string{
 			"list", "find", "show", "load", "learn", "forget", "update", "status", "catalog", "telemetry", "run", "version", "help",
@@ -598,6 +606,118 @@ GLOBAL FLAGS:
   -h, --help        Show help`)
 }
 
+func (a *App) cacheRootDir() string {
+	if a.Options.CacheDir != "" {
+		return a.Options.CacheDir
+	}
+	if homeDir, err := os.UserHomeDir(); err == nil && homeDir != "" {
+		return filepath.Join(homeDir, ".cache", "kungfu")
+	}
+	return ""
+}
+
+func (a *App) ensureArchiveUnpacked(item *catalog.Item) {
+	if item == nil || !catalog.IsArchiveItem(*item) {
+		return
+	}
+	cacheRoot := a.cacheRootDir()
+	if cacheRoot != "" && catalog.IsArchiveCachedWithDigest(cacheRoot, item.Name, item.EffectiveDigest()) {
+		if data, err := os.ReadFile(filepath.Join(cacheRoot, "skills", item.Name, "SKILL.md")); err == nil {
+			catalog.EnrichItemFromSkillMD(item, data)
+		}
+		return
+	}
+	if a.Store != nil {
+		_, _ = a.Store.LoadContent(item)
+	}
+}
+
+func (a *App) candidateBaseDirs(item catalog.Item) []string {
+	dirs := runner.GetCandidateBaseDirs(item)
+	if a.Options.CacheDir == "" {
+		return dirs
+	}
+	add := func(d string) {
+		d = filepath.Clean(d)
+		fi, err := os.Stat(d)
+		if err != nil || !fi.IsDir() {
+			return
+		}
+		for _, existing := range dirs {
+			if existing == d {
+				return
+			}
+		}
+		dirs = append(dirs, d)
+	}
+	expectedDigest := item.EffectiveDigest()
+	canUseCache := func(skillName string) bool {
+		if item.Type == catalog.ItemTypeSkillMD && item.Source != "local" {
+			return false
+		}
+		if catalog.IsArchiveItem(item) && expectedDigest != "" {
+			return catalog.IsArchiveCachedWithDigest(a.Options.CacheDir, skillName, expectedDigest)
+		}
+		return true
+	}
+	if item.Name != "" && canUseCache(item.Name) {
+		add(filepath.Join(a.Options.CacheDir, "skills", item.Name))
+	}
+	if item.ID != "" && item.ID != item.Name && canUseCache(item.ID) {
+		add(filepath.Join(a.Options.CacheDir, "skills", item.ID))
+	}
+	return dirs
+}
+
+func walkRelativeFiles(rootDir string) []string {
+	var files []string
+	_ = filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		name := d.Name()
+		if d.IsDir() {
+			if path != rootDir && (strings.HasPrefix(name, ".") || name == "__pycache__" || name == "node_modules") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasPrefix(name, ".") {
+			return nil
+		}
+		rel, err := filepath.Rel(rootDir, path)
+		if err != nil {
+			return nil
+		}
+		files = append(files, filepath.ToSlash(rel))
+		return nil
+	})
+	return files
+}
+
+func isScriptFile(relPath string) bool {
+	clean := filepath.ToSlash(filepath.Clean(relPath))
+	base := strings.ToLower(filepath.Base(clean))
+	if base == "" || base == "." || strings.HasPrefix(base, ".") {
+		return false
+	}
+	switch base {
+	case "go.mod", "go.sum", "package.json", "package-lock.json", "tsconfig.json",
+		"pyproject.toml", "requirements.txt", "pipfile", "pipfile.lock", "poetry.lock",
+		"uv.lock", "bun.lockb", "bun.lock", "deno.json", "deno.lock", "cargo.toml",
+		"cargo.lock", "makefile", "license", "notice", "readme", "readme.md":
+		return false
+	}
+	ext := strings.ToLower(filepath.Ext(base))
+	switch ext {
+	case ".pyc", ".pyo", ".pyd", ".md", ".txt", ".json", ".yaml", ".yml",
+		".toml", ".lock", ".sum", ".mod", ".sql", ".csv", ".tsv", ".html",
+		".css", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".wasm":
+		return false
+	}
+	return true
+}
+
 func (a *App) listReferences(item catalog.Item) []string {
 	var refs []string
 	seen := make(map[string]bool)
@@ -618,16 +738,17 @@ func (a *App) listReferences(item catalog.Item) []string {
 		}
 	}
 
-	// Check local candidate directories on disk
-	baseDirs := runner.GetCandidateBaseDirs(item)
+	a.ensureArchiveUnpacked(&item)
+
+	// 1. Check local or unpacked archive candidate directories
+	baseDirs := a.candidateBaseDirs(item)
+	if item.Type == catalog.ItemTypeSkillMD && item.Source != "local" && len(baseDirs) == 0 {
+		return nil
+	}
 	for _, baseDir := range baseDirs {
 		refsDir := filepath.Join(baseDir, "references")
-		if entries, err := os.ReadDir(refsDir); err == nil {
-			for _, e := range entries {
-				if !e.IsDir() {
-					add(e.Name())
-				}
-			}
+		for _, rel := range walkRelativeFiles(refsDir) {
+			add(rel)
 		}
 	}
 
@@ -647,22 +768,23 @@ func (a *App) listScripts(item catalog.Item) []string {
 		clean := filepath.ToSlash(filepath.Clean(s))
 		clean = strings.TrimPrefix(clean, "./")
 		clean = strings.TrimPrefix(clean, "scripts/")
-		if clean != "" && !seen[clean] {
+		if clean != "" && isScriptFile(clean) && !seen[clean] {
 			seen[clean] = true
 			scripts = append(scripts, clean)
 		}
 	}
 
-	// Check local candidate directories on disk
-	baseDirs := runner.GetCandidateBaseDirs(item)
+	a.ensureArchiveUnpacked(&item)
+
+	// Check local or unpacked archive candidate directories on disk
+	baseDirs := a.candidateBaseDirs(item)
+	if item.Type == catalog.ItemTypeSkillMD && item.Source != "local" && len(baseDirs) == 0 {
+		return nil
+	}
 	for _, baseDir := range baseDirs {
 		scriptsDir := filepath.Join(baseDir, "scripts")
-		if entries, err := os.ReadDir(scriptsDir); err == nil {
-			for _, e := range entries {
-				if !e.IsDir() {
-					add(e.Name())
-				}
-			}
+		for _, rel := range walkRelativeFiles(scriptsDir) {
+			add(rel)
 		}
 	}
 

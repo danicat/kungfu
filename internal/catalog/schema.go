@@ -38,6 +38,8 @@ const (
 	ItemTypeSkill ItemType = "skill"
 	// ItemTypeSkillMD represents an Agent Skill in the Cloudflare RFC v0.2.0 discovery schema.
 	ItemTypeSkillMD ItemType = "skill-md"
+	// ItemTypeArchive represents a packaged Agent Skill archive (.tar.gz or .zip).
+	ItemTypeArchive ItemType = "archive"
 )
 
 // Item represents a discoverable Agent Skill in the catalog.
@@ -72,6 +74,14 @@ type Item struct {
 	AllowedTools       string            `json:"allowed_tools,omitempty" yaml:"allowed-tools,omitempty"`
 	Body               string            `json:"body,omitempty" yaml:"body,omitempty"`
 	Metadata           map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+}
+
+// EffectiveDigest returns the item's Digest, falling back to Sha256 if Digest is empty.
+func (it Item) EffectiveDigest() string {
+	if it.Digest != "" {
+		return it.Digest
+	}
+	return it.Sha256
 }
 
 // Normalize ensures uniform field population across legacy and new metadata conventions.
@@ -225,7 +235,11 @@ type Manifest struct {
 	Skills      []Item     `json:"skills,omitempty" yaml:"skills,omitempty"`
 }
 
-// UnmarshalJSON handles dual support for "items" and "skills" fields in catalog JSON manifests.
+// Cloudflare RFC v0.2.0 schema URI.
+const AgentSkillsDiscoverySchemaV020 = "https://schemas.agentskills.io/discovery/0.2.0/schema.json"
+
+// UnmarshalJSON handles dual support for "items" and "skills" fields in catalog JSON manifests,
+// validates $schema against known versions, and filters out entries with unrecognized type values.
 func (m *Manifest) UnmarshalJSON(data []byte) error {
 	type Alias Manifest
 	var aux Alias
@@ -233,21 +247,45 @@ func (m *Manifest) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*m = Manifest(aux)
+
+	// Filter out items with unknown types per RFC v0.2.0
+	// Recognized types: "skill", "skill-md", "archive" (or empty, which defaults to skill)
+	isRecognizedType := func(t ItemType) bool {
+		switch t {
+		case "", ItemTypeSkill, ItemTypeSkillMD, ItemTypeArchive:
+			return true
+		default:
+			return false
+		}
+	}
+
+	filterItems := func(items []Item) []Item {
+		var valid []Item
+		for _, it := range items {
+			if isRecognizedType(it.Type) {
+				it.Normalize()
+				valid = append(valid, it)
+			}
+		}
+		return valid
+	}
+
 	if len(m.Items) == 0 && len(m.Skills) > 0 {
 		m.Items = m.Skills
 	} else if len(m.Skills) == 0 && len(m.Items) > 0 {
 		m.Skills = m.Items
 	}
-	for i := range m.Items {
-		m.Items[i].Normalize()
-	}
-	for i := range m.Skills {
-		m.Skills[i].Normalize()
-	}
+
+	m.Items = filterItems(m.Items)
+	m.Skills = m.Items
 	return nil
 }
 
 // ResolveManifestURLs resolves any relative skill URLs in a manifest against the manifest endpoint URL.
+// URLs are resolved per RFC 3986 Section 5 using the index URL as the base URI:
+// - Absolute URLs (https://...) are kept as is.
+// - Path-absolute URLs (/.well-known/...) resolve against the index origin.
+// - Relative URLs (code-review/SKILL.md) resolve against the directory of the index URL.
 func ResolveManifestURLs(m *Manifest, endpoint string) {
 	if m == nil || endpoint == "" {
 		return
@@ -258,11 +296,7 @@ func ResolveManifestURLs(m *Manifest, endpoint string) {
 	}
 	for i := range m.Items {
 		if m.Items[i].URL != "" && !strings.HasPrefix(m.Items[i].URL, "http://") && !strings.HasPrefix(m.Items[i].URL, "https://") {
-			relPath := m.Items[i].URL
-			if strings.Contains(endpoint, "/.well-known/agent-skills/") && !strings.HasPrefix(relPath, "/") && !strings.HasPrefix(relPath, "./") {
-				relPath = "/" + relPath
-			}
-			if refURL, err := url.Parse(relPath); err == nil {
+			if refURL, err := url.Parse(m.Items[i].URL); err == nil {
 				m.Items[i].URL = baseURL.ResolveReference(refURL).String()
 			}
 		}
