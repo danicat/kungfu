@@ -59,6 +59,7 @@ func setupTestCatalogServer(t *testing.T) *httptest.Server {
 			]
 		}`))
 	}))
+	t.Setenv("HOME", t.TempDir())
 	t.Setenv("KUNGFU_URL", server.URL)
 	return server
 }
@@ -382,5 +383,67 @@ uv run scripts/not_bundled.py
 	}
 	if len(docDetail.References) != 0 {
 		t.Errorf("doconlyskill references = %v, want empty", docDetail.References)
+	}
+}
+
+type rewriteTransport struct {
+	base      http.RoundTripper
+	targetURL string
+}
+
+func (rt *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	clone := req.Clone(req.Context())
+	clone.URL.Scheme = "http"
+	clone.URL.Host = strings.TrimPrefix(rt.targetURL, "http://")
+	return rt.base.RoundTrip(clone)
+}
+
+func TestGitHubSkillSpec_ShowAndLoad(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	skillMD := "---\nname: evals\ndescription: Evaluation quickstart skill\nmetadata:\n  category: coding\n---\n# Evals Playbook\nRun evaluation suites.\n"
+
+	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/anthropics/anthropic-quickstarts/main/evals/SKILL.md" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(skillMD))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ghServer.Close()
+
+	catServer := setupTestCatalogServer(t)
+	defer catServer.Close()
+
+	var stdout, stderr bytes.Buffer
+	app, err := NewApp(GlobalOptions{CacheDir: t.TempDir()}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	app.HTTPClient = &http.Client{
+		Transport: &rewriteTransport{
+			base:      ghServer.Client().Transport,
+			targetURL: ghServer.URL,
+		},
+	}
+
+	// 1. show anthropics/anthropic-quickstarts/evals
+	code := app.RunShow([]string{"anthropics/anthropic-quickstarts/evals"})
+	if code != ExitSuccess {
+		t.Fatalf("RunShow(anthropics/anthropic-quickstarts/evals) = %d; stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "SKILL: evals") {
+		t.Errorf("expected SKILL: evals in show output, got: %s", stdout.String())
+	}
+
+	// 2. load anthropics/anthropic-quickstarts/evals
+	stdout.Reset()
+	stderr.Reset()
+	code = app.RunLoad([]string{"anthropics/anthropic-quickstarts/evals"})
+	if code != ExitSuccess {
+		t.Fatalf("RunLoad(anthropics/anthropic-quickstarts/evals) = %d; stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "# Evals Playbook") {
+		t.Errorf("expected # Evals Playbook in load output, got: %s", stdout.String())
 	}
 }

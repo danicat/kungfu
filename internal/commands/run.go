@@ -27,7 +27,11 @@ import (
 )
 
 func (a *App) RunRun(args []string) int {
-	if len(args) == 0 || (len(args) == 1 && (args[0] == "--help" || args[0] == "-h")) {
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+		_ = PrintSubcommandHelp(a.Stdout, "run", args)
+		return ExitSuccess
+	}
+	if len(args) == 0 {
 		_, _ = fmt.Fprintln(a.Stderr, "USAGE:\n  kungfu run <skill> <script> [args...]\n\nExecute bundled skill scripts (supports Python/uv, Node/Bun/Deno, Shell).")
 		return ExitUsage
 	}

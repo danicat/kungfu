@@ -30,6 +30,9 @@ func TestRunCatalog(t *testing.T) {
 	_ = os.Chdir(tmpDir)
 	defer func() { _ = os.Chdir(origWd) }()
 
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmpDir, ".cache"))
 	t.Setenv("KUNGFU_STATE_PATH", filepath.Join(tmpDir, ".kungfu-state.json"))
 
 	// Create mock HTTP server for custom catalog
@@ -119,5 +122,29 @@ func TestRunCatalog(t *testing.T) {
 	code = app.RunCatalog([]string{"sync"})
 	if code != ExitUsage {
 		t.Fatalf("RunCatalog sync = %d, want %d", code, ExitUsage)
+	}
+
+	// 7. Missing local path starting with ./ should return ExitNotFound without hitting GitHub API
+	stdout.Reset()
+	stderr.Reset()
+	code = app.RunCatalog([]string{"add", "./does-not-exist"})
+	if code != ExitNotFound {
+		t.Fatalf("RunCatalog add ./does-not-exist = %d, want %d; stderr: %s", code, ExitNotFound, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "github") {
+		t.Errorf("expected local path error, got github error: %s", stderr.String())
+	}
+
+	// 8. Existing regular file passed to catalog add should return ExitUsage
+	regularFile := filepath.Join(tmpDir, "not-a-dir.txt")
+	_ = os.WriteFile(regularFile, []byte("hello"), 0644)
+	stdout.Reset()
+	stderr.Reset()
+	code = app.RunCatalog([]string{"add", regularFile})
+	if code != ExitUsage {
+		t.Fatalf("RunCatalog add regularFile = %d, want %d; stderr: %s", code, ExitUsage, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "github") {
+		t.Errorf("expected local file error, got github error: %s", stderr.String())
 	}
 }

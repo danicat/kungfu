@@ -41,6 +41,10 @@ func (a *App) RunFind(args []string) int {
 		_, _ = fmt.Fprintln(a.Stderr, "error: find requires search terms")
 		return ExitUsage
 	}
+	if limit < 1 {
+		_, _ = fmt.Fprintf(a.Stderr, "error: invalid limit %d: limit must be >= 1\n", limit)
+		return ExitUsage
+	}
 
 	query := strings.Join(posArgs, " ")
 	allItems := a.Store.All()

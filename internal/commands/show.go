@@ -15,13 +15,25 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/danicat/kungfu/internal/catalog"
 )
+
+func isGitHubSkillSpec(spec string) bool {
+	if strings.HasPrefix(spec, "github:") || strings.Contains(spec, "github.com") {
+		return true
+	}
+	if strings.HasPrefix(spec, ".") || strings.HasPrefix(spec, "/") {
+		return false
+	}
+	return strings.Count(spec, "/") >= 1
+}
 
 func (a *App) RunShow(args []string) int {
 	fs := flag.NewFlagSet("show", flag.ContinueOnError)
@@ -48,6 +60,17 @@ func (a *App) RunShow(args []string) int {
 
 	for _, name := range posArgs {
 		item, err := a.Store.Get(name)
+		if err != nil && isGitHubSkillSpec(name) {
+			if target, ok := catalog.ParseGitHubTarget(name); ok {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				ghItem, ghErr := catalog.FetchGitHubSkill(ctx, target, a.getHTTPClient())
+				cancel()
+				if ghErr == nil && ghItem != nil {
+					item = ghItem
+					err = nil
+				}
+			}
+		}
 		if err != nil {
 			notFounds = append(notFounds, name)
 			continue
