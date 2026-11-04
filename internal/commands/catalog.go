@@ -102,8 +102,13 @@ func (a *App) runCatalogAdd(args []string) int {
 	var catURL string
 	var etag string
 
-	// 1. Check if source is a local directory
-	if info, err := os.Stat(source); err == nil && info.IsDir() {
+	// 1. Check if source is a local filesystem path
+	isExplicitLocalPath := strings.HasPrefix(source, ".") || strings.HasPrefix(source, "/") || strings.HasPrefix(source, "~") || strings.HasPrefix(source, `\`)
+	if info, err := os.Stat(source); err == nil {
+		if !info.IsDir() {
+			_, _ = fmt.Fprintf(a.Stderr, "error: local catalog source %q is a file, expected a directory\n", source)
+			return ExitUsage
+		}
 		catType = state.CatalogTypeLocal
 		absPath, _ := filepath.Abs(source)
 		catURL = absPath
@@ -117,6 +122,9 @@ func (a *App) runCatalogAdd(args []string) int {
 			return ExitGeneral
 		}
 		manifest = m
+	} else if isExplicitLocalPath {
+		_, _ = fmt.Fprintf(a.Stderr, "error: local catalog directory %q not found: %v\n", source, err)
+		return MapErrorToExitCode(err)
 	} else if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") && !strings.Contains(source, "github.com") {
 		// 2. HTTP Manifest URL
 		catType = state.CatalogTypeHTTP
@@ -646,4 +654,3 @@ func (a *App) pruneSkillCache(removeOrphans bool) {
 		}
 	}
 }
-

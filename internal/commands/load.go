@@ -154,6 +154,18 @@ func (a *App) RunLoad(args []string) int {
 	}
 
 	item, err := a.Store.Get(skillName)
+	if err != nil && isGitHubSkillSpec(spec) {
+		if ghTarget, ok := catalog.ParseGitHubTarget(spec); ok {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ghItem, ghErr := catalog.FetchGitHubSkill(ctx, ghTarget, a.getHTTPClient())
+			cancel()
+			if ghErr == nil && ghItem != nil {
+				item = ghItem
+				subpath = ""
+				err = nil
+			}
+		}
+	}
 	if err != nil {
 		a.printNotFoundWithSuggestions("load", spec)
 		return ExitNotFound

@@ -51,19 +51,23 @@ func MapErrorToExitCode(err error) int {
 	if err == nil {
 		return ExitSuccess
 	}
-	if errors.Is(err, catalog.ErrItemNotFound) {
+	if errors.Is(err, catalog.ErrItemNotFound) || errors.Is(err, fs.ErrNotExist) {
 		return ExitNotFound
 	}
 	if errors.Is(err, catalog.ErrDigestMismatch) || errors.Is(err, catalog.ErrInvalidFrontmatter) {
 		return ExitIntegrity
 	}
-	if _, ok := errors.AsType[net.Error](err); ok {
-		return ExitNetwork
-	}
 	if sysErr, ok := errors.AsType[syscall.Errno](err); ok {
-		if sysErr == syscall.ECONNREFUSED || sysErr == syscall.ENETUNREACH || sysErr == syscall.ETIMEDOUT {
+		if sysErr == syscall.ECONNREFUSED || sysErr == syscall.ENETUNREACH || sysErr == syscall.ETIMEDOUT || sysErr == syscall.EHOSTUNREACH {
 			return ExitNetwork
 		}
+		if sysErr == syscall.ENOENT {
+			return ExitNotFound
+		}
+		return ExitGeneral
+	}
+	if _, ok := errors.AsType[net.Error](err); ok {
+		return ExitNetwork
 	}
 	errStr := strings.ToLower(err.Error())
 	if strings.Contains(errStr, "http 404") || strings.Contains(errStr, "not found") || strings.Contains(errStr, "no such file") {
@@ -267,20 +271,23 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) ([]string, error) {
 				if i+1 < len(args) {
 					i++
 					flags = append(flags, args[i])
+				} else {
+					err := fmt.Errorf("flag needs an argument: %s", arg)
+					if fs.Output() != nil {
+						_, _ = fmt.Fprintln(fs.Output(), err)
+					}
+					return nil, err
 				}
 			}
 		} else {
 			posArgs = append(posArgs, arg)
 		}
 	}
-	var reordered []string
-	reordered = append(reordered, flags...)
-	reordered = append(reordered, posArgs...)
 
-	if err := fs.Parse(reordered); err != nil {
+	if err := fs.Parse(flags); err != nil {
 		return nil, err
 	}
-	return fs.Args(), nil
+	return append(fs.Args(), posArgs...), nil
 }
 
 func (a *App) resolveMode(jsonFlag, rawFlag bool) OutputMode {
@@ -475,9 +482,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		arg := args[i]
 		if strings.HasPrefix(arg, "-") {
 			globalArgs = append(globalArgs, arg)
-			if (arg == "--config" || arg == "-config" || arg == "--cache-dir" || arg == "-cache-dir") && i+1 < len(args) {
-				i++
-				globalArgs = append(globalArgs, args[i])
+			if arg == "--config" || arg == "-config" || arg == "--cache-dir" || arg == "-cache-dir" {
+				if i+1 < len(args) && !isSubcommandName(args[i+1]) && !strings.HasPrefix(args[i+1], "-") {
+					i++
+					globalArgs = append(globalArgs, args[i])
+				} else {
+					_, _ = fmt.Fprintf(stderr, "flag needs an argument: %s\n", arg)
+					return ExitUsage
+				}
 			}
 		} else {
 			cmdName = arg
@@ -495,12 +507,24 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return ExitSuccess
 	}
 
+	if cmdName == "help" && len(cmdArgs) > 0 {
+		if PrintSubcommandHelp(stdout, cmdArgs[0], cmdArgs[1:]) {
+			return ExitSuccess
+		}
+	}
+
 	if showHelp || (cmdName == "" && len(globalArgs) == 0) || cmdName == "help" {
 		PrintGlobalHelp(stdout)
 		if cmdName == "" && len(globalArgs) == 0 {
 			return ExitUsage
 		}
 		return ExitSuccess
+	}
+
+	if hasHelpFlag(cmdName, cmdArgs) {
+		if PrintSubcommandHelp(stdout, cmdName, cmdArgs) {
+			return ExitSuccess
+		}
 	}
 
 	if jsonFlag {
@@ -560,6 +584,208 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return app.RunRun(cmdArgs)
 	default:
 		return ExitUsage
+	}
+}
+
+func isSubcommandName(name string) bool {
+	switch name {
+	case "list", "ls", "find", "search", "show", "info", "load", "get",
+		"learn", "install", "add", "forget", "unlearn", "update", "upgrade",
+		"status", "catalog", "catalogs", "telemetry", "run", "exec", "version", "help":
+		return true
+	default:
+		return false
+	}
+}
+
+func hasHelpFlag(cmdName string, args []string) bool {
+	if cmdName == "run" || cmdName == "exec" {
+		return len(args) == 1 && (args[0] == "--help" || args[0] == "-h")
+	}
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		if arg == "--help" || arg == "-h" {
+			return true
+		}
+	}
+	return false
+}
+
+// PrintSubcommandHelp writes subcommand-specific usage to w and returns true if handled.
+func PrintSubcommandHelp(w io.Writer, cmdName string, args []string) bool {
+	switch cmdName {
+	case "find", "search":
+		_, _ = fmt.Fprintln(w, `USAGE:
+  kungfu find <keywords...> [flags]
+
+Search across skill names, descriptions, categories, and tags.
+
+FLAGS:
+  -n, --limit <int>   Maximum number of search results to return (default 10)
+      --json          Output in JSON format
+      --raw           Output in raw tab-separated format`)
+		return true
+	case "load", "get":
+		_, _ = fmt.Fprintln(w, `USAGE:
+  kungfu load <skill[/subpath]> [flags]
+
+Stream skill instructions, references, or assets to stdout.
+
+FLAGS:
+  -p, --page <int>        Page number to display, 1-based (default 1)
+      --page-size <int>   Maximum page size in bytes (default 6000)
+      --full              Output complete unpaginated content
+      --local             Use locally cached or installed copy without checking remote upstream
+  -u, --update            Check remote upstream and update cached copy before loading
+  -f, --force             Force loading/updating even if digest verification fails
+      --json              Output loaded content as JSON
+      --raw               Output raw verbatim markdown content without extra formatting`)
+		return true
+	case "run", "exec":
+		_, _ = fmt.Fprintln(w, `USAGE:
+  kungfu run <skill> <script> [args...]
+
+Execute bundled skill scripts (supports Python/uv, Node/Bun/Deno, Shell).`)
+		return true
+	case "list", "ls":
+		_, _ = fmt.Fprintln(w, `USAGE:
+  kungfu list [flags]
+
+List all available skills across configured catalogs and local scopes.
+
+FLAGS:
+  --json   Output in JSON format
+  --raw    Output in raw tab-separated format`)
+		return true
+	case "show", "info":
+		_, _ = fmt.Fprintln(w, `USAGE:
+  kungfu show <skill...> [flags]
+
+Show metadata, references, and bundled scripts for one or more skills.
+
+FLAGS:
+  --json   Output in JSON format
+  --raw    Output in raw tab-separated format`)
+		return true
+	case "learn", "install", "add":
+		_, _ = fmt.Fprintln(w, `USAGE:
+  kungfu learn <skill...> [flags]
+
+Install skills into workspace (.agents/skills/) or global (~/.agents/skills/) scope.
+
+FLAGS:
+  -g, --global   Install skill to global store (~/.agents/skills/)
+  -f, --force    Overwrite existing skill installation
+  -l, --load     Output loaded skill markdown to stdout upon successful installation
+      --json     Output in JSON format
+      --raw      Output in raw tab-separated format`)
+		return true
+	case "status":
+		_, _ = fmt.Fprintln(w, `USAGE:
+  kungfu status [skill...] [flags]
+
+Show installed skills, versions, and local usage history.
+
+FLAGS:
+  -g, --global   Show global skills status only
+      --json     Output in JSON format
+      --raw      Output in raw tab-separated format`)
+		return true
+	case "update", "upgrade":
+		_, _ = fmt.Fprintln(w, `USAGE:
+  kungfu update [skill...] [flags]
+
+Synchronize catalogs and check for or apply updates to installed skills.
+
+FLAGS:
+  -a, --all       Apply updates to all installed skills
+  -g, --global    Update global skills (~/.agents/skills/)
+  -y, --yes       Accept unversioned or drifted upstream updates
+  -f, --force     Force update regardless of version/digest status
+  -r, --refresh   Bypass cache and force refresh remote catalog
+      --json      Output in JSON format
+      --raw       Output in raw tab-separated format`)
+		return true
+	case "forget", "unlearn":
+		_, _ = fmt.Fprintln(w, `USAGE:
+  kungfu forget <skill...> [flags]
+
+Uninstall skills from workspace or global scope.
+
+FLAGS:
+  -a, --all      Forget all installed skills in scope
+  -g, --global   Forget skill from global store (~/.agents/skills/)
+  -f, --force    Force forget without confirmation
+      --json     Output in JSON format
+      --raw      Output in raw tab-separated format`)
+		return true
+	case "catalog", "catalogs":
+		if len(args) > 0 {
+			switch args[0] {
+			case "add", "install":
+				_, _ = fmt.Fprintln(w, `USAGE:
+  kungfu catalog add <source> [flags]
+
+Register a skill catalog from a GitHub repository, HTTP manifest, or local directory.
+
+FLAGS:
+  -n, --name <name>      Custom alias/name for the catalog
+  -b, --ref <ref>        Branch or tag ref for git repository (default "main")
+  -p, --subpath <path>   Subpath directory inside repository
+  -r, --refresh          Force fresh download bypassing cache
+      --json             Output in JSON format
+      --raw              Output in raw tab-separated format`)
+				return true
+			case "list", "ls":
+				_, _ = fmt.Fprintln(w, `USAGE:
+  kungfu catalog list [flags]
+
+List all registered skill catalogs and default sources.
+
+FLAGS:
+  --json   Output in JSON format
+  --raw    Output in raw tab-separated format`)
+				return true
+			case "remove", "rm", "delete":
+				_, _ = fmt.Fprintln(w, `USAGE:
+  kungfu catalog remove <name...> [flags]
+
+Remove one or more registered catalog sources.
+
+FLAGS:
+  --json   Output in JSON format
+  --raw    Output in raw tab-separated format`)
+				return true
+			}
+		}
+		_, _ = fmt.Fprintln(w, `USAGE:
+  kungfu catalog <subcommand> [flags] [arguments...]
+
+SUBCOMMANDS:
+  add <source> [--name <name>] [--ref <ref>] [--subpath <path>] [--refresh] [--json] [--raw]
+      Register a skill catalog from a GitHub repository, HTTP manifest, or local directory.
+  list [--json] [--raw]
+      List all registered skill catalogs and default sources.
+  remove <name> [--json] [--raw]
+      Remove a registered catalog source.
+
+ALIASES:
+  ls (list), rm / delete (remove)`)
+		return true
+	case "telemetry":
+		_, _ = fmt.Fprintln(w, `USAGE:
+  kungfu telemetry [status|enable|disable|sync] [--json] [--raw]
+
+SUBCOMMANDS:
+  status   Show telemetry status and pending official skill deltas (default).
+  enable   Opt in to anonymous community usage counters (baselines existing history).
+  disable  Opt out of community usage counters.
+  sync     Flush pending official skill counter deltas to Cloud Firestore.`)
+		return true
+	default:
+		return false
 	}
 }
 

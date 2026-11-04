@@ -17,6 +17,8 @@ package commands
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -61,6 +63,9 @@ func TestMapErrorToExitCode(t *testing.T) {
 	}{
 		{"nil error", nil, ExitSuccess},
 		{"item not found", catalog.ErrItemNotFound, ExitNotFound},
+		{"fs ErrNotExist", fmt.Errorf("config: reading /missing.yaml: %w", &os.PathError{Op: "open", Path: "/missing.yaml", Err: syscall.ENOENT}), ExitNotFound},
+		{"fs ErrExist", fs.ErrExist, ExitGeneral},
+		{"syscall EISDIR", &os.PathError{Op: "read", Path: "/tmp", Err: syscall.EISDIR}, ExitGeneral},
 		{"digest mismatch", catalog.ErrDigestMismatch, ExitIntegrity},
 		{"invalid frontmatter", catalog.ErrInvalidFrontmatter, ExitIntegrity},
 		{"generic not found", errors.New("resource not found"), ExitNotFound},
@@ -94,11 +99,20 @@ func TestGlobalHelpAndVersion(t *testing.T) {
 		{"help flag", []string{"--help"}, ExitSuccess, "USAGE:"},
 		{"help short", []string{"-h"}, ExitSuccess, "USAGE:"},
 		{"help cmd", []string{"help"}, ExitSuccess, "USAGE:"},
+		{"help subcommand find", []string{"help", "find"}, ExitSuccess, "kungfu find"},
+		{"help subcommand load", []string{"help", "load"}, ExitSuccess, "kungfu load"},
+		{"subcommand --help offline", []string{"find", "--help"}, ExitSuccess, "kungfu find"},
+		{"subcommand -h offline", []string{"load", "-h"}, ExitSuccess, "kungfu load"},
+		{"run --help offline", []string{"run", "--help"}, ExitSuccess, "kungfu run"},
+		{"catalog add --help offline", []string{"catalog", "add", "--help"}, ExitSuccess, "kungfu catalog add"},
 		{"no args", []string{}, ExitUsage, "USAGE:"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Point KUNGFU_URL to an unreachable port to prove help never fetches the remote catalog.
+			t.Setenv("KUNGFU_URL", "http://127.0.0.1:1/index.json")
+			t.Setenv("HOME", t.TempDir())
 			var stdout, stderr bytes.Buffer
 			code := Run(tt.args, &stdout, &stderr)
 			if code != tt.wantCode {
@@ -107,6 +121,78 @@ func TestGlobalHelpAndVersion(t *testing.T) {
 			out := stdout.String()
 			if !strings.Contains(out, tt.wantSub) {
 				t.Errorf("Run(%v) stdout %q does not contain %q", tt.args, out, tt.wantSub)
+			}
+		})
+	}
+}
+
+func TestFlagParsingEdgeCases(t *testing.T) {
+	server := setupTestCatalogServer(t)
+	defer server.Close()
+
+	tests := []struct {
+		name       string
+		args       []string
+		wantCode   int
+		wantStdout string
+		wantStderr string
+	}{
+		{
+			name:       "missing value for --config before subcommand",
+			args:       []string{"--config", "list"},
+			wantCode:   ExitUsage,
+			wantStderr: "flag needs an argument: --config",
+		},
+		{
+			name:       "missing value for --cache-dir before subcommand",
+			args:       []string{"--cache-dir", "find"},
+			wantCode:   ExitUsage,
+			wantStderr: "flag needs an argument: --cache-dir",
+		},
+		{
+			name:       "missing value for trailing subcommand flag",
+			args:       []string{"load", "kungfu", "-p"},
+			wantCode:   ExitUsage,
+			wantStderr: "flag needs an argument: -p",
+		},
+		{
+			name:       "missing value for catalog add --name after positional",
+			args:       []string{"catalog", "add", "google/skills", "--name"},
+			wantCode:   ExitUsage,
+			wantStderr: "flag needs an argument: --name",
+		},
+		{
+			name:       "double-dash terminator preserves dash-prefixed search term",
+			args:       []string{"find", "--", "-z"},
+			wantCode:   ExitNotFound,
+			wantStderr: `skill "-z" not found`,
+		},
+		{
+			name:       "missing explicit config file returns ExitNotFound",
+			args:       []string{"--config=/nonexistent-dir-xyz/missing.yaml", "list"},
+			wantCode:   ExitNotFound,
+			wantStderr: "no such file or directory",
+		},
+		{
+			name:       "find rejects limit less than 1",
+			args:       []string{"find", "kungfu", "-n", "0"},
+			wantCode:   ExitUsage,
+			wantStderr: "limit must be >= 1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := Run(tt.args, &stdout, &stderr)
+			if code != tt.wantCode {
+				t.Fatalf("Run(%v) = %d, want %d; stdout=%q stderr=%q", tt.args, code, tt.wantCode, stdout.String(), stderr.String())
+			}
+			if tt.wantStdout != "" && !strings.Contains(stdout.String(), tt.wantStdout) {
+				t.Errorf("Run(%v) stdout %q does not contain %q", tt.args, stdout.String(), tt.wantStdout)
+			}
+			if tt.wantStderr != "" && !strings.Contains(stderr.String(), tt.wantStderr) {
+				t.Errorf("Run(%v) stderr %q does not contain %q", tt.args, stderr.String(), tt.wantStderr)
 			}
 		})
 	}

@@ -61,6 +61,7 @@ func TestRunLearnAndForget(t *testing.T) {
 	_ = os.Chdir(tmpDir)
 	defer func() { _ = os.Chdir(origWd) }()
 
+	t.Setenv("HOME", tmpDir)
 	t.Setenv("KUNGFU_STATE_PATH", filepath.Join(tmpDir, ".kungfu-state.json"))
 
 	server, _ := startMockKungfuServer(t)
@@ -124,6 +125,7 @@ func TestRunUpdate(t *testing.T) {
 	_ = os.Chdir(tmpDir)
 	defer func() { _ = os.Chdir(origWd) }()
 
+	t.Setenv("HOME", tmpDir)
 	t.Setenv("KUNGFU_STATE_PATH", filepath.Join(tmpDir, ".kungfu-state.json"))
 
 	server, _ := startMockKungfuServer(t)
@@ -160,6 +162,7 @@ func TestRunUpdate_ConflictAndForce(t *testing.T) {
 	_ = os.Chdir(tmpDir)
 	defer func() { _ = os.Chdir(origWd) }()
 
+	t.Setenv("HOME", tmpDir)
 	t.Setenv("KUNGFU_STATE_PATH", filepath.Join(tmpDir, ".kungfu-state.json"))
 
 	server, _ := startMockKungfuServer(t)

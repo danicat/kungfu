@@ -74,7 +74,7 @@ func (a *App) RunLearn(args []string) int {
 	}
 
 	for _, spec := range posArgs {
-		if strings.HasPrefix(spec, "github:") || strings.Contains(spec, "github.com") || (strings.Count(spec, "/") == 1 && !strings.HasPrefix(spec, ".") && !strings.HasPrefix(spec, "/")) {
+		if isGitHubSkillSpec(spec) {
 			target, ok := catalog.ParseGitHubTarget(spec)
 			if !ok {
 				_, _ = fmt.Fprintf(a.Stderr, "error: invalid github skill target %q\n", spec)
