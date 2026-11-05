@@ -47,9 +47,17 @@ func (a *App) RunFind(args []string) int {
 	}
 
 	query := strings.Join(posArgs, " ")
+	mode := a.resolveMode(jsonFlag, rawFlag)
 	allItems := a.Store.All()
 
 	if len(allItems) == 0 {
+		if mode == OutputModeJSON {
+			_, _ = fmt.Fprintln(a.Stdout, "[]")
+			return ExitSuccess
+		}
+		if mode == OutputModeRaw {
+			return ExitSuccess
+		}
 		_, _ = fmt.Fprintln(a.Stderr, "error: no skills loaded in catalog to search")
 		return ExitNotFound
 	}
@@ -57,8 +65,6 @@ func (a *App) RunFind(args []string) int {
 	_ = a.Searcher.Index(allItems)
 	const strategy = "hybrid"
 	results := a.Searcher.Search(query, strategy, limit, 0.0)
-
-	mode := a.resolveMode(jsonFlag, rawFlag)
 
 	if len(results) == 0 {
 		if mode == OutputModeJSON {
@@ -84,6 +90,7 @@ func (a *App) RunFind(args []string) int {
 	}
 
 	var outputItems []FindResultItem
+	st := a.loadState()
 	for _, r := range results {
 		outputItems = append(outputItems, FindResultItem{
 			Name:        r.Item.Name,
@@ -93,7 +100,7 @@ func (a *App) RunFind(args []string) int {
 			Strategy:    r.Strategy,
 			MatchFields: r.MatchFields,
 			Tags:        r.Item.Tags,
-			Status:      a.getSkillStatus(&r.Item),
+			Status:      a.getSkillStatusWithState(&r.Item, st),
 		})
 	}
 
@@ -105,7 +112,7 @@ func (a *App) RunFind(args []string) int {
 		return ExitSuccess
 	case OutputModeRaw:
 		for _, o := range outputItems {
-			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%.4f\t%s\t%s\n", o.Name, o.Category, o.Score, o.Status, o.Description)
+			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%.4f\t%s\t%s\n", o.Name, o.Category, o.Score, o.Status, sanitizeTSVField(o.Description))
 		}
 		return ExitSuccess
 	default: // OutputModeHuman
@@ -114,10 +121,7 @@ func (a *App) RunFind(args []string) int {
 		_, _ = fmt.Fprintf(a.Stdout, "%-22s %-14s %-8s %-12s %s\n", "----------------------", "--------------", "--------", "------------", "--------------------------------------------------")
 		for _, o := range outputItems {
 			statusBadge := "[" + o.Status + "]"
-			desc := o.Description
-			if len(desc) > 50 {
-				desc = desc[:47] + "..."
-			}
+			desc := truncateRunes(o.Description, 50)
 			_, _ = fmt.Fprintf(a.Stdout, "%-22s %-14s %-8.3f %-12s %s\n", o.Name, o.Category, o.Score, statusBadge, desc)
 		}
 		return ExitSuccess

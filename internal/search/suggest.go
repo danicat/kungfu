@@ -105,13 +105,13 @@ func Suggest(query string, candidates []string, maxResults int) []string {
 
 		// Prefix match (e.g. godoc -> godoctor)
 		if strings.HasPrefix(cLower, q) {
-			scored = append(scored, Suggestion{Text: candClean, Score: 1 + (cRuneLen - qRuneLen)})
+			scored = append(scored, Suggestion{Text: candClean, Score: 100 + (cRuneLen - qRuneLen)})
 			continue
 		}
 
 		// Substring match (e.g. doctor -> godoctor)
 		if strings.Contains(cLower, q) {
-			scored = append(scored, Suggestion{Text: candClean, Score: 10 + (cRuneLen - qRuneLen)})
+			scored = append(scored, Suggestion{Text: candClean, Score: 200 + (cRuneLen - qRuneLen)})
 			continue
 		}
 
@@ -125,7 +125,7 @@ func Suggest(query string, candidates []string, maxResults int) []string {
 		}
 
 		if dist <= maxAllowedDist {
-			scored = append(scored, Suggestion{Text: candClean, Score: 20 + dist})
+			scored = append(scored, Suggestion{Text: candClean, Score: 300 + dist})
 		}
 	}
 
@@ -133,7 +133,10 @@ func Suggest(query string, candidates []string, maxResults int) []string {
 		if scored[i].Score != scored[j].Score {
 			return scored[i].Score < scored[j].Score
 		}
-		return len(scored[i].Text) < len(scored[j].Text)
+		if len(scored[i].Text) != len(scored[j].Text) {
+			return len(scored[i].Text) < len(scored[j].Text)
+		}
+		return scored[i].Text < scored[j].Text
 	})
 
 	var results []string

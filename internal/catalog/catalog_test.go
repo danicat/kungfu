@@ -487,3 +487,33 @@ func TestCatalog_NewCatalog_RetryRecovery(t *testing.T) {
 		t.Errorf("expected 3 server attempts, got %d", attempts)
 	}
 }
+
+func TestReadBounded_And_CatalogIsolation(t *testing.T) {
+	// 1. ReadBounded rejects streams exceeding maxBytes
+	data, err := ReadBounded(strings.NewReader("0123456789"), 5)
+	if err == nil {
+		t.Fatalf("expected ReadBounded to fail when stream exceeds maxBytes, got %q", string(data))
+	}
+
+	// 2. RemoveCatalogItems does not delete items from superstring catalog names
+	cat, err := NewCatalog(WithNoCache())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cat.AddCatalogManifest("go", &Manifest{
+		Version: "1.0",
+		Items:   []Item{{ID: "go-lint", Name: "go-lint", Category: "coding"}},
+	})
+	cat.AddCatalogManifest("go-extra", &Manifest{
+		Version: "1.0",
+		Items:   []Item{{ID: "go-vet", Name: "go-vet", Category: "coding"}},
+	})
+
+	cat.RemoveCatalogItems("go")
+	if _, err := cat.Get("go-lint@go"); err == nil {
+		t.Errorf("expected go-lint@go to be removed")
+	}
+	if _, err := cat.Get("go-vet@go-extra"); err != nil {
+		t.Errorf("expected go-vet@go-extra to remain intact, got err: %v", err)
+	}
+}

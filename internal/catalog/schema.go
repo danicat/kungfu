@@ -19,7 +19,6 @@ import (
 	"errors"
 	"net/url"
 	"strings"
-	"time"
 )
 
 // Common errors returned by the catalog package.
@@ -27,7 +26,6 @@ var (
 	ErrItemNotFound       = errors.New("item not found")
 	ErrInvalidFrontmatter = errors.New("invalid frontmatter")
 	ErrDigestMismatch     = errors.New("digest mismatch")
-	ErrEmptyManifest      = errors.New("empty catalog manifest")
 )
 
 // ItemType defines the supported catalog item types.
@@ -353,34 +351,10 @@ func parseSemverParts(v string) []int {
 	return res
 }
 
-// CacheMeta stores HTTP caching headers and timestamps for catalog persistence.
-type CacheMeta struct {
-	URL          string    `json:"url"`
-	ETag         string    `json:"etag,omitempty"`
-	LastModified string    `json:"last_modified,omitempty"`
-	FetchedAt    time.Time `json:"fetched_at"`
-	LastChecked  time.Time `json:"last_checked"`
-	ExpiresAt    time.Time `json:"expires_at"`
-	Digest       string    `json:"digest,omitempty"`
-	HTTPStatus   int       `json:"http_status,omitempty"`
-}
-
 // QueryFilter defines criteria for filtering catalog items.
 type QueryFilter struct {
 	Category string
 	TagQuery string
-}
-
-// LoadedDoc represents the serialized content and metadata of a loaded skill.
-type LoadedDoc struct {
-	ID       string            `json:"id"`
-	Name     string            `json:"name"`
-	Type     string            `json:"type"`
-	Category string            `json:"category"`
-	Tags     []string          `json:"tags,omitempty"`
-	Path     string            `json:"path,omitempty"`
-	Content  string            `json:"content"`
-	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 // Store defines the public catalog query interface.

@@ -39,6 +39,21 @@ var (
 // DefaultMaxUnpackedBytes limits total unpacked size to prevent decompression bombs (50 MB).
 const DefaultMaxUnpackedBytes = 50 * 1024 * 1024
 
+// ReadBounded reads all bytes from r up to maxBytes, returning ErrArchiveDecompressionBomb if r exceeds maxBytes.
+func ReadBounded(r io.Reader, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		maxBytes = DefaultMaxUnpackedBytes
+	}
+	data, err := io.ReadAll(io.LimitReader(r, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("%w: payload exceeds %d bytes", ErrArchiveDecompressionBomb, maxBytes)
+	}
+	return data, nil
+}
+
 // DetectArchiveFormat inspects file bytes or path/URL to determine if it is .tar.gz or .zip.
 func DetectArchiveFormat(data []byte, nameOrURL string) string {
 	if len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
@@ -101,7 +116,7 @@ func extractSkillMDTarGz(data []byte) (string, error) {
 
 		cleanName := strings.TrimPrefix(hdr.Name, "./")
 		if cleanName == "SKILL.md" || strings.EqualFold(cleanName, "SKILL.md") {
-			content, err := io.ReadAll(io.LimitReader(tr, 5<<20))
+			content, err := ReadBounded(tr, 5<<20)
 			if err != nil {
 				return "", fmt.Errorf("reading SKILL.md: %w", err)
 			}
@@ -119,11 +134,14 @@ func extractSkillMDZip(data []byte) (string, error) {
 	for _, f := range zr.File {
 		cleanName := strings.TrimPrefix(f.Name, "./")
 		if cleanName == "SKILL.md" || strings.EqualFold(cleanName, "SKILL.md") {
+			if f.UncompressedSize64 > 5<<20 {
+				return "", fmt.Errorf("%w: SKILL.md exceeds 5 MiB", ErrArchiveDecompressionBomb)
+			}
 			rc, err := f.Open()
 			if err != nil {
 				return "", fmt.Errorf("opening zip SKILL.md: %w", err)
 			}
-			content, err := io.ReadAll(io.LimitReader(rc, 5<<20))
+			content, err := ReadBounded(rc, 5<<20)
 			_ = rc.Close()
 			if err != nil {
 				return "", fmt.Errorf("reading zip SKILL.md: %w", err)
@@ -173,6 +191,7 @@ func UnpackArchiveToCache(data []byte, cacheRoot, skillName, expectedDigest stri
 
 	extracted, err := UnpackArchive(data, skillDir, DefaultMaxUnpackedBytes)
 	if err != nil {
+		_ = os.RemoveAll(skillDir)
 		return nil, err
 	}
 	if strings.TrimSpace(expectedDigest) != "" {
@@ -207,6 +226,18 @@ func UnpackArchive(data []byte, destDir string, maxUnpackedBytes int64) ([]strin
 	var extracted []string
 	var err error
 
+	cleanupExtracted := func(files []string) {
+		for _, rel := range files {
+			p := filepath.Join(cleanDest, filepath.FromSlash(rel))
+			_ = os.Remove(p)
+			for dir := filepath.Dir(p); dir != cleanDest && strings.HasPrefix(dir, cleanDest+string(filepath.Separator)); dir = filepath.Dir(dir) {
+				if err := os.Remove(dir); err != nil {
+					break
+				}
+			}
+		}
+	}
+
 	if format == "tar.gz" {
 		extracted, err = unpackTarGz(data, cleanDest, maxUnpackedBytes)
 	} else if format == "zip" {
@@ -214,6 +245,7 @@ func UnpackArchive(data []byte, destDir string, maxUnpackedBytes int64) ([]strin
 	}
 
 	if err != nil {
+		cleanupExtracted(extracted)
 		return nil, err
 	}
 
@@ -226,13 +258,35 @@ func UnpackArchive(data []byte, destDir string, maxUnpackedBytes int64) ([]strin
 		}
 	}
 	if !hasSkillMD {
+		cleanupExtracted(extracted)
 		return nil, ErrArchiveMissingSkillMD
 	}
 
 	return extracted, nil
 }
 
-func isArchiveContained(baseDir, targetPath string) bool {
+func evalSymlinkPrefix(targetPath string) string {
+	cleanTarget := filepath.Clean(targetPath)
+	if realTarget, err := filepath.EvalSymlinks(cleanTarget); err == nil {
+		return realTarget
+	}
+	parent := filepath.Dir(cleanTarget)
+	relParts := []string{filepath.Base(cleanTarget)}
+	for {
+		if evalParent, pErr := filepath.EvalSymlinks(parent); pErr == nil {
+			return filepath.Join(append([]string{evalParent}, relParts...)...)
+		}
+		relParts = append([]string{filepath.Base(parent)}, relParts...)
+		nextParent := filepath.Dir(parent)
+		if nextParent == parent {
+			return cleanTarget
+		}
+		parent = nextParent
+	}
+}
+
+// IsPathContained reports whether targetPath resolves inside baseDir after evaluating any existing symlinks.
+func IsPathContained(baseDir, targetPath string) bool {
 	cleanBase := filepath.Clean(baseDir)
 	cleanTarget := filepath.Clean(targetPath)
 
@@ -246,32 +300,16 @@ func isArchiveContained(baseDir, targetPath string) bool {
 		realBase = cleanBase
 	}
 
-	realTarget, err := filepath.EvalSymlinks(cleanTarget)
-	if err != nil {
-		parent := filepath.Dir(cleanTarget)
-		var relParts []string
-		relParts = append(relParts, filepath.Base(cleanTarget))
-		for {
-			evalParent, pErr := filepath.EvalSymlinks(parent)
-			if pErr == nil {
-				realTarget = filepath.Join(append([]string{evalParent}, relParts...)...)
-				break
-			}
-			relParts = append([]string{filepath.Base(parent)}, relParts...)
-			nextParent := filepath.Dir(parent)
-			if nextParent == parent {
-				realTarget = cleanTarget
-				break
-			}
-			parent = nextParent
-		}
-	}
-
+	realTarget := evalSymlinkPrefix(cleanTarget)
 	realRel, err := filepath.Rel(realBase, realTarget)
 	if err != nil || realRel == ".." || strings.HasPrefix(realRel, ".."+string(filepath.Separator)) {
 		return false
 	}
 	return true
+}
+
+func isArchiveContained(baseDir, targetPath string) bool {
+	return IsPathContained(baseDir, targetPath)
 }
 
 func validateArchivePath(targetRel, destDir string) (string, error) {
@@ -286,7 +324,7 @@ func validateArchivePath(targetRel, destDir string) (string, error) {
 	}
 
 	fullPath := filepath.Join(destDir, filepath.FromSlash(cleanRel))
-	if !isArchiveContained(destDir, fullPath) {
+	if !IsPathContained(destDir, fullPath) {
 		return "", fmt.Errorf("%w: %q escapes %q", ErrArchiveTraversal, targetRel, destDir)
 	}
 	return fullPath, nil
@@ -309,12 +347,12 @@ func unpackTarGz(data []byte, destDir string, maxBytes int64) ([]string, error) 
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("reading tar entry: %w", err)
+			return extracted, fmt.Errorf("reading tar entry: %w", err)
 		}
 
 		fullPath, err := validateArchivePath(hdr.Name, destDir)
 		if err != nil {
-			return nil, err
+			return extracted, err
 		}
 		if fullPath == "" {
 			continue
@@ -326,17 +364,16 @@ func unpackTarGz(data []byte, destDir string, maxBytes int64) ([]string, error) 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(fullPath, 0755); err != nil {
-				return nil, fmt.Errorf("creating dir %s: %w", fullPath, err)
+				return extracted, fmt.Errorf("creating dir %s: %w", fullPath, err)
 			}
 
 		case tar.TypeReg, tar.TypeRegA:
-			totalBytes += hdr.Size
-			if totalBytes > maxBytes {
-				return nil, fmt.Errorf("%w: exceeded %d bytes", ErrArchiveDecompressionBomb, maxBytes)
+			if hdr.Size < 0 || hdr.Size > maxBytes-totalBytes {
+				return extracted, fmt.Errorf("%w: exceeded %d bytes", ErrArchiveDecompressionBomb, maxBytes)
 			}
 
 			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-				return nil, fmt.Errorf("creating parent dir for %s: %w", fullPath, err)
+				return extracted, fmt.Errorf("creating parent dir for %s: %w", fullPath, err)
 			}
 
 			perm := os.FileMode(hdr.Mode) & 0777
@@ -346,51 +383,60 @@ func unpackTarGz(data []byte, destDir string, maxBytes int64) ([]string, error) 
 
 			outFile, err := os.OpenFile(fullPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, perm)
 			if err != nil {
-				return nil, fmt.Errorf("creating file %s: %w", fullPath, err)
+				return extracted, fmt.Errorf("creating file %s: %w", fullPath, err)
 			}
 
-			written, err := io.Copy(outFile, io.LimitReader(tr, maxBytes-totalBytes+hdr.Size))
+			remaining := maxBytes - totalBytes
+			written, err := io.Copy(outFile, io.LimitReader(tr, remaining+1))
 			_ = outFile.Close()
+			extracted = append(extracted, relPath)
+			totalBytes += written
+			if totalBytes > maxBytes {
+				return extracted, fmt.Errorf("%w: exceeded %d bytes", ErrArchiveDecompressionBomb, maxBytes)
+			}
 			if err != nil {
-				return nil, fmt.Errorf("writing file %s: %w", fullPath, err)
+				return extracted, fmt.Errorf("writing file %s: %w", fullPath, err)
 			}
 			if written != hdr.Size {
-				return nil, fmt.Errorf("incomplete file write for %s (expected %d, wrote %d)", fullPath, hdr.Size, written)
+				return extracted, fmt.Errorf("incomplete file write for %s (expected %d, wrote %d)", fullPath, hdr.Size, written)
 			}
 			_ = os.Chmod(fullPath, perm)
-			extracted = append(extracted, relPath)
 
 		case tar.TypeSymlink:
 			linkTarget := hdr.Linkname
 			if filepath.IsAbs(linkTarget) {
-				return nil, fmt.Errorf("%w: absolute symlink target %q", ErrArchiveSymlinkEscapes, linkTarget)
+				return extracted, fmt.Errorf("%w: absolute symlink target %q", ErrArchiveSymlinkEscapes, linkTarget)
 			}
-			resolvedTarget := filepath.Clean(filepath.Join(filepath.Dir(fullPath), linkTarget))
-			if !isArchiveContained(destDir, resolvedTarget) {
-				return nil, fmt.Errorf("%w: symlink %q -> %q escapes %q", ErrArchiveSymlinkEscapes, hdr.Name, linkTarget, destDir)
+			realParent := evalSymlinkPrefix(filepath.Dir(fullPath))
+			resolvedTarget := filepath.Clean(filepath.Join(realParent, linkTarget))
+			if !IsPathContained(destDir, resolvedTarget) {
+				return extracted, fmt.Errorf("%w: symlink %q -> %q escapes %q", ErrArchiveSymlinkEscapes, hdr.Name, linkTarget, destDir)
 			}
 
 			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-				return nil, fmt.Errorf("creating parent dir for %s: %w", fullPath, err)
+				return extracted, fmt.Errorf("creating parent dir for %s: %w", fullPath, err)
 			}
 			_ = os.Remove(fullPath)
 			if err := os.Symlink(linkTarget, fullPath); err != nil {
-				return nil, fmt.Errorf("creating symlink %s -> %s: %w", fullPath, linkTarget, err)
+				return extracted, fmt.Errorf("creating symlink %s -> %s: %w", fullPath, linkTarget, err)
 			}
 			extracted = append(extracted, relPath)
 
 		case tar.TypeLink:
 			linkTarget := hdr.Linkname
+			if filepath.IsAbs(linkTarget) {
+				return extracted, fmt.Errorf("%w: absolute hardlink target %q", ErrArchiveSymlinkEscapes, linkTarget)
+			}
 			resolvedTarget := filepath.Clean(filepath.Join(destDir, filepath.FromSlash(linkTarget)))
-			if !isArchiveContained(destDir, resolvedTarget) {
-				return nil, fmt.Errorf("%w: hardlink %q -> %q escapes %q", ErrArchiveSymlinkEscapes, hdr.Name, linkTarget, destDir)
+			if !IsPathContained(destDir, resolvedTarget) {
+				return extracted, fmt.Errorf("%w: hardlink %q -> %q escapes %q", ErrArchiveSymlinkEscapes, hdr.Name, linkTarget, destDir)
 			}
 			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-				return nil, fmt.Errorf("creating parent dir for %s: %w", fullPath, err)
+				return extracted, fmt.Errorf("creating parent dir for %s: %w", fullPath, err)
 			}
 			_ = os.Remove(fullPath)
 			if err := os.Link(resolvedTarget, fullPath); err != nil {
-				return nil, fmt.Errorf("creating hardlink %s -> %s: %w", fullPath, resolvedTarget, err)
+				return extracted, fmt.Errorf("creating hardlink %s -> %s: %w", fullPath, resolvedTarget, err)
 			}
 			extracted = append(extracted, relPath)
 
@@ -414,7 +460,7 @@ func unpackZip(data []byte, destDir string, maxBytes int64) ([]string, error) {
 	for _, f := range zr.File {
 		fullPath, err := validateArchivePath(f.Name, destDir)
 		if err != nil {
-			return nil, err
+			return extracted, err
 		}
 		if fullPath == "" {
 			continue
@@ -425,42 +471,46 @@ func unpackZip(data []byte, destDir string, maxBytes int64) ([]string, error) {
 
 		if f.FileInfo().IsDir() {
 			if err := os.MkdirAll(fullPath, 0755); err != nil {
-				return nil, fmt.Errorf("creating dir %s: %w", fullPath, err)
+				return extracted, fmt.Errorf("creating dir %s: %w", fullPath, err)
 			}
 			continue
 		}
 
-		totalBytes += int64(f.UncompressedSize64)
-		if totalBytes > maxBytes {
-			return nil, fmt.Errorf("%w: exceeded %d bytes", ErrArchiveDecompressionBomb, maxBytes)
+		if f.UncompressedSize64 > uint64(maxBytes) || int64(f.UncompressedSize64) > maxBytes-totalBytes {
+			return extracted, fmt.Errorf("%w: exceeded %d bytes", ErrArchiveDecompressionBomb, maxBytes)
 		}
 
 		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-			return nil, fmt.Errorf("creating parent dir for %s: %w", fullPath, err)
+			return extracted, fmt.Errorf("creating parent dir for %s: %w", fullPath, err)
 		}
 
 		rc, err := f.Open()
 		if err != nil {
-			return nil, fmt.Errorf("opening zip file %s: %w", f.Name, err)
+			return extracted, fmt.Errorf("opening zip file %s: %w", f.Name, err)
 		}
 
 		if f.Mode()&os.ModeSymlink != 0 {
-			linkTargetBytes, readErr := io.ReadAll(io.LimitReader(rc, 4096))
+			linkTargetBytes, readErr := ReadBounded(rc, 4096)
 			_ = rc.Close()
 			if readErr != nil {
-				return nil, fmt.Errorf("reading zip symlink target %s: %w", f.Name, readErr)
+				return extracted, fmt.Errorf("reading zip symlink target %s: %w", f.Name, readErr)
+			}
+			totalBytes += int64(len(linkTargetBytes))
+			if totalBytes > maxBytes {
+				return extracted, fmt.Errorf("%w: exceeded %d bytes", ErrArchiveDecompressionBomb, maxBytes)
 			}
 			linkTarget := string(linkTargetBytes)
 			if filepath.IsAbs(linkTarget) {
-				return nil, fmt.Errorf("%w: absolute symlink target %q", ErrArchiveSymlinkEscapes, linkTarget)
+				return extracted, fmt.Errorf("%w: absolute symlink target %q", ErrArchiveSymlinkEscapes, linkTarget)
 			}
-			resolvedTarget := filepath.Clean(filepath.Join(filepath.Dir(fullPath), linkTarget))
-			if !isArchiveContained(destDir, resolvedTarget) {
-				return nil, fmt.Errorf("%w: zip symlink %q -> %q escapes %q", ErrArchiveSymlinkEscapes, f.Name, linkTarget, destDir)
+			realParent := evalSymlinkPrefix(filepath.Dir(fullPath))
+			resolvedTarget := filepath.Clean(filepath.Join(realParent, linkTarget))
+			if !IsPathContained(destDir, resolvedTarget) {
+				return extracted, fmt.Errorf("%w: zip symlink %q -> %q escapes %q", ErrArchiveSymlinkEscapes, f.Name, linkTarget, destDir)
 			}
 			_ = os.Remove(fullPath)
 			if err := os.Symlink(linkTarget, fullPath); err != nil {
-				return nil, fmt.Errorf("creating zip symlink %s -> %s: %w", fullPath, linkTarget, err)
+				return extracted, fmt.Errorf("creating zip symlink %s -> %s: %w", fullPath, linkTarget, err)
 			}
 			extracted = append(extracted, relPath)
 			continue
@@ -474,20 +524,25 @@ func unpackZip(data []byte, destDir string, maxBytes int64) ([]string, error) {
 		outFile, err := os.OpenFile(fullPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, perm)
 		if err != nil {
 			_ = rc.Close()
-			return nil, fmt.Errorf("creating file %s: %w", fullPath, err)
+			return extracted, fmt.Errorf("creating file %s: %w", fullPath, err)
 		}
 
-		written, copyErr := io.Copy(outFile, io.LimitReader(rc, maxBytes-totalBytes+int64(f.UncompressedSize64)))
+		remaining := maxBytes - totalBytes
+		written, copyErr := io.Copy(outFile, io.LimitReader(rc, remaining+1))
 		_ = rc.Close()
 		_ = outFile.Close()
-		if copyErr != nil {
-			return nil, fmt.Errorf("writing zip file %s: %w", fullPath, copyErr)
+		extracted = append(extracted, relPath)
+		totalBytes += written
+		if totalBytes > maxBytes {
+			return extracted, fmt.Errorf("%w: exceeded %d bytes", ErrArchiveDecompressionBomb, maxBytes)
 		}
-		if written != int64(f.UncompressedSize64) {
-			return nil, fmt.Errorf("incomplete zip file write for %s (expected %d, wrote %d)", fullPath, f.UncompressedSize64, written)
+		if copyErr != nil {
+			return extracted, fmt.Errorf("writing zip file %s: %w", fullPath, copyErr)
+		}
+		if f.UncompressedSize64 != 0 && written != int64(f.UncompressedSize64) {
+			return extracted, fmt.Errorf("incomplete zip file write for %s (expected %d, wrote %d)", fullPath, f.UncompressedSize64, written)
 		}
 		_ = os.Chmod(fullPath, perm)
-		extracted = append(extracted, relPath)
 	}
 
 	return extracted, nil

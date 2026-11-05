@@ -25,6 +25,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/danicat/kungfu/internal/catalog"
 )
 
 const (
@@ -121,7 +123,8 @@ type State struct {
 	History       map[string]*HistoryRecord  `json:"history,omitempty"`
 	Catalogs      map[string]CatalogRecord   `json:"catalogs,omitempty"`
 
-	mu sync.RWMutex `json:"-"`
+	deletedCatalogs map[string]bool `json:"-"`
+	mu              sync.RWMutex    `json:"-"`
 }
 
 const DefaultRemoteCatalogURL = "https://skills.danicat.dev/.well-known/agent-skills/index.json"
@@ -331,6 +334,32 @@ func WithLockedState(filePath string, fn func(s *State) error) error {
 	return SaveState(filePath, s)
 }
 
+func (s *State) scopeSkillsMap(scope, workspaceDir string, create bool) map[string]SkillRecord {
+	if scope == ScopeGlobal {
+		if s.Global == nil || s.Global.Skills == nil {
+			if !create {
+				return nil
+			}
+			s.Global = &WorkspaceState{Skills: make(map[string]SkillRecord)}
+		}
+		return s.Global.Skills
+	}
+
+	cleanWs := filepath.Clean(workspaceDir)
+	ws, ok := s.Workspaces[cleanWs]
+	if !ok || ws == nil || ws.Skills == nil {
+		if !create {
+			return nil
+		}
+		if s.Workspaces == nil {
+			s.Workspaces = make(map[string]*WorkspaceState)
+		}
+		ws = &WorkspaceState{Skills: make(map[string]SkillRecord)}
+		s.Workspaces[cleanWs] = ws
+	}
+	return ws.Skills
+}
+
 // RecordInstall records or updates a skill installation in the state.
 func (s *State) RecordInstall(scope string, workspaceDir string, record SkillRecord) {
 	s.mu.Lock()
@@ -338,31 +367,21 @@ func (s *State) RecordInstall(scope string, workspaceDir string, record SkillRec
 
 	record.Status = StatusInstalled
 	record.UninstalledAt = nil
-	if record.InstalledDigest == "" && record.Digest != "" {
+	if record.Digest != "" {
 		record.InstalledDigest = record.Digest
 	}
 	if record.InstalledAt.IsZero() {
 		record.InstalledAt = time.Now().UTC()
 	}
 	record.UpdatedAt = time.Now().UTC()
-
 	if scope == ScopeGlobal {
 		record.Scope = ScopeGlobal
-		if s.Global == nil {
-			s.Global = &WorkspaceState{Skills: make(map[string]SkillRecord)}
-		}
-		s.Global.Skills[record.Name] = record
-		return
+	} else {
+		record.Scope = ScopeWorkspace
 	}
 
-	record.Scope = ScopeWorkspace
-	cleanWs := filepath.Clean(workspaceDir)
-	ws, ok := s.Workspaces[cleanWs]
-	if !ok || ws == nil {
-		ws = &WorkspaceState{Skills: make(map[string]SkillRecord)}
-		s.Workspaces[cleanWs] = ws
-	}
-	ws.Skills[record.Name] = record
+	skills := s.scopeSkillsMap(scope, workspaceDir, true)
+	skills[record.Name] = record
 }
 
 // RecordForget soft-deletes a skill by marking it uninstalled.
@@ -370,32 +389,18 @@ func (s *State) RecordForget(scope string, workspaceDir string, skillName string
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := time.Now().UTC()
-
-	if scope == ScopeGlobal {
-		if s.Global != nil {
-			if rec, ok := s.Global.Skills[skillName]; ok {
-				rec.Status = StatusUninstalled
-				rec.UninstalledAt = &now
-				rec.UpdatedAt = now
-				s.Global.Skills[skillName] = rec
-				return true
-			}
-		}
+	skills := s.scopeSkillsMap(scope, workspaceDir, false)
+	rec, ok := skills[skillName]
+	if !ok {
 		return false
 	}
 
-	cleanWs := filepath.Clean(workspaceDir)
-	if ws, ok := s.Workspaces[cleanWs]; ok && ws != nil {
-		if rec, ok := ws.Skills[skillName]; ok {
-			rec.Status = StatusUninstalled
-			rec.UninstalledAt = &now
-			rec.UpdatedAt = now
-			ws.Skills[skillName] = rec
-			return true
-		}
-	}
-	return false
+	now := time.Now().UTC()
+	rec.Status = StatusUninstalled
+	rec.UninstalledAt = &now
+	rec.UpdatedAt = now
+	skills[skillName] = rec
+	return true
 }
 
 // RecordLoad updates the last seen timestamp and increments primary load count for a skill.
@@ -579,76 +584,35 @@ func (s *State) GetSkill(scope string, workspaceDir string, skillName string) (S
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if scope == ScopeGlobal {
-		if s.Global != nil {
-			rec, ok := s.Global.Skills[skillName]
-			return rec, ok
-		}
+	skills := s.scopeSkillsMap(scope, workspaceDir, false)
+	if skills == nil {
 		return SkillRecord{}, false
 	}
+	rec, ok := skills[skillName]
+	return rec, ok
+}
 
-	cleanWs := filepath.Clean(workspaceDir)
-	if ws, ok := s.Workspaces[cleanWs]; ok && ws != nil {
-		rec, ok := ws.Skills[skillName]
-		return rec, ok
+func (s *State) filterSkillsByStatus(scope, workspaceDir, status string) map[string]SkillRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make(map[string]SkillRecord)
+	for name, rec := range s.scopeSkillsMap(scope, workspaceDir, false) {
+		if rec.Status == status {
+			out[name] = rec
+		}
 	}
-	return SkillRecord{}, false
+	return out
 }
 
 // GetInstalledSkills returns all currently installed skills in the given scope.
 func (s *State) GetInstalledSkills(scope string, workspaceDir string) map[string]SkillRecord {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	out := make(map[string]SkillRecord)
-	if scope == ScopeGlobal {
-		if s.Global != nil {
-			for name, rec := range s.Global.Skills {
-				if rec.Status == StatusInstalled {
-					out[name] = rec
-				}
-			}
-		}
-		return out
-	}
-
-	cleanWs := filepath.Clean(workspaceDir)
-	if ws, ok := s.Workspaces[cleanWs]; ok && ws != nil {
-		for name, rec := range ws.Skills {
-			if rec.Status == StatusInstalled {
-				out[name] = rec
-			}
-		}
-	}
-	return out
+	return s.filterSkillsByStatus(scope, workspaceDir, StatusInstalled)
 }
 
 // GetForgottenSkills returns all soft-deleted skills in the given scope.
 func (s *State) GetForgottenSkills(scope string, workspaceDir string) map[string]SkillRecord {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	out := make(map[string]SkillRecord)
-	if scope == ScopeGlobal {
-		if s.Global != nil {
-			for name, rec := range s.Global.Skills {
-				if rec.Status == StatusUninstalled {
-					out[name] = rec
-				}
-			}
-		}
-		return out
-	}
-
-	cleanWs := filepath.Clean(workspaceDir)
-	if ws, ok := s.Workspaces[cleanWs]; ok && ws != nil {
-		for name, rec := range ws.Skills {
-			if rec.Status == StatusUninstalled {
-				out[name] = rec
-			}
-		}
-	}
-	return out
+	return s.filterSkillsByStatus(scope, workspaceDir, StatusUninstalled)
 }
 
 // ComputePackageDigest computes a deterministic SHA-256 hash over a skill package's files.
@@ -687,7 +651,6 @@ func (s *State) ReconcileDisk(workspaceDir string, globalDir string, isCatalogKn
 
 	changed := false
 
-	// Helper to reconcile a single directory of skills
 	reconcileScope := func(skillsRoot string, scope string, wsDir string) {
 		if skillsRoot == "" {
 			return
@@ -698,11 +661,14 @@ func (s *State) ReconcileDisk(workspaceDir string, globalDir string, isCatalogKn
 		}
 
 		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
 			skillName := entry.Name()
 			skillPath := filepath.Join(skillsRoot, skillName)
+			if !entry.IsDir() {
+				dirInfo, statErr := os.Stat(skillPath)
+				if statErr != nil || !dirInfo.IsDir() {
+					continue
+				}
+			}
 			skillMD := filepath.Join(skillPath, "SKILL.md")
 
 			// Only process directories with a valid SKILL.md
@@ -714,7 +680,6 @@ func (s *State) ReconcileDisk(workspaceDir string, globalDir string, isCatalogKn
 			files, _ := scanSkillFiles(skillPath)
 			digest, _ := ComputePackageDigest(skillPath, files)
 
-			// Extract version from SKILL.md
 			version := ""
 			if content, err := os.ReadFile(skillMD); err == nil {
 				version = extractVersion(string(content))
@@ -725,109 +690,76 @@ func (s *State) ReconcileDisk(workspaceDir string, globalDir string, isCatalogKn
 				origin = OriginCatalog
 			}
 
-			if scope == ScopeGlobal {
-				if s.Global == nil {
-					s.Global = &WorkspaceState{Skills: make(map[string]SkillRecord)}
+			skills := s.scopeSkillsMap(scope, wsDir, true)
+			rec, exists := skills[skillName]
+			if !exists || rec.Status != StatusInstalled {
+				skills[skillName] = SkillRecord{
+					Name:            skillName,
+					Status:          StatusInstalled,
+					Scope:           scope,
+					Origin:          origin,
+					Path:            skillPath,
+					Version:         version,
+					Digest:          digest,
+					InstalledDigest: digest,
+					InstalledAt:     fi.ModTime().UTC(),
+					UpdatedAt:       time.Now().UTC(),
+					Files:           files,
 				}
-				rec, exists := s.Global.Skills[skillName]
-				if !exists || rec.Status != StatusInstalled {
-					// Adopt/register new skill
-					s.Global.Skills[skillName] = SkillRecord{
-						Name:            skillName,
-						Status:          StatusInstalled,
-						Scope:           ScopeGlobal,
-						Origin:          origin,
-						Path:            skillPath,
-						Version:         version,
-						Digest:          digest,
-						InstalledDigest: digest,
-						InstalledAt:     fi.ModTime().UTC(),
-						UpdatedAt:       time.Now().UTC(),
-						Files:           files,
-					}
-					changed = true
+				changed = true
+				continue
+			}
+
+			updated := false
+			if rec.Origin == "" || (rec.Origin == OriginCatalog && origin == OriginCustom && rec.Catalog == "" && rec.Repo == "" && rec.RawURL == "") {
+				rec.Origin = origin
+				updated = true
+			}
+			if version != "" && rec.Version != version {
+				rec.Version = version
+				updated = true
+			}
+			if rec.InstalledDigest == "" {
+				if rec.Digest != "" {
+					rec.InstalledDigest = rec.Digest
 				} else {
-					// Update existing record if files or digest changed
-					updated := false
-					if rec.Origin == "" || (rec.Origin == OriginCatalog && origin == OriginCustom && rec.Catalog == "" && rec.Repo == "" && rec.RawURL == "") {
-						rec.Origin = origin
-						updated = true
-					}
-					if version != "" && rec.Version != version {
-						rec.Version = version
-						updated = true
-					}
-					if rec.InstalledDigest == "" {
-						if rec.Digest != "" {
-							rec.InstalledDigest = rec.Digest
-						} else {
-							rec.InstalledDigest = digest
-						}
-						updated = true
-					}
-					if rec.Digest != digest {
-						rec.Digest = digest
-						rec.Files = files
-						rec.UpdatedAt = time.Now().UTC()
-						updated = true
-					}
-					if updated {
-						s.Global.Skills[skillName] = rec
-						changed = true
-					}
+					rec.InstalledDigest = digest
 				}
-			} else {
-				cleanWs := filepath.Clean(wsDir)
-				ws, ok := s.Workspaces[cleanWs]
-				if !ok || ws == nil {
-					ws = &WorkspaceState{Skills: make(map[string]SkillRecord)}
-					s.Workspaces[cleanWs] = ws
-				}
-				rec, exists := ws.Skills[skillName]
-				if !exists || rec.Status != StatusInstalled {
-					ws.Skills[skillName] = SkillRecord{
-						Name:            skillName,
-						Status:          StatusInstalled,
-						Scope:           ScopeWorkspace,
-						Origin:          origin,
-						Path:            skillPath,
-						Version:         version,
-						Digest:          digest,
-						InstalledDigest: digest,
-						InstalledAt:     fi.ModTime().UTC(),
-						UpdatedAt:       time.Now().UTC(),
-						Files:           files,
-					}
-					changed = true
-				} else {
-					updated := false
-					if rec.Origin == "" || (rec.Origin == OriginCatalog && origin == OriginCustom && rec.Catalog == "" && rec.Repo == "" && rec.RawURL == "") {
-						rec.Origin = origin
-						updated = true
-					}
-					if version != "" && rec.Version != version {
-						rec.Version = version
-						updated = true
-					}
-					if rec.InstalledDigest == "" {
-						if rec.Digest != "" {
-							rec.InstalledDigest = rec.Digest
-						} else {
-							rec.InstalledDigest = digest
-						}
-						updated = true
-					}
-					if rec.Digest != digest {
-						rec.Digest = digest
-						rec.Files = files
-						rec.UpdatedAt = time.Now().UTC()
-						updated = true
-					}
-					if updated {
-						ws.Skills[skillName] = rec
-						changed = true
-					}
-				}
+				updated = true
+			}
+			if rec.Digest != digest {
+				rec.Digest = digest
+				rec.Files = files
+				rec.UpdatedAt = time.Now().UTC()
+				updated = true
+			}
+			if updated {
+				skills[skillName] = rec
+				changed = true
+			}
+		}
+	}
+
+	reconcileDeleted := func(skillsRoot string, scope string, wsDir string) {
+		skills := s.scopeSkillsMap(scope, wsDir, false)
+		if skills == nil {
+			return
+		}
+		now := time.Now().UTC()
+		for name, rec := range skills {
+			if rec.Status != StatusInstalled {
+				continue
+			}
+			skillMD := filepath.Join(rec.Path, "SKILL.md")
+			if rec.Path == "" {
+				skillMD = filepath.Join(skillsRoot, name, "SKILL.md")
+			}
+			if fi, err := os.Stat(skillMD); err != nil || fi.IsDir() {
+				rec.Status = StatusUninstalled
+				rec.UninstalledAt = &now
+				rec.UpdatedAt = now
+				skills[name] = rec
+				changed = true
 			}
 		}
 	}
@@ -836,29 +768,7 @@ func (s *State) ReconcileDisk(workspaceDir string, globalDir string, isCatalogKn
 	if workspaceDir != "" {
 		wsSkillsDir := filepath.Join(workspaceDir, ".agents", "skills")
 		reconcileScope(wsSkillsDir, ScopeWorkspace, workspaceDir)
-
-		// Check if any tracked workspace skills were deleted on disk
-		cleanWs := filepath.Clean(workspaceDir)
-		if ws, ok := s.Workspaces[cleanWs]; ok && ws != nil {
-			now := time.Now().UTC()
-			for name, rec := range ws.Skills {
-				if rec.Status == StatusInstalled {
-					skillMD := filepath.Join(rec.Path, "SKILL.md")
-					if rec.Path == "" {
-						skillMD = filepath.Join(wsSkillsDir, name, "SKILL.md")
-					}
-					if _, err := os.Stat(skillMD); err != nil {
-						if _, err := os.Stat(rec.Path); err != nil || rec.Path == "" {
-							rec.Status = StatusUninstalled
-							rec.UninstalledAt = &now
-							rec.UpdatedAt = now
-							ws.Skills[name] = rec
-							changed = true
-						}
-					}
-				}
-			}
-		}
+		reconcileDeleted(wsSkillsDir, ScopeWorkspace, workspaceDir)
 	}
 
 	// 2. Reconcile global
@@ -867,28 +777,7 @@ func (s *State) ReconcileDisk(workspaceDir string, globalDir string, isCatalogKn
 		if _, err := os.Stat(gSkillsDir); err == nil {
 			reconcileScope(gSkillsDir, ScopeGlobal, "")
 		}
-
-		// Check if any tracked global skills were deleted on disk
-		if s.Global != nil {
-			now := time.Now().UTC()
-			for name, rec := range s.Global.Skills {
-				if rec.Status == StatusInstalled {
-					skillMD := filepath.Join(rec.Path, "SKILL.md")
-					if rec.Path == "" {
-						skillMD = filepath.Join(gSkillsDir, name, "SKILL.md")
-					}
-					if _, err := os.Stat(skillMD); err != nil {
-						if _, err := os.Stat(rec.Path); err != nil || rec.Path == "" {
-							rec.Status = StatusUninstalled
-							rec.UninstalledAt = &now
-							rec.UpdatedAt = now
-							s.Global.Skills[name] = rec
-							changed = true
-						}
-					}
-				}
-			}
-		}
+		reconcileDeleted(gSkillsDir, ScopeGlobal, "")
 	}
 
 	return changed
@@ -914,6 +803,11 @@ func scanSkillFiles(dir string) ([]string, error) {
 }
 
 func extractVersion(content string) string {
+	if fm, _, err := catalog.ParseFrontmatter([]byte(content)); err == nil && fm != nil && fm.Metadata != nil {
+		if v := strings.TrimSpace(fm.Metadata["version"]); v != "" {
+			return strings.Trim(v, "\"'")
+		}
+	}
 	lines := strings.Split(content, "\n")
 	inFrontmatter := false
 	for _, rawLine := range lines {
@@ -942,6 +836,9 @@ func (s *State) AddCatalog(rec CatalogRecord) {
 	if s.Catalogs == nil {
 		s.Catalogs = make(map[string]CatalogRecord)
 	}
+	if s.deletedCatalogs != nil {
+		delete(s.deletedCatalogs, rec.Name)
+	}
 	if rec.AddedAt.IsZero() {
 		rec.AddedAt = time.Now().UTC()
 	}
@@ -959,10 +856,100 @@ func (s *State) RemoveCatalog(name string) bool {
 	}
 	if _, ok := s.Catalogs[name]; ok {
 		delete(s.Catalogs, name)
+		if s.deletedCatalogs == nil {
+			s.deletedCatalogs = make(map[string]bool)
+		}
+		s.deletedCatalogs[name] = true
 		s.UpdatedAt = time.Now().UTC()
 		return true
 	}
 	return false
+}
+
+// MergeInto merges changes from s into disk without clobbering newer concurrent updates on disk.
+func (s *State) MergeInto(disk *State) {
+	if s == nil || disk == nil {
+		return
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if disk.Workspaces == nil {
+		disk.Workspaces = make(map[string]*WorkspaceState)
+	}
+	for wsPath, ws := range s.Workspaces {
+		if ws == nil || len(ws.Skills) == 0 {
+			continue
+		}
+		diskWs, ok := disk.Workspaces[wsPath]
+		if !ok || diskWs == nil || diskWs.Skills == nil {
+			diskWs = &WorkspaceState{Skills: make(map[string]SkillRecord)}
+			disk.Workspaces[wsPath] = diskWs
+		}
+		for name, rec := range ws.Skills {
+			if diskRec, exists := diskWs.Skills[name]; !exists || !rec.UpdatedAt.Before(diskRec.UpdatedAt) {
+				diskWs.Skills[name] = rec
+			}
+		}
+	}
+
+	if s.Global != nil && len(s.Global.Skills) > 0 {
+		if disk.Global == nil || disk.Global.Skills == nil {
+			disk.Global = &WorkspaceState{Skills: make(map[string]SkillRecord)}
+		}
+		for name, rec := range s.Global.Skills {
+			if diskRec, exists := disk.Global.Skills[name]; !exists || !rec.UpdatedAt.Before(diskRec.UpdatedAt) {
+				disk.Global.Skills[name] = rec
+			}
+		}
+	}
+
+	if disk.Catalogs == nil {
+		disk.Catalogs = make(map[string]CatalogRecord)
+	}
+	for deleted := range s.deletedCatalogs {
+		delete(disk.Catalogs, deleted)
+	}
+	for name, rec := range s.Catalogs {
+		if s.deletedCatalogs[name] {
+			continue
+		}
+		if diskRec, exists := disk.Catalogs[name]; !exists || !rec.UpdatedAt.Before(diskRec.UpdatedAt) {
+			disk.Catalogs[name] = rec
+		}
+	}
+
+	if disk.History == nil {
+		disk.History = make(map[string]*HistoryRecord)
+	}
+	for name, h := range s.History {
+		if h == nil {
+			continue
+		}
+		cur, ok := disk.History[name]
+		if !ok || cur == nil {
+			cp := *h
+			disk.History[name] = &cp
+			continue
+		}
+		if h.LastSeenAt.After(cur.LastSeenAt) {
+			cur.LastSeenAt = h.LastSeenAt
+		}
+		cur.LoadCount = max(cur.LoadCount, h.LoadCount)
+		cur.PageLoadCount = max(cur.PageLoadCount, h.PageLoadCount)
+		cur.SubpathLoadCount = max(cur.SubpathLoadCount, h.SubpathLoadCount)
+		cur.RunCount = max(cur.RunCount, h.RunCount)
+		cur.LearnCount = max(cur.LearnCount, h.LearnCount)
+		cur.SyncedLoadCount = max(cur.SyncedLoadCount, h.SyncedLoadCount)
+		cur.SyncedPageLoadCount = max(cur.SyncedPageLoadCount, h.SyncedPageLoadCount)
+		cur.SyncedSubpathLoadCount = max(cur.SyncedSubpathLoadCount, h.SyncedSubpathLoadCount)
+		cur.SyncedRunCount = max(cur.SyncedRunCount, h.SyncedRunCount)
+		cur.SyncedLearnCount = max(cur.SyncedLearnCount, h.SyncedLearnCount)
+		if h.LastSyncedAt != nil && (cur.LastSyncedAt == nil || h.LastSyncedAt.After(*cur.LastSyncedAt)) {
+			ts := *h.LastSyncedAt
+			cur.LastSyncedAt = &ts
+		}
+	}
 }
 
 // GetCatalog retrieves a registered catalog by name.

@@ -35,6 +35,29 @@ func isGitHubSkillSpec(spec string) bool {
 	return strings.Count(spec, "/") >= 1
 }
 
+func isBundledSubpath(subpath string) bool {
+	if subpath == "" {
+		return false
+	}
+	first, _, _ := strings.Cut(strings.TrimPrefix(subpath, "/"), "/")
+	switch strings.ToLower(first) {
+	case "references", "reference", "scripts", "script", "assets", "asset", "examples", "example", "resources", "resource":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldProbeGitHubOnLoad(spec, subpath string) bool {
+	if !isGitHubSkillSpec(spec) {
+		return false
+	}
+	if strings.HasPrefix(spec, "github:") || strings.Contains(spec, "github.com") || strings.Contains(spec, "raw.githubusercontent.com") {
+		return true
+	}
+	return !isBundledSubpath(subpath)
+}
+
 func (a *App) RunShow(args []string) int {
 	fs := flag.NewFlagSet("show", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
@@ -68,6 +91,11 @@ func (a *App) RunShow(args []string) int {
 				if ghErr == nil && ghItem != nil {
 					item = ghItem
 					err = nil
+				} else if ghErr != nil {
+					if code := MapErrorToExitCode(ghErr); code == ExitNetwork || code == ExitIntegrity {
+						_, _ = fmt.Fprintf(a.Stderr, "error: fetching skill from github %q: %v\n", name, ghErr)
+						return code
+					}
 				}
 			}
 		}
@@ -110,9 +138,10 @@ func (a *App) renderShowItems(items []catalog.Item, mode OutputMode) int {
 	}
 
 	var details []ShowDetail
+	st := a.loadState()
 	for _, it := range items {
 		a.ensureArchiveUnpacked(&it)
-		status := a.getSkillStatus(&it)
+		status := a.getSkillStatusWithState(&it, st)
 		refs := a.listReferences(it)
 		scripts := a.listScripts(it)
 
@@ -162,7 +191,7 @@ func (a *App) renderShowItems(items []catalog.Item, mode OutputMode) int {
 			tagsStr := strings.Join(d.Tags, ",")
 			refsStr := strings.Join(d.References, ",")
 			scriptsStr := strings.Join(d.Scripts, ",")
-			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", d.Name, d.Category, d.Version, d.Status, tagsStr, d.AllowedTools, refsStr, scriptsStr, d.Description)
+			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", d.Name, d.Category, d.Version, d.Status, tagsStr, sanitizeTSVField(d.AllowedTools), refsStr, scriptsStr, sanitizeTSVField(d.Description))
 		}
 		return ExitSuccess
 	default: // OutputModeHuman

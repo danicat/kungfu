@@ -16,12 +16,49 @@
 
 package state
 
-import "os"
+import (
+	"os"
+	"syscall"
+	"unsafe"
+)
 
-func lockFileExclusive(_ *os.File) error {
+var (
+	modkernel32      = syscall.NewLazyDLL("kernel32.dll")
+	procLockFileEx   = modkernel32.NewProc("LockFileEx")
+	procUnlockFileEx = modkernel32.NewProc("UnlockFileEx")
+)
+
+const lockfileExclusiveLock = 0x00000002
+
+func lockFileExclusive(f *os.File) error {
+	var ol syscall.Overlapped
+	r1, _, e1 := syscall.SyscallN(
+		procLockFileEx.Addr(),
+		f.Fd(),
+		uintptr(lockfileExclusiveLock),
+		0,
+		1,
+		0,
+		uintptr(unsafe.Pointer(&ol)),
+	)
+	if r1 == 0 {
+		return e1
+	}
 	return nil
 }
 
-func unlockFile(_ *os.File) error {
+func unlockFile(f *os.File) error {
+	var ol syscall.Overlapped
+	r1, _, e1 := syscall.SyscallN(
+		procUnlockFileEx.Addr(),
+		f.Fd(),
+		0,
+		1,
+		0,
+		uintptr(unsafe.Pointer(&ol)),
+	)
+	if r1 == 0 {
+		return e1
+	}
 	return nil
 }

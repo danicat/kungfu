@@ -66,6 +66,7 @@ func (a *App) RunList(args []string) int {
 	}
 
 	var listings []SkillListing
+	st := a.loadState()
 	for _, it := range items {
 		listings = append(listings, SkillListing{
 			Name:         it.Name,
@@ -73,7 +74,7 @@ func (a *App) RunList(args []string) int {
 			Description:  it.Description,
 			Tags:         it.Tags,
 			Version:      it.Version,
-			Status:       a.getSkillStatus(&it),
+			Status:       a.getSkillStatusWithState(&it, st),
 			AllowedTools: it.AllowedTools,
 		})
 	}
@@ -87,7 +88,7 @@ func (a *App) RunList(args []string) int {
 	case OutputModeRaw:
 		for _, l := range listings {
 			tagsStr := strings.Join(l.Tags, ",")
-			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%s\n", l.Name, l.Category, l.Status, tagsStr, l.Description)
+			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%s\n", l.Name, l.Category, l.Status, tagsStr, sanitizeTSVField(l.Description))
 		}
 		return ExitSuccess
 	default: // OutputModeHuman
@@ -96,10 +97,7 @@ func (a *App) RunList(args []string) int {
 		_, _ = fmt.Fprintf(a.Stdout, "%-22s %-14s %-12s %s\n", "----------------------", "--------------", "------------", "--------------------------------------------------")
 		for _, l := range listings {
 			statusBadge := "[" + l.Status + "]"
-			desc := l.Description
-			if len(desc) > 60 {
-				desc = desc[:57] + "..."
-			}
+			desc := truncateRunes(l.Description, 60)
 			_, _ = fmt.Fprintf(a.Stdout, "%-22s %-14s %-12s %s\n", l.Name, l.Category, statusBadge, desc)
 		}
 		return ExitSuccess

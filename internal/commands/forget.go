@@ -46,12 +46,7 @@ func (a *App) RunForget(args []string) int {
 		return ExitUsage
 	}
 
-	scope := state.ScopeWorkspace
-	wsDir, _ := os.Getwd()
-	if globalFlag {
-		scope = state.ScopeGlobal
-		wsDir = ""
-	}
+	scope, wsDir := resolveScopeAndDir(globalFlag)
 
 	st := a.loadState()
 	installed := st.GetInstalledSkills(scope, wsDir)
@@ -59,7 +54,7 @@ func (a *App) RunForget(args []string) int {
 	var targets []string
 	if allFlag {
 		for name, rec := range installed {
-			if rec.Origin != state.OriginCustom {
+			if rec.Origin != state.OriginCustom || forceFlag {
 				targets = append(targets, name)
 			}
 		}
@@ -85,14 +80,15 @@ func (a *App) RunForget(args []string) int {
 	for k := range installed {
 		installedNames = append(installedNames, k)
 	}
+	sort.Strings(installedNames)
 
 	for _, name := range targets {
 		rec, isTracked := installed[name]
-		if isTracked && rec.Origin == state.OriginCustom {
+		if isTracked && rec.Origin == state.OriginCustom && !forceFlag {
 			results = append(results, ForgetResult{
 				Name:    name,
 				Status:  "error",
-				Message: fmt.Sprintf("skill %q is a custom/external skill (not learned by kungfu). Kungfu only uninstalls skills it learned.", name),
+				Message: fmt.Sprintf("skill %q is a custom/external skill (not learned by kungfu). Kungfu only uninstalls skills it learned; pass -f/--force to remove it anyway.", name),
 			})
 			continue
 		}
@@ -149,9 +145,16 @@ func (a *App) RunForget(args []string) int {
 	case OutputModeRaw:
 		for _, r := range results {
 			if r.Status == "forgotten" {
-				_, _ = fmt.Fprintf(a.Stdout, "forgot\t%s\t%s\n", r.Name, r.Path)
+				_, _ = fmt.Fprintf(a.Stdout, "forgot\t%s\t%s\n",
+					sanitizeTSVField(r.Name),
+					sanitizeTSVField(r.Path),
+				)
 			} else {
-				_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\n", r.Status, r.Name, r.Message)
+				_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\n",
+					sanitizeTSVField(r.Status),
+					sanitizeTSVField(r.Name),
+					sanitizeTSVField(r.Message),
+				)
 			}
 		}
 	default: // OutputModeHuman

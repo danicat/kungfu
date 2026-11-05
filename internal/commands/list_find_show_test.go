@@ -402,7 +402,9 @@ func TestGitHubSkillSpec_ShowAndLoad(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	skillMD := "---\nname: evals\ndescription: Evaluation quickstart skill\nmetadata:\n  category: coding\n---\n# Evals Playbook\nRun evaluation suites.\n"
 
+	var ghHits int
 	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ghHits++
 		if r.URL.Path == "/anthropics/anthropic-quickstarts/main/evals/SKILL.md" {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(skillMD))
@@ -445,5 +447,33 @@ func TestGitHubSkillSpec_ShowAndLoad(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "# Evals Playbook") {
 		t.Errorf("expected # Evals Playbook in load output, got: %s", stdout.String())
+	}
+
+	// 3. load with mistyped skill and bundled subpath (e.g. godocter/references/arch.md)
+	// should not probe GitHub and should suggest godoctor.
+	stdout.Reset()
+	stderr.Reset()
+	ghHits = 0
+	code = app.RunLoad([]string{"godocter/references/arch.md"})
+	if code != ExitNotFound {
+		t.Fatalf("RunLoad(godocter/references/arch.md) = %d, want %d", code, ExitNotFound)
+	}
+	if ghHits != 0 {
+		t.Errorf("expected 0 GitHub HTTP requests for bundled subpath typo, got %d", ghHits)
+	}
+	if !strings.Contains(stderr.String(), "kungfu load godoctor") {
+		t.Errorf("expected suggestion 'kungfu load godoctor', got stderr: %s", stderr.String())
+	}
+
+	// 4. load with --local should never probe GitHub
+	stdout.Reset()
+	stderr.Reset()
+	ghHits = 0
+	code = app.RunLoad([]string{"anthropics/anthropic-quickstarts/evals", "--local"})
+	if code != ExitNotFound {
+		t.Fatalf("RunLoad(--local) = %d, want %d", code, ExitNotFound)
+	}
+	if ghHits != 0 {
+		t.Errorf("expected 0 GitHub HTTP requests with --local, got %d", ghHits)
 	}
 }

@@ -29,19 +29,19 @@ import (
 	"github.com/danicat/kungfu/internal/state"
 )
 
-func resolveInstallDirectory(scope, skillName string) string {
+func resolveInstallDirectory(scope, skillName string) (string, error) {
 	if scope == state.ScopeGlobal {
 		homeDir, err := os.UserHomeDir()
 		if err != nil || homeDir == "" {
-			panic(fmt.Sprintf("kungfu: unable to determine user home directory: %v", err))
+			return "", fmt.Errorf("unable to determine user home directory: %w", err)
 		}
-		return filepath.Join(homeDir, ".agents", "skills", skillName)
+		return filepath.Join(homeDir, ".agents", "skills", skillName), nil
 	}
 	wsDir, err := os.Getwd()
 	if err != nil || wsDir == "" {
-		panic(fmt.Sprintf("kungfu: unable to determine working directory: %v", err))
+		return "", fmt.Errorf("unable to determine working directory: %w", err)
 	}
-	return filepath.Join(wsDir, ".agents", "skills", skillName)
+	return filepath.Join(wsDir, ".agents", "skills", skillName), nil
 }
 
 func (a *App) RunLearn(args []string) int {
@@ -106,12 +106,7 @@ func (a *App) RunLearn(args []string) int {
 		return ExitNotFound
 	}
 
-	scope := state.ScopeWorkspace
-	wsDir, _ := os.Getwd()
-	if globalFlag {
-		scope = state.ScopeGlobal
-		wsDir = ""
-	}
+	scope, wsDir := resolveScopeAndDir(globalFlag)
 
 	st := a.loadState()
 	installed := st.GetInstalledSkills(scope, wsDir)
@@ -128,9 +123,21 @@ func (a *App) RunLearn(args []string) int {
 	}
 
 	var results []InstallResult
+	errExitCode := ExitSuccess
 
 	for _, item := range itemsToInstall {
-		skillDir := resolveInstallDirectory(scope, item.Name)
+		skillDir, dirErr := resolveInstallDirectory(scope, item.Name)
+		if dirErr != nil {
+			if errExitCode == ExitSuccess {
+				errExitCode = ExitGeneral
+			}
+			results = append(results, InstallResult{
+				Name:    item.Name,
+				Status:  "error",
+				Message: dirErr.Error(),
+			})
+			continue
+		}
 
 		if rec, exists := installed[item.Name]; exists && !forceFlag {
 			results = append(results, InstallResult{
@@ -147,6 +154,9 @@ func (a *App) RunLearn(args []string) int {
 
 		content, err := a.loadItemContent(&item)
 		if err != nil {
+			if code := MapErrorToExitCode(err); errExitCode == ExitSuccess || errExitCode == ExitGeneral {
+				errExitCode = code
+			}
 			results = append(results, InstallResult{
 				Name:    item.Name,
 				Status:  "error",
@@ -156,8 +166,8 @@ func (a *App) RunLearn(args []string) int {
 		}
 
 		var extraCandidates []string
-		for _, ref := range a.listReferences(item) {
-			extraCandidates = append(extraCandidates, "references/"+ref+".md")
+		for _, refFile := range a.listReferenceFiles(item) {
+			extraCandidates = append(extraCandidates, "references/"+refFile)
 		}
 		for _, scr := range a.listScripts(item) {
 			extraCandidates = append(extraCandidates, "scripts/"+scr)
@@ -168,6 +178,9 @@ func (a *App) RunLearn(args []string) int {
 		cancel()
 
 		if err != nil {
+			if code := MapErrorToExitCode(err); errExitCode == ExitSuccess || errExitCode == ExitGeneral {
+				errExitCode = code
+			}
 			results = append(results, InstallResult{
 				Name:    item.Name,
 				Status:  "error",
@@ -256,7 +269,12 @@ func (a *App) RunLearn(args []string) int {
 	case OutputModeRaw:
 		for _, r := range results {
 			if r.Status == "installed" {
-				_, _ = fmt.Fprintf(a.Stdout, "installed\t%s\t%s\t%s\t%d\n", r.Name, r.Version, r.Path, len(r.Files))
+				_, _ = fmt.Fprintf(a.Stdout, "installed\t%s\t%s\t%s\t%d\n",
+					sanitizeTSVField(r.Name),
+					sanitizeTSVField(r.Version),
+					sanitizeTSVField(r.Path),
+					len(r.Files),
+				)
 				if loadFlag && r.Content != "" {
 					_, _ = fmt.Fprint(a.Stdout, r.Content)
 					if !strings.HasSuffix(r.Content, "\n") {
@@ -264,7 +282,11 @@ func (a *App) RunLearn(args []string) int {
 					}
 				}
 			} else {
-				_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\n", r.Status, r.Name, r.Message)
+				_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\n",
+					sanitizeTSVField(r.Status),
+					sanitizeTSVField(r.Name),
+					sanitizeTSVField(r.Message),
+				)
 			}
 		}
 	default: // OutputModeHuman
@@ -287,6 +309,9 @@ func (a *App) RunLearn(args []string) int {
 		}
 	}
 
+	if errExitCode != ExitSuccess {
+		return errExitCode
+	}
 	for _, r := range results {
 		if r.Status == "error" {
 			return ExitGeneral

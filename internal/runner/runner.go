@@ -30,6 +30,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -117,7 +118,25 @@ func GetCandidateBaseDirs(item catalog.Item) []string {
 	return dirs
 }
 
+var (
+	cacheDirMu       sync.RWMutex
+	cacheDirOverride string
+)
+
+// SetCacheDir sets the cache root directory override used by runner operations.
+func SetCacheDir(dir string) {
+	cacheDirMu.Lock()
+	cacheDirOverride = strings.TrimSpace(dir)
+	cacheDirMu.Unlock()
+}
+
 func resolveCacheRoot() string {
+	cacheDirMu.RLock()
+	override := cacheDirOverride
+	cacheDirMu.RUnlock()
+	if override != "" {
+		return override
+	}
 	if envDir := os.Getenv("KUNGFU_CACHE_DIR"); envDir != "" {
 		return envDir
 	}
@@ -126,6 +145,21 @@ func resolveCacheRoot() string {
 		return ""
 	}
 	return filepath.Join(homeDir, ".cache", "kungfu")
+}
+
+func skillCacheKey(item catalog.Item) string {
+	name := strings.TrimSpace(item.Name)
+	if name == "" {
+		name = strings.TrimSpace(item.ID)
+	}
+	if name == "" {
+		return ""
+	}
+	clean := filepath.Base(filepath.Clean(name))
+	if clean == "" || clean == "." || clean == ".." {
+		return ""
+	}
+	return clean
 }
 
 // CacheSkillFile saves a skill file to ~/.cache/kungfu/skills/<skill>/<relPath>.
@@ -161,45 +195,7 @@ func cacheSkillFile(skillName, relPath string, data []byte) {
 }
 
 func isContained(baseDir, targetPath string) bool {
-	cleanBase := filepath.Clean(baseDir)
-	cleanTarget := filepath.Clean(targetPath)
-
-	rel, err := filepath.Rel(cleanBase, cleanTarget)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return false
-	}
-
-	realBase, err := filepath.EvalSymlinks(cleanBase)
-	if err != nil {
-		realBase = cleanBase
-	}
-
-	realTarget, err := filepath.EvalSymlinks(cleanTarget)
-	if err != nil {
-		parent := filepath.Dir(cleanTarget)
-		var relParts []string
-		relParts = append(relParts, filepath.Base(cleanTarget))
-		for {
-			evalParent, pErr := filepath.EvalSymlinks(parent)
-			if pErr == nil {
-				realTarget = filepath.Join(append([]string{evalParent}, relParts...)...)
-				break
-			}
-			relParts = append([]string{filepath.Base(parent)}, relParts...)
-			nextParent := filepath.Dir(parent)
-			if nextParent == parent {
-				realTarget = cleanTarget
-				break
-			}
-			parent = nextParent
-		}
-	}
-
-	realRel, err := filepath.Rel(realBase, realTarget)
-	if err != nil || realRel == ".." || strings.HasPrefix(realRel, ".."+string(filepath.Separator)) {
-		return false
-	}
-	return true
+	return catalog.IsPathContained(baseDir, targetPath)
 }
 
 func detectInterpreter(scriptPath string) (string, []string, error) {
@@ -235,7 +231,7 @@ func detectInterpreter(scriptPath string) (string, []string, error) {
 				base := filepath.Base(interpName)
 				switch {
 				case strings.HasPrefix(base, "python"):
-					return resolvePythonCommand(scriptPath)
+					return resolvePythonCommand(scriptPath, interpFlags...)
 				case strings.HasPrefix(base, "node") || strings.HasPrefix(base, "bun") || strings.HasPrefix(base, "deno") || strings.HasPrefix(base, "tsx"):
 					var bin string
 					if found, err := exec.LookPath(base); err == nil {
@@ -312,15 +308,15 @@ func detectInterpreter(scriptPath string) (string, []string, error) {
 	}
 }
 
-func resolvePythonCommand(scriptPath string) (string, []string, error) {
+func resolvePythonCommand(scriptPath string, interpFlags ...string) (string, []string, error) {
 	if bin, err := exec.LookPath("uv"); err == nil {
 		return bin, []string{"run", scriptPath}, nil
 	}
 	if bin, err := exec.LookPath("python3"); err == nil {
-		return bin, []string{scriptPath}, nil
+		return bin, append(append([]string{}, interpFlags...), scriptPath), nil
 	}
 	if bin, err := exec.LookPath("python"); err == nil {
-		return bin, []string{scriptPath}, nil
+		return bin, append(append([]string{}, interpFlags...), scriptPath), nil
 	}
 	return "", nil, fmt.Errorf("%w: Python runtime not found (checked uv, python3, python in PATH)", ErrRuntimeNotFound)
 }
@@ -379,10 +375,11 @@ func RunScriptContext(ctx context.Context, item catalog.Item, scriptName string,
 
 		if err == nil && len(data) > 0 {
 			cacheRoot := resolveCacheRoot()
-			if cacheRoot == "" {
+			sKey := skillCacheKey(item)
+			if cacheRoot == "" || sKey == "" {
 				return fmt.Errorf("runner: unable to determine cache directory")
 			}
-			cachedPath := filepath.Join(cacheRoot, "skills", item.Name, filepath.FromSlash(fetchTarget))
+			cachedPath := filepath.Join(cacheRoot, "skills", sKey, filepath.FromSlash(fetchTarget))
 			if err := os.MkdirAll(filepath.Dir(cachedPath), 0755); err != nil {
 				return fmt.Errorf("runner: creating cache directory for %s: %w", cachedPath, err)
 			}
@@ -393,7 +390,7 @@ func RunScriptContext(ctx context.Context, item catalog.Item, scriptName string,
 				return fmt.Errorf("runner: setting permissions on %s: %w", cachedPath, err)
 			}
 			scriptPath = cachedPath
-			baseDir = filepath.Join(cacheRoot, "skills", item.Name)
+			baseDir = filepath.Join(cacheRoot, "skills", sKey)
 		}
 	}
 
@@ -531,6 +528,10 @@ func deriveBaseURL(rawURL string) string {
 
 // ReadBytesContext reads any skill file (text or binary) from local dirs, cache, or remote URL.
 func ReadBytesContext(ctx context.Context, item catalog.Item, filePath string, client *http.Client) ([]byte, error) {
+	return readBytesInternal(ctx, item, filePath, client, "", false)
+}
+
+func readBytesInternal(ctx context.Context, item catalog.Item, filePath string, client *http.Client, skipDir string, preferRemote bool) ([]byte, error) {
 	trimmed := strings.TrimSpace(filePath)
 	if trimmed == "" || trimmed == "." || trimmed == ".." {
 		return nil, fmt.Errorf("runner: %w: %s", ErrInvalidPath, filePath)
@@ -543,28 +544,48 @@ func ReadBytesContext(ctx context.Context, item catalog.Item, filePath string, c
 		return nil, fmt.Errorf("runner: %w: %s", ErrInvalidPath, filePath)
 	}
 
-	// 1. Try local candidate base directories
-	baseDirs := GetCandidateBaseDirs(item)
-	for _, baseDir := range baseDirs {
-		candidates := []string{
-			filepath.Join(baseDir, filepath.FromSlash(cleanPath)),
-		}
-		if !strings.HasPrefix(cleanPath, "scripts/") {
-			candidates = append(candidates, filepath.Join(baseDir, "scripts", filepath.FromSlash(cleanPath)))
-		}
-		if !strings.HasPrefix(cleanPath, "references/") {
-			candidates = append(candidates, filepath.Join(baseDir, "references", filepath.FromSlash(cleanPath)))
-		}
+	cleanSkip := ""
+	if skipDir != "" {
+		cleanSkip = filepath.Clean(skipDir)
+	}
 
-		for _, candPath := range candidates {
-			candClean := filepath.Clean(candPath)
-			if !isContained(baseDir, candClean) {
-				continue
+	readFromLocal := func() ([]byte, bool) {
+		baseDirs := GetCandidateBaseDirs(item)
+		for _, baseDir := range baseDirs {
+			if cleanSkip != "" && filepath.Clean(baseDir) == cleanSkip {
+				// Only allow reading from cleanSkip if item.Path explicitly points inside cleanSkip
+				if item.Path == "" || (!catalog.IsPathContained(cleanSkip, item.Path) && filepath.Clean(item.Path) != cleanSkip) {
+					continue
+				}
 			}
-			data, err := os.ReadFile(candClean)
-			if err == nil {
-				return data, nil
+			candidates := []string{
+				filepath.Join(baseDir, filepath.FromSlash(cleanPath)),
 			}
+			if !strings.HasPrefix(cleanPath, "scripts/") {
+				candidates = append(candidates, filepath.Join(baseDir, "scripts", filepath.FromSlash(cleanPath)))
+			}
+			if !strings.HasPrefix(cleanPath, "references/") {
+				candidates = append(candidates, filepath.Join(baseDir, "references", filepath.FromSlash(cleanPath)))
+			}
+
+			for _, candPath := range candidates {
+				candClean := filepath.Clean(candPath)
+				if !isContained(baseDir, candClean) {
+					continue
+				}
+				data, err := os.ReadFile(candClean)
+				if err == nil {
+					return data, true
+				}
+			}
+		}
+		return nil, false
+	}
+
+	// 1. Try local candidate base directories first unless preferRemote is set
+	if !preferRemote {
+		if data, ok := readFromLocal(); ok {
+			return data, nil
 		}
 	}
 
@@ -574,63 +595,68 @@ func ReadBytesContext(ctx context.Context, item catalog.Item, filePath string, c
 		remoteURL = item.Metadata["canonical"]
 	}
 
+	sKey := skillCacheKey(item)
+
 	if remoteURL != "" {
 		// If the item is an archive (.tar.gz, .zip or ItemTypeArchive), fetch the archive,
-		// verify its digest, unpack it into ~/.cache/kungfu/skills/<item.Name>, and read the file!
-		isArchive := item.Type == catalog.ItemTypeArchive ||
-			strings.HasSuffix(strings.ToLower(remoteURL), ".tar.gz") ||
-			strings.HasSuffix(strings.ToLower(remoteURL), ".tgz") ||
-			strings.HasSuffix(strings.ToLower(remoteURL), ".zip")
+		// verify its digest, unpack it into ~/.cache/kungfu/skills/<sKey>, and read the file!
+		isArchive := catalog.IsArchiveItem(item)
 
 		if isArchive {
 			cacheRoot := resolveCacheRoot()
-			if cacheRoot != "" && item.Name != "" {
-				cacheDir := filepath.Join(cacheRoot, "skills", item.Name)
+			if cacheRoot != "" && sKey != "" {
+				cacheDir := filepath.Join(cacheRoot, "skills", sKey)
 				if client == nil {
 					client = &http.Client{Timeout: 30 * time.Second}
 				}
 				req, err := http.NewRequestWithContext(ctx, http.MethodGet, remoteURL, nil)
-				if err == nil {
-					req.Header.Set("User-Agent", version.UserAgent())
-					resp, err := client.Do(req)
-					if err == nil && resp.StatusCode == http.StatusOK {
-						data, readErr := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
-						_ = resp.Body.Close()
-						if readErr == nil && len(data) > 0 {
-							expectedDigest := item.Digest
-							if expectedDigest == "" {
-								expectedDigest = item.Sha256
-							}
-							if expectedDigest != "" {
-								if vErr := catalog.VerifyDigest(data, expectedDigest); vErr != nil {
-									return nil, fmt.Errorf("runner: %w: %v", catalog.ErrDigestMismatch, vErr)
-								}
-							}
-							// Unpack archive safely and record .digest
-							if _, uErr := catalog.UnpackArchiveToCache(data, cacheRoot, item.Name, expectedDigest); uErr == nil {
-								candidates := []string{
-									filepath.Join(cacheDir, filepath.FromSlash(cleanPath)),
-								}
-								if !strings.HasPrefix(cleanPath, "scripts/") {
-									candidates = append(candidates, filepath.Join(cacheDir, "scripts", filepath.FromSlash(cleanPath)))
-								}
-								if !strings.HasPrefix(cleanPath, "references/") {
-									candidates = append(candidates, filepath.Join(cacheDir, "references", filepath.FromSlash(cleanPath)))
-								}
-								for _, cachedTarget := range candidates {
-									if isContained(cacheDir, cachedTarget) {
-										if fileBytes, err := os.ReadFile(cachedTarget); err == nil {
-											return fileBytes, nil
-										}
-									}
-								}
+				if err != nil {
+					return nil, fmt.Errorf("runner: creating archive request for %s: %w", sKey, err)
+				}
+				req.Header.Set("User-Agent", version.UserAgent())
+				resp, err := client.Do(req)
+				if err != nil {
+					return nil, fmt.Errorf("runner: downloading archive for %s: %w", sKey, err)
+				}
+				if resp.StatusCode != http.StatusOK {
+					_ = resp.Body.Close()
+					return nil, fmt.Errorf("runner: downloading archive for %s: HTTP %d", sKey, resp.StatusCode)
+				}
+				data, readErr := catalog.ReadBounded(resp.Body, catalog.DefaultMaxUnpackedBytes)
+				_ = resp.Body.Close()
+				if readErr != nil {
+					return nil, fmt.Errorf("runner: reading archive for %s: %w", sKey, readErr)
+				}
+				if len(data) > 0 {
+					expectedDigest := item.EffectiveDigest()
+					if expectedDigest != "" {
+						if vErr := catalog.VerifyDigest(data, expectedDigest); vErr != nil {
+							return nil, fmt.Errorf("runner: %w: %v", catalog.ErrDigestMismatch, vErr)
+						}
+					}
+					// Unpack archive safely and record .digest
+					if _, uErr := catalog.UnpackArchiveToCache(data, cacheRoot, sKey, expectedDigest); uErr != nil {
+						return nil, fmt.Errorf("runner: unpacking archive for %s: %w", sKey, uErr)
+					}
+					candidates := []string{
+						filepath.Join(cacheDir, filepath.FromSlash(cleanPath)),
+					}
+					if !strings.HasPrefix(cleanPath, "scripts/") {
+						candidates = append(candidates, filepath.Join(cacheDir, "scripts", filepath.FromSlash(cleanPath)))
+					}
+					if !strings.HasPrefix(cleanPath, "references/") {
+						candidates = append(candidates, filepath.Join(cacheDir, "references", filepath.FromSlash(cleanPath)))
+					}
+					for _, cachedTarget := range candidates {
+						if isContained(cacheDir, cachedTarget) {
+							if fileBytes, err := os.ReadFile(cachedTarget); err == nil {
+								return fileBytes, nil
 							}
 						}
-					} else if resp != nil {
-						_ = resp.Body.Close()
 					}
 				}
 			}
+			return nil, fmt.Errorf("runner: %w: %s in skill %s", ErrFileNotFound, filePath, item.Name)
 		}
 
 		baseURL := deriveBaseURL(remoteURL)
@@ -660,16 +686,22 @@ func ReadBytesContext(ctx context.Context, item catalog.Item, filePath string, c
 					continue
 				}
 				if resp.StatusCode == http.StatusOK {
-					data, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+					data, err := catalog.ReadBounded(resp.Body, 10<<20)
 					_ = resp.Body.Close()
 					if err == nil && len(data) > 0 {
-						cacheSkillFile(item.Name, rp, data)
+						cacheSkillFile(sKey, rp, data)
 						return data, nil
 					}
 				} else {
 					_ = resp.Body.Close()
 				}
 			}
+		}
+	}
+
+	if preferRemote {
+		if data, ok := readFromLocal(); ok {
+			return data, nil
 		}
 	}
 
@@ -800,12 +832,24 @@ func InstallSkillContext(ctx context.Context, item catalog.Item, destDir string,
 	if remoteURL == "" && item.Metadata != nil && item.Metadata["canonical"] != "" {
 		remoteURL = item.Metadata["canonical"]
 	}
-	isArchive := item.Type == catalog.ItemTypeArchive ||
-		strings.HasSuffix(strings.ToLower(remoteURL), ".tar.gz") ||
-		strings.HasSuffix(strings.ToLower(remoteURL), ".tgz") ||
-		strings.HasSuffix(strings.ToLower(remoteURL), ".zip")
+	isArchive := catalog.IsArchiveItem(item)
 
 	if isArchive && remoteURL != "" {
+		expectedDigest := item.EffectiveDigest()
+		cacheRoot := resolveCacheRoot()
+		sKey := skillCacheKey(item)
+		if expectedDigest != "" && cacheRoot != "" && sKey != "" && catalog.IsArchiveCachedWithDigest(cacheRoot, sKey, expectedDigest) {
+			cacheSkillDir := filepath.Join(cacheRoot, "skills", sKey)
+			if extracted, err := copyCachedArchiveDir(cacheSkillDir, cleanDest); err == nil && len(extracted) > 0 {
+				for _, rel := range extracted {
+					recordInstalled(rel)
+				}
+				pruneStaleInstalledFiles(cleanDest, installedMap)
+				sort.Strings(installedFiles)
+				return installedFiles, nil
+			}
+		}
+
 		if client == nil {
 			client = &http.Client{Timeout: 30 * time.Second}
 		}
@@ -822,25 +866,25 @@ func InstallSkillContext(ctx context.Context, item catalog.Item, destDir string,
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("runner: downloading archive for %s: HTTP %d", item.Name, resp.StatusCode)
 		}
-		data, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
+		data, err := catalog.ReadBounded(resp.Body, catalog.DefaultMaxUnpackedBytes)
 		if err != nil {
 			return nil, fmt.Errorf("runner: reading archive data for %s: %w", item.Name, err)
-		}
-		expectedDigest := item.Digest
-		if expectedDigest == "" {
-			expectedDigest = item.Sha256
 		}
 		if expectedDigest != "" {
 			if vErr := catalog.VerifyDigest(data, expectedDigest); vErr != nil {
 				return nil, fmt.Errorf("runner: %w: %v", catalog.ErrDigestMismatch, vErr)
 			}
 		}
-		extracted, err := UnpackArchive(data, cleanDest, DefaultMaxUnpackedBytes)
+		extracted, err := catalog.UnpackArchive(data, cleanDest, catalog.DefaultMaxUnpackedBytes)
 		if err != nil {
 			return nil, fmt.Errorf("runner: unpacking archive for %s: %w", item.Name, err)
 		}
-		sort.Strings(extracted)
-		return extracted, nil
+		for _, rel := range extracted {
+			recordInstalled(rel)
+		}
+		pruneStaleInstalledFiles(cleanDest, installedMap)
+		sort.Strings(installedFiles)
+		return installedFiles, nil
 	}
 
 	// 1. Ensure SKILL.md is written
@@ -851,19 +895,17 @@ func InstallSkillContext(ctx context.Context, item catalog.Item, destDir string,
 		}
 		recordInstalled("SKILL.md")
 	} else if !installedMap["SKILL.md"] {
-		if data, err := os.ReadFile(skillFilePath); err == nil {
+		if data, err := readBytesInternal(ctx, item, "SKILL.md", client, cleanDest, remoteURL != ""); err == nil {
 			rawContent = string(data)
-			recordInstalled("SKILL.md")
-		} else {
-			content, err := ReadFileContext(ctx, item, "SKILL.md", client)
-			if err != nil {
-				return nil, fmt.Errorf("runner: fetching SKILL.md for %s: %w", item.Name, err)
-			}
-			rawContent = content
-			if err := os.WriteFile(skillFilePath, []byte(content), 0644); err != nil {
+			if err := os.WriteFile(skillFilePath, data, 0644); err != nil {
 				return nil, fmt.Errorf("runner: writing %s: %w", skillFilePath, err)
 			}
 			recordInstalled("SKILL.md")
+		} else if data, rErr := os.ReadFile(skillFilePath); rErr == nil {
+			rawContent = string(data)
+			recordInstalled("SKILL.md")
+		} else {
+			return nil, fmt.Errorf("runner: fetching SKILL.md for %s: %w", item.Name, err)
 		}
 	}
 
@@ -907,6 +949,7 @@ func InstallSkillContext(ctx context.Context, item catalog.Item, destDir string,
 		addCandidate(cand)
 	}
 
+	preferRemote := remoteURL != "" && item.Source != "local"
 	for len(queue) > 0 {
 		target := queue[0]
 		queue = queue[1:]
@@ -915,7 +958,7 @@ func InstallSkillContext(ctx context.Context, item catalog.Item, destDir string,
 			continue
 		}
 
-		data, err := ReadBytesContext(ctx, item, target, client)
+		data, err := readBytesInternal(ctx, item, target, client, cleanDest, preferRemote)
 		if err != nil {
 			continue
 		}
@@ -947,8 +990,106 @@ func InstallSkillContext(ctx context.Context, item catalog.Item, destDir string,
 		}
 	}
 
+	pruneStaleInstalledFiles(cleanDest, installedMap)
 	sort.Strings(installedFiles)
 	return installedFiles, nil
+}
+
+func pruneStaleInstalledFiles(cleanDest string, installedMap map[string]bool) {
+	if len(installedMap) == 0 {
+		return
+	}
+	var dirs []string
+	_ = filepath.WalkDir(cleanDest, func(p string, d os.DirEntry, err error) error {
+		if err != nil || p == cleanDest {
+			return nil
+		}
+		rel, rErr := filepath.Rel(cleanDest, p)
+		if rErr != nil {
+			return nil
+		}
+		relSlash := filepath.ToSlash(filepath.Clean(rel))
+		if d.IsDir() {
+			dirs = append(dirs, p)
+			return nil
+		}
+		if !installedMap[relSlash] {
+			_ = os.Remove(p)
+		}
+		return nil
+	})
+	for i := len(dirs) - 1; i >= 0; i-- {
+		if entries, err := os.ReadDir(dirs[i]); err == nil && len(entries) == 0 {
+			_ = os.Remove(dirs[i])
+		}
+	}
+}
+
+func copyCachedArchiveDir(cacheSkillDir, cleanDest string) ([]string, error) {
+	var extracted []string
+	err := filepath.WalkDir(cacheSkillDir, func(p string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if p == cacheSkillDir {
+			return nil
+		}
+		rel, err := filepath.Rel(cacheSkillDir, p)
+		if err != nil {
+			return err
+		}
+		relSlash := filepath.ToSlash(filepath.Clean(rel))
+		if relSlash == ".digest" {
+			return nil
+		}
+		destPath := filepath.Join(cleanDest, rel)
+		if !isContained(cleanDest, destPath) {
+			return ErrInvalidPath
+		}
+		if d.IsDir() {
+			return os.MkdirAll(destPath, 0755)
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			linkTarget, err := os.Readlink(p)
+			if err != nil {
+				return err
+			}
+			if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+				return err
+			}
+			_ = os.Remove(destPath)
+			if err := os.Symlink(linkTarget, destPath); err != nil {
+				return err
+			}
+			extracted = append(extracted, relSlash)
+			return nil
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+			return err
+		}
+		perm := info.Mode().Perm()
+		if perm == 0 {
+			perm = 0644
+		}
+		if err := os.WriteFile(destPath, data, perm); err != nil {
+			return err
+		}
+		_ = os.Chmod(destPath, perm)
+		extracted = append(extracted, relSlash)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return extracted, nil
 }
 
 // InstallSkill installs all skill files (SKILL.md, references, scripts, auxiliary docs) into destDir.

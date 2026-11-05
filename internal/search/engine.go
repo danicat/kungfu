@@ -57,13 +57,6 @@ type Indexer interface {
 	Search(query string, strategy string, limit int, threshold float32) []Result
 }
 
-// Posting represents an entry in the inverted index for a term in a document.
-type Posting struct {
-	DocID     uint32
-	Freq      float32
-	FieldMask uint8
-}
-
 // Engine is a pure Go high-throughput search engine supporting BM25, TF-IDF, Exact, and Hybrid RRF ranking.
 type Engine struct {
 	mu          sync.RWMutex
@@ -72,8 +65,6 @@ type Engine struct {
 	docLengths  []float32
 	avgDocLen   float32
 	termToID    map[string]uint32
-	idToTerm    []string
-	postings    [][]Posting
 	docTFs      []map[uint32]float32
 	docMasks    []map[uint32]uint8
 	docFreqs    map[uint32]uint32
@@ -102,8 +93,6 @@ func (e *Engine) Index(items []catalog.Item) error {
 
 	numDocs := len(items)
 	e.termToID = make(map[string]uint32)
-	e.idToTerm = make([]string, 0)
-	e.postings = make([][]Posting, 0)
 	e.docLengths = make([]float32, numDocs)
 	e.docTFs = make([]map[uint32]float32, numDocs)
 	e.docMasks = make([]map[uint32]uint8, numDocs)
@@ -122,10 +111,8 @@ func (e *Engine) Index(items []catalog.Item) error {
 		if id, ok := e.termToID[term]; ok {
 			return id
 		}
-		id := uint32(len(e.idToTerm))
+		id := uint32(len(e.termToID))
 		e.termToID[term] = id
-		e.idToTerm = append(e.idToTerm, term)
-		e.postings = append(e.postings, make([]Posting, 0))
 		return id
 	}
 
@@ -164,12 +151,7 @@ func (e *Engine) Index(items []catalog.Item) error {
 		e.docMasks[docID] = masks
 		totalLength += docLen
 
-		for tid, tf := range tfs {
-			e.postings[tid] = append(e.postings[tid], Posting{
-				DocID:     uint32(docID),
-				Freq:      tf,
-				FieldMask: masks[tid],
-			})
+		for tid := range tfs {
 			e.docFreqs[tid]++
 		}
 	}
@@ -181,12 +163,13 @@ func (e *Engine) Index(items []catalog.Item) error {
 	return nil
 }
 
-// parsedFilter holds query directives like category:x, tag:y, type:z.
+// parsedFilter holds query directives like category:x, tag:y, type:z, catalog:w / @w.
 type parsedFilter struct {
 	cleanQuery string
 	category   string
 	tags       []string
 	itemType   string
+	catalog    string
 }
 
 func parseQueryFilters(query string) parsedFilter {
@@ -204,6 +187,18 @@ func parseQueryFilters(query string) parsedFilter {
 			filter.tags = append(filter.tags, after)
 		} else if after, ok := strings.CutPrefix(low, "type:"); ok {
 			filter.itemType = after
+		} else if after, ok := strings.CutPrefix(low, "catalog:"); ok {
+			filter.catalog = after
+		} else if after, ok := strings.CutPrefix(low, "source:"); ok {
+			filter.catalog = after
+		} else if idx := strings.LastIndex(p, "@"); idx != -1 && idx < len(p)-1 {
+			catPart := strings.ToLower(strings.TrimSpace(p[idx+1:]))
+			if catPart != "" {
+				filter.catalog = catPart
+			}
+			if idx > 0 {
+				cleanParts = append(cleanParts, p[:idx])
+			}
 		} else {
 			cleanParts = append(cleanParts, p)
 		}
@@ -213,7 +208,7 @@ func parseQueryFilters(query string) parsedFilter {
 	return filter
 }
 
-// matchesFilter checks whether a catalog Item satisfies extracted category, tag, or type constraints.
+// matchesFilter checks whether a catalog Item satisfies extracted category, tag, type, or catalog constraints.
 func matchesFilter(item *catalog.Item, filter *parsedFilter) bool {
 	if len(filter.category) > 0 {
 		if !strings.EqualFold(item.Category, filter.category) {
@@ -222,6 +217,23 @@ func matchesFilter(item *catalog.Item, filter *parsedFilter) bool {
 	}
 	if len(filter.itemType) > 0 {
 		if !strings.EqualFold(string(item.Type), filter.itemType) {
+			return false
+		}
+	}
+	if len(filter.catalog) > 0 {
+		wantCat := strings.ToLower(strings.TrimSpace(filter.catalog))
+		src := strings.ToLower(strings.TrimSpace(item.Source))
+		srcTrimmed := strings.TrimPrefix(src, "github:")
+		safeWant := catalog.SafeCatalogFileName(wantCat)
+		matched := false
+		if wantCat == "default" && (src == "" || src == "default" || src == "remote") {
+			matched = true
+		} else if src == wantCat || srcTrimmed == wantCat ||
+			(safeWant != "" && (catalog.SafeCatalogFileName(src) == safeWant || catalog.SafeCatalogFileName(srcTrimmed) == safeWant)) ||
+			strings.HasSuffix(srcTrimmed, "/"+wantCat) {
+			matched = true
+		}
+		if !matched {
 			return false
 		}
 	}
@@ -256,7 +268,12 @@ func (e *Engine) Search(query string, strategy string, limit int, threshold floa
 	}
 
 	filter := parseQueryFilters(query)
-	activeQuery := filter.cleanQuery
+	activeQuery := strings.TrimSpace(filter.cleanQuery)
+	hasFilter := filter.category != "" || filter.itemType != "" || len(filter.tags) > 0 || filter.catalog != ""
+
+	if activeQuery == "" && !hasFilter {
+		return nil
+	}
 
 	// Filter candidate documents
 	candidateDocIDs := make([]uint32, 0, len(e.items))
@@ -271,16 +288,29 @@ func (e *Engine) Search(query string, strategy string, limit int, threshold floa
 	}
 
 	// If query text is empty after filtering directives, return matching candidate docs
-	if len(strings.TrimSpace(activeQuery)) == 0 {
+	if activeQuery == "" {
+		var matchFields []string
+		if filter.category != "" {
+			matchFields = append(matchFields, "category")
+		}
+		if len(filter.tags) > 0 {
+			matchFields = append(matchFields, "tags")
+		}
+		if filter.itemType != "" || filter.catalog != "" || len(matchFields) == 0 {
+			matchFields = append(matchFields, "other")
+		}
 		results := make([]Result, 0, len(candidateDocIDs))
 		for _, docID := range candidateDocIDs {
 			results = append(results, Result{
 				Item:        e.items[docID],
 				Score:       1.0,
 				Strategy:    strategy,
-				MatchFields: []string{"category", "tags"},
+				MatchFields: matchFields,
 			})
 		}
+		sort.Slice(results, func(i, j int) bool {
+			return results[i].Item.ID < results[j].Item.ID
+		})
 		if len(results) > limit {
 			results = results[:limit]
 		}
@@ -353,7 +383,10 @@ func (e *Engine) searchBM25(query string, candidateDocIDs []uint32, limit int, t
 	}
 
 	sort.Slice(scores, func(i, j int) bool {
-		return scores[i].score > scores[j].score
+		if scores[i].score != scores[j].score {
+			return scores[i].score > scores[j].score
+		}
+		return e.items[scores[i].docID].ID < e.items[scores[j].docID].ID
 	})
 
 	if len(scores) > limit {
@@ -417,7 +450,10 @@ func (e *Engine) searchTFIDF(query string, candidateDocIDs []uint32, limit int, 
 	}
 
 	sort.Slice(scores, func(i, j int) bool {
-		return scores[i].score > scores[j].score
+		if scores[i].score != scores[j].score {
+			return scores[i].score > scores[j].score
+		}
+		return e.items[scores[i].docID].ID < e.items[scores[j].docID].ID
 	})
 
 	if len(scores) > limit {
@@ -547,11 +583,12 @@ func (e *Engine) searchExact(query string, candidateDocIDs []uint32, limit int, 
 			(compQuery != "" && (compName == compQuery || compID == compQuery || compTitle == compQuery)) {
 			score += 10.0 * WeightName
 			mask |= FieldMaskName | FieldMaskTitle
-		} else if strings.Contains(itemName, queryNorm) || strings.Contains(normName, normQuery) ||
-			(len(normTitle) > 0 && strings.Contains(normTitle, normQuery)) {
+		} else if strings.Contains(itemName, queryNorm) ||
+			(normQuery != "" && strings.Contains(normName, normQuery)) ||
+			(normQuery != "" && len(normTitle) > 0 && strings.Contains(normTitle, normQuery)) {
 			score += 5.0 * WeightName
 			mask |= FieldMaskName
-		} else {
+		} else if normQuery != "" && compQuery != "" {
 			// Fuzzy match (edit distance <= 2) on name/id
 			dist := Levenshtein(normQuery, normName)
 			distComp := Levenshtein(compQuery, compName)
@@ -572,7 +609,7 @@ func (e *Engine) searchExact(query string, candidateDocIDs []uint32, limit int, 
 			if tagLow == queryNorm || (normQuery != "" && normTag == normQuery) || (compQuery != "" && compTag == compQuery) {
 				score += 8.0 * WeightTags
 				mask |= FieldMaskTags
-			} else if strings.Contains(tagLow, queryNorm) || strings.Contains(normTag, normQuery) {
+			} else if strings.Contains(tagLow, queryNorm) || (normQuery != "" && strings.Contains(normTag, normQuery)) {
 				score += 3.0 * WeightTags
 				mask |= FieldMaskTags
 			}
@@ -632,7 +669,10 @@ func (e *Engine) searchExact(query string, candidateDocIDs []uint32, limit int, 
 	}
 
 	sort.Slice(scores, func(i, j int) bool {
-		return scores[i].score > scores[j].score
+		if scores[i].score != scores[j].score {
+			return scores[i].score > scores[j].score
+		}
+		return e.items[scores[i].docID].ID < e.items[scores[j].docID].ID
 	})
 
 	if len(scores) > limit {
@@ -747,7 +787,10 @@ func (e *Engine) searchHybrid(query string, candidateDocIDs []uint32, limit int,
 	}
 
 	sort.Slice(ranked, func(i, j int) bool {
-		return ranked[i].score > ranked[j].score
+		if ranked[i].score != ranked[j].score {
+			return ranked[i].score > ranked[j].score
+		}
+		return ranked[i].id < ranked[j].id
 	})
 
 	if len(ranked) > limit {

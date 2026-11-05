@@ -57,17 +57,21 @@ func MapErrorToExitCode(err error) int {
 	if errors.Is(err, catalog.ErrDigestMismatch) || errors.Is(err, catalog.ErrInvalidFrontmatter) {
 		return ExitIntegrity
 	}
-	if sysErr, ok := errors.AsType[syscall.Errno](err); ok {
-		if sysErr == syscall.ECONNREFUSED || sysErr == syscall.ENETUNREACH || sysErr == syscall.ETIMEDOUT || sysErr == syscall.EHOSTUNREACH {
+	if netErr, ok := errors.AsType[net.Error](err); ok {
+		if _, isErrno := any(netErr).(syscall.Errno); !isErrno {
 			return ExitNetwork
 		}
-		if sysErr == syscall.ENOENT {
-			return ExitNotFound
-		}
-		return ExitGeneral
 	}
-	if _, ok := errors.AsType[net.Error](err); ok {
-		return ExitNetwork
+	if sysErr, ok := errors.AsType[syscall.Errno](err); ok {
+		switch sysErr {
+		case syscall.ECONNREFUSED, syscall.ENETUNREACH, syscall.ETIMEDOUT, syscall.EHOSTUNREACH,
+			syscall.ECONNRESET, syscall.ECONNABORTED, syscall.ENETDOWN:
+			return ExitNetwork
+		case syscall.ENOENT:
+			return ExitNotFound
+		default:
+			return ExitGeneral
+		}
 	}
 	errStr := strings.ToLower(err.Error())
 	if strings.Contains(errStr, "http 404") || strings.Contains(errStr, "not found") || strings.Contains(errStr, "no such file") {
@@ -137,6 +141,7 @@ func NewApp(opts GlobalOptions, stdout, stderr io.Writer) (*App, error) {
 	if opts.CacheDir != "" {
 		catOpts = append(catOpts, catalog.WithCacheDir(opts.CacheDir))
 	}
+	runner.SetCacheDir(opts.CacheDir)
 
 	cat, err := catalog.NewCatalog(catOpts...)
 	if err != nil {
@@ -158,12 +163,10 @@ func NewApp(opts GlobalOptions, stdout, stderr io.Writer) (*App, error) {
 func (a *App) loadState() *state.State {
 	s, err := state.LoadState("")
 	if err != nil {
-		if os.IsNotExist(err) {
-			s = state.NewState()
-		} else {
-			_, _ = fmt.Fprintf(a.Stderr, "FATAL: state file %s is corrupted or unreadable: %v\n", state.DefaultStateFilePath(), err)
-			os.Exit(ExitGeneral)
+		if !os.IsNotExist(err) {
+			_, _ = fmt.Fprintf(a.Stderr, "warning: state file %s is corrupted or unreadable (%v); using empty in-memory state\n", state.DefaultStateFilePath(), err)
 		}
+		s = state.NewState()
 	}
 
 	wd, _ := os.Getwd()
@@ -179,7 +182,15 @@ func (a *App) loadState() *state.State {
 	}
 
 	if s.ReconcileDisk(wd, homeDir, isCatalogKnown) {
-		_ = state.SaveState("", s)
+		var reconciled *state.State
+		_ = state.WithLockedState("", func(disk *state.State) error {
+			disk.ReconcileDisk(wd, homeDir, isCatalogKnown)
+			reconciled = disk
+			return nil
+		})
+		if reconciled != nil {
+			s = reconciled
+		}
 	}
 
 	return s
@@ -187,40 +198,7 @@ func (a *App) loadState() *state.State {
 
 func (a *App) saveState(s *state.State) {
 	err := state.WithLockedState("", func(disk *state.State) error {
-		disk.Workspaces = s.Workspaces
-		disk.Global = s.Global
-		disk.Catalogs = s.Catalogs
-		if disk.History == nil {
-			disk.History = make(map[string]*state.HistoryRecord)
-		}
-		for name, h := range s.History {
-			if h == nil {
-				continue
-			}
-			cur, ok := disk.History[name]
-			if !ok || cur == nil {
-				cp := *h
-				disk.History[name] = &cp
-				continue
-			}
-			if h.LastSeenAt.After(cur.LastSeenAt) {
-				cur.LastSeenAt = h.LastSeenAt
-			}
-			cur.LoadCount = max(cur.LoadCount, h.LoadCount)
-			cur.PageLoadCount = max(cur.PageLoadCount, h.PageLoadCount)
-			cur.SubpathLoadCount = max(cur.SubpathLoadCount, h.SubpathLoadCount)
-			cur.RunCount = max(cur.RunCount, h.RunCount)
-			cur.LearnCount = max(cur.LearnCount, h.LearnCount)
-			cur.SyncedLoadCount = max(cur.SyncedLoadCount, h.SyncedLoadCount)
-			cur.SyncedPageLoadCount = max(cur.SyncedPageLoadCount, h.SyncedPageLoadCount)
-			cur.SyncedSubpathLoadCount = max(cur.SyncedSubpathLoadCount, h.SyncedSubpathLoadCount)
-			cur.SyncedRunCount = max(cur.SyncedRunCount, h.SyncedRunCount)
-			cur.SyncedLearnCount = max(cur.SyncedLearnCount, h.SyncedLearnCount)
-			if h.LastSyncedAt != nil && (cur.LastSyncedAt == nil || h.LastSyncedAt.After(*cur.LastSyncedAt)) {
-				ts := *h.LastSyncedAt
-				cur.LastSyncedAt = &ts
-			}
-		}
+		s.MergeInto(disk)
 		return nil
 	})
 	if err != nil {
@@ -309,13 +287,51 @@ func (a *App) logError(format string, args ...any) {
 	}
 }
 
+func truncateRunes(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) > maxRunes && maxRunes > 3 {
+		return string(runes[:maxRunes-3]) + "..."
+	}
+	return s
+}
+
+func sanitizeTSVField(s string) string {
+	s = strings.ReplaceAll(s, "\t", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return s
+}
+
+func resolveScopeAndDir(globalFlag bool) (string, string) {
+	if globalFlag {
+		return state.ScopeGlobal, ""
+	}
+	wsDir, _ := os.Getwd()
+	return state.ScopeWorkspace, wsDir
+}
+
+func (a *App) resolveDefaultCatalogURL() string {
+	catURL := config.DefaultCatalogURL
+	if envURL := os.Getenv("KUNGFU_URL"); envURL != "" {
+		catURL = envURL
+	} else if envURL := os.Getenv("KUNGFU_REMOTE_URL"); envURL != "" {
+		catURL = envURL
+	} else if a.Config != nil && a.Config.GetCatalogURL("default") != "" {
+		catURL = a.Config.GetCatalogURL("default")
+	}
+	return catalog.ResolveCatalogURL(catURL)
+}
+
+func (a *App) catalogIndexCachePath() string {
+	if a.Options.CacheDir != "" {
+		return filepath.Join(a.Options.CacheDir, "index.json")
+	}
+	return catalog.GetCatalogCachePath()
+}
+
 func truncateSuggestionDescription(desc string) string {
 	clean := strings.Join(strings.Fields(desc), " ")
-	runes := []rune(clean)
-	if len(runes) > 69 {
-		return string(runes[:66]) + "..."
-	}
-	return clean
+	return truncateRunes(clean, 69)
 }
 
 func (a *App) printNotFoundWithSuggestions(cmd, query string) {
@@ -395,9 +411,18 @@ func (a *App) printNotFoundWithSuggestions(cmd, query string) {
 }
 
 func (a *App) getSkillStatus(item *catalog.Item) string {
+	return a.getSkillStatusWithState(item, a.loadState())
+}
+
+func (a *App) getSkillStatusWithState(item *catalog.Item, st *state.State) string {
+	if item == nil {
+		return "catalog"
+	}
 	wd, _ := os.Getwd()
 	homeDir, _ := os.UserHomeDir()
-	st := a.loadState()
+	if st == nil {
+		st = a.loadState()
+	}
 
 	if wd != "" && st.Workspaces != nil {
 		if ws, ok := st.Workspaces[wd]; ok && ws.Skills != nil {
@@ -428,9 +453,6 @@ func (a *App) getSkillStatus(item *catalog.Item) string {
 	if homeDir != "" {
 		if _, err := os.Stat(filepath.Join(homeDir, ".agents", "skills", item.Name, "SKILL.md")); err == nil {
 			return state.ScopeGlobal
-		}
-		if _, err := os.Stat(filepath.Join(homeDir, ".cache", "kungfu", "skills", item.Name, "SKILL.md")); err == nil {
-			return "cached"
 		}
 	}
 	if cacheRoot := a.cacheRootDir(); cacheRoot != "" {
@@ -480,10 +502,17 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		if arg == "--" {
+			if i+1 < len(args) {
+				cmdName = args[i+1]
+				cmdArgs = args[i+2:]
+			}
+			break
+		}
 		if strings.HasPrefix(arg, "-") {
 			globalArgs = append(globalArgs, arg)
 			if arg == "--config" || arg == "-config" || arg == "--cache-dir" || arg == "-cache-dir" {
-				if i+1 < len(args) && !isSubcommandName(args[i+1]) && !strings.HasPrefix(args[i+1], "-") {
+				if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") && (!isSubcommandName(args[i+1]) || i+2 < len(args)) {
 					i++
 					globalArgs = append(globalArgs, args[i])
 				} else {
@@ -836,6 +865,9 @@ func (a *App) cacheRootDir() string {
 	if a.Options.CacheDir != "" {
 		return a.Options.CacheDir
 	}
+	if envDir := os.Getenv("KUNGFU_CACHE_DIR"); envDir != "" {
+		return envDir
+	}
 	if homeDir, err := os.UserHomeDir(); err == nil && homeDir != "" {
 		return filepath.Join(homeDir, ".cache", "kungfu")
 	}
@@ -859,40 +891,8 @@ func (a *App) ensureArchiveUnpacked(item *catalog.Item) {
 }
 
 func (a *App) candidateBaseDirs(item catalog.Item) []string {
-	dirs := runner.GetCandidateBaseDirs(item)
-	if a.Options.CacheDir == "" {
-		return dirs
-	}
-	add := func(d string) {
-		d = filepath.Clean(d)
-		fi, err := os.Stat(d)
-		if err != nil || !fi.IsDir() {
-			return
-		}
-		for _, existing := range dirs {
-			if existing == d {
-				return
-			}
-		}
-		dirs = append(dirs, d)
-	}
-	expectedDigest := item.EffectiveDigest()
-	canUseCache := func(skillName string) bool {
-		if item.Type == catalog.ItemTypeSkillMD && item.Source != "local" {
-			return false
-		}
-		if catalog.IsArchiveItem(item) && expectedDigest != "" {
-			return catalog.IsArchiveCachedWithDigest(a.Options.CacheDir, skillName, expectedDigest)
-		}
-		return true
-	}
-	if item.Name != "" && canUseCache(item.Name) {
-		add(filepath.Join(a.Options.CacheDir, "skills", item.Name))
-	}
-	if item.ID != "" && item.ID != item.Name && canUseCache(item.ID) {
-		add(filepath.Join(a.Options.CacheDir, "skills", item.ID))
-	}
-	return dirs
+	runner.SetCacheDir(a.Options.CacheDir)
+	return runner.GetCandidateBaseDirs(item)
 }
 
 func walkRelativeFiles(rootDir string) []string {
@@ -945,6 +945,14 @@ func isScriptFile(relPath string) bool {
 }
 
 func (a *App) listReferences(item catalog.Item) []string {
+	return a.collectReferences(item, true)
+}
+
+func (a *App) listReferenceFiles(item catalog.Item) []string {
+	return a.collectReferences(item, false)
+}
+
+func (a *App) collectReferences(item catalog.Item, stripMarkdownExt bool) []string {
 	var refs []string
 	seen := make(map[string]bool)
 
@@ -956,7 +964,9 @@ func (a *App) listReferences(item catalog.Item) []string {
 		clean := filepath.ToSlash(filepath.Clean(r))
 		clean = strings.TrimPrefix(clean, "./")
 		clean = strings.TrimPrefix(clean, "references/")
-		clean = strings.TrimSuffix(clean, ".md")
+		if stripMarkdownExt {
+			clean = strings.TrimSuffix(clean, ".md")
+		}
 
 		if clean != "" && !seen[clean] {
 			seen[clean] = true

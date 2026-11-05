@@ -20,7 +20,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,7 +28,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/danicat/kungfu/internal/catalog"
-	"github.com/danicat/kungfu/internal/config"
 	"github.com/danicat/kungfu/internal/runner"
 	"github.com/danicat/kungfu/internal/search"
 	"github.com/danicat/kungfu/internal/state"
@@ -154,7 +152,7 @@ func (a *App) RunLoad(args []string) int {
 	}
 
 	item, err := a.Store.Get(skillName)
-	if err != nil && isGitHubSkillSpec(spec) {
+	if err != nil && !localFlag && shouldProbeGitHubOnLoad(spec, subpath) {
 		if ghTarget, ok := catalog.ParseGitHubTarget(spec); ok {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			ghItem, ghErr := catalog.FetchGitHubSkill(ctx, ghTarget, a.getHTTPClient())
@@ -163,11 +161,20 @@ func (a *App) RunLoad(args []string) int {
 				item = ghItem
 				subpath = ""
 				err = nil
+			} else if ghErr != nil {
+				if code := MapErrorToExitCode(ghErr); code == ExitNetwork || code == ExitIntegrity {
+					_, _ = fmt.Fprintf(a.Stderr, "error: fetching skill from github %q: %v\n", spec, ghErr)
+					return code
+				}
 			}
 		}
 	}
 	if err != nil {
-		a.printNotFoundWithSuggestions("load", spec)
+		suggestQuery := spec
+		if isBundledSubpath(subpath) {
+			suggestQuery = skillName
+		}
+		a.printNotFoundWithSuggestions("load", suggestQuery)
 		return ExitNotFound
 	}
 	target := loadTarget{
@@ -182,17 +189,30 @@ func (a *App) RunLoad(args []string) int {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		content, loadErr = runner.ReadFileContext(ctx, target.item, target.subpath, a.getHTTPClient())
+		subpathItem := target.item
+		if localFlag {
+			subpathItem.URL = ""
+			subpathItem.Metadata = nil
+		}
+
+		content, loadErr = runner.ReadFileContext(ctx, subpathItem, target.subpath, a.getHTTPClient())
 		if loadErr != nil {
 			if errors.Is(loadErr, runner.ErrInvalidPath) {
 				_, _ = fmt.Fprintf(a.Stderr, "error: invalid path traversal in %q\n", target.subpath)
 				return ExitUsage
 			}
 			if errors.Is(loadErr, runner.ErrFileNotFound) {
+				if localFlag {
+					_, _ = fmt.Fprintf(a.Stderr, "error: subpath %q not found in local cache for skill %q. Run 'kungfu load %s/%s' to fetch from remote.\n", target.subpath, target.item.Name, target.item.Name, target.subpath)
+					return ExitNotFound
+				}
 				_, _ = fmt.Fprintf(a.Stderr, "error: subpath %q not found in skill %q.\n", target.subpath, target.item.Name)
 				var candidates []string
 				for _, ref := range a.listReferences(target.item) {
-					candidates = append(candidates, ref, "references/"+ref, "references/"+ref+".md")
+					candidates = append(candidates, ref, "references/"+ref)
+				}
+				for _, refFile := range a.listReferenceFiles(target.item) {
+					candidates = append(candidates, refFile, "references/"+refFile)
 				}
 				for _, scr := range a.listScripts(target.item) {
 					candidates = append(candidates, scr, "scripts/"+scr)
@@ -362,21 +382,9 @@ func (a *App) loadItemContentWithOpts(item *catalog.Item, localOnly, forceUpdate
 		autoUpdate = a.Config.IsAutoUpdate()
 	}
 
-	resolveDefaultCatalogURL := func() string {
-		catURL := config.DefaultCatalogURL
-		if envURL := os.Getenv("KUNGFU_URL"); envURL != "" {
-			catURL = envURL
-		} else if envURL := os.Getenv("KUNGFU_REMOTE_URL"); envURL != "" {
-			catURL = envURL
-		} else if a.Config != nil && a.Config.GetCatalogURL("default") != "" {
-			catURL = a.Config.GetCatalogURL("default")
-		}
-		return catalog.ResolveCatalogURL(catURL)
-	}
-
 	if forceUpdate {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		freshItem := a.refreshCatalogForItem(ctx, item, resolveDefaultCatalogURL())
+		freshItem := a.refreshCatalogForItem(ctx, item, a.resolveDefaultCatalogURL())
 		cancel()
 		if freshItem != nil {
 			tempItem := *freshItem
@@ -403,7 +411,7 @@ func (a *App) loadItemContentWithOpts(item *catalog.Item, localOnly, forceUpdate
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
-		freshItem := a.refreshCatalogForItem(ctx, item, resolveDefaultCatalogURL())
+		freshItem := a.refreshCatalogForItem(ctx, item, a.resolveDefaultCatalogURL())
 		if freshItem != nil {
 			// Re-fetch content using the fresh digest
 			tempItem := *freshItem
@@ -426,7 +434,7 @@ func (a *App) loadItemContentWithOpts(item *catalog.Item, localOnly, forceUpdate
 			}
 		}
 
-		// If forceDigest was passed, bypass verification
+		// If forceDigest was passed, bypass verification without poisoning the local cache
 		if forceDigest {
 			_, _ = fmt.Fprintf(a.Stderr, "warning: bypassing integrity verification for %q (--force)\n", item.Name)
 			// Fetch raw bytes without verify
@@ -449,7 +457,7 @@ func (a *App) loadItemContentWithOpts(item *catalog.Item, localOnly, forceUpdate
 				if resp.StatusCode != http.StatusOK {
 					return "", fmt.Errorf("fetching %s (--force): HTTP %d", remoteURL, resp.StatusCode)
 				}
-				b, readErr := io.ReadAll(io.LimitReader(resp.Body, catalog.DefaultMaxUnpackedBytes))
+				b, readErr := catalog.ReadBounded(resp.Body, catalog.DefaultMaxUnpackedBytes)
 				if readErr != nil {
 					return "", fmt.Errorf("reading %s (--force): %w", remoteURL, readErr)
 				}
@@ -459,12 +467,8 @@ func (a *App) loadItemContentWithOpts(item *catalog.Item, localOnly, forceUpdate
 						if exErr != nil {
 							return "", fmt.Errorf("extracting SKILL.md from archive %s (--force): %w", remoteURL, exErr)
 						}
-						if cacheRoot := a.cacheRootDir(); cacheRoot != "" && item.Name != "" {
-							_, _ = catalog.UnpackArchiveToCache(b, cacheRoot, item.Name, catalog.ComputeDigest(b))
-						}
 						return md, nil
 					}
-					runner.CacheSkillFile(item.Name, "SKILL.md", b)
 					return string(b), nil
 				}
 			}
@@ -519,7 +523,7 @@ func (a *App) refreshCatalogForItem(ctx context.Context, item *catalog.Item, def
 					target.Ref = catRec.Ref
 				}
 				if freshManifest, err := catalog.FetchGitHubCatalog(ctx, target, a.getHTTPClient()); err == nil && freshManifest != nil {
-					_ = catalog.SaveNamedCatalogCache(catRec.Name, catRec.URL, *freshManifest, "")
+					_ = catalog.SaveNamedCatalogCacheIn(a.cacheRootDir(), catRec.Name, catRec.URL, *freshManifest, "")
 					if cat, ok := a.Store.(*catalog.Catalog); ok {
 						cat.AddCatalogManifest(catRec.Name, freshManifest)
 					}
@@ -530,7 +534,7 @@ func (a *App) refreshCatalogForItem(ctx context.Context, item *catalog.Item, def
 			}
 		case state.CatalogTypeHTTP:
 			if freshManifest, freshETag, err := catalog.FetchHTTPCatalog(ctx, catRec.Source, a.getHTTPClient()); err == nil && freshManifest != nil {
-				_ = catalog.SaveNamedCatalogCache(catRec.Name, catRec.URL, *freshManifest, freshETag)
+				_ = catalog.SaveNamedCatalogCacheIn(a.cacheRootDir(), catRec.Name, catRec.URL, *freshManifest, freshETag)
 				if cat, ok := a.Store.(*catalog.Catalog); ok {
 					cat.AddCatalogManifest(catRec.Name, freshManifest)
 				}
@@ -543,11 +547,9 @@ func (a *App) refreshCatalogForItem(ctx context.Context, item *catalog.Item, def
 
 	// 2. Refresh default catalog
 	if freshManifest, freshETag, fetchErr := catalog.FetchHTTPCatalog(ctx, defaultCatURL, a.getHTTPClient()); fetchErr == nil && freshManifest != nil {
-		cachePath := catalog.GetCatalogCachePath()
-		if a.Options.CacheDir != "" {
-			cachePath = filepath.Join(a.Options.CacheDir, "index.json")
+		if cachePath := a.catalogIndexCachePath(); cachePath != "" {
+			_ = catalog.SaveCachedCatalog(cachePath, defaultCatURL, *freshManifest, freshETag)
 		}
-		_ = catalog.SaveCachedCatalog(cachePath, defaultCatURL, *freshManifest, freshETag)
 		if found := findInManifest(freshManifest); found != nil {
 			return found
 		}

@@ -20,7 +20,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"maps"
 	"net/http"
 	"os"
@@ -184,6 +183,8 @@ func probeGitHubRef(ctx context.Context, target *GitHubTarget, ref string, clien
 		)
 	}
 
+	var lastNetErr error
+	gotHTTPResponse := false
 	for _, relPath := range candidatePaths {
 		rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", target.Owner, target.Repo, ref, relPath)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
@@ -194,15 +195,17 @@ func probeGitHubRef(ctx context.Context, target *GitHubTarget, ref string, clien
 
 		resp, err := client.Do(req)
 		if err != nil {
+			lastNetErr = err
 			continue
 		}
+		gotHTTPResponse = true
 
 		if resp.StatusCode != http.StatusOK {
 			_ = resp.Body.Close()
 			continue
 		}
 
-		bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20)) // 2MB limit
+		bodyBytes, err := ReadBounded(resp.Body, 2<<20) // 2MB limit
 		_ = resp.Body.Close()
 		if err != nil || len(bodyBytes) == 0 {
 			continue
@@ -261,6 +264,10 @@ func probeGitHubRef(ctx context.Context, target *GitHubTarget, ref string, clien
 		return &item, nil
 	}
 
+	if !gotHTTPResponse && lastNetErr != nil {
+		return nil, fmt.Errorf("fetching skill from github %s/%s: %w", target.Owner, target.Repo, lastNetErr)
+	}
+
 	return nil, nil
 }
 
@@ -316,7 +323,7 @@ func tryFetchManifest(ctx context.Context, target *GitHubTarget, ref, catPath st
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 5<<20)) // 5MB limit
+	data, err := ReadBounded(resp.Body, 5<<20) // 5MB limit
 	if err != nil || len(data) == 0 {
 		return nil, fmt.Errorf("empty or unreadable body: %w", err)
 	}
@@ -403,7 +410,7 @@ func probeGitHubCatalogRef(ctx context.Context, target *GitHubTarget, ref string
 		return nil, fmt.Errorf("github api returned status %d for tree of %s/%s", resp.StatusCode, target.Owner, target.Repo)
 	}
 
-	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20)) // 10MB limit
+	bodyBytes, err := ReadBounded(resp.Body, 10<<20) // 10MB limit
 	if err != nil {
 		return nil, fmt.Errorf("reading tree response: %w", err)
 	}
@@ -457,7 +464,7 @@ func probeGitHubCatalogRef(ctx context.Context, target *GitHubTarget, ref string
 			continue
 		}
 
-		skillData, err := io.ReadAll(io.LimitReader(skillResp.Body, 2<<20))
+		skillData, err := ReadBounded(skillResp.Body, 2<<20)
 		_ = skillResp.Body.Close()
 		if err != nil || len(skillData) == 0 {
 			continue
@@ -590,7 +597,7 @@ func FetchHTTPCatalog(ctx context.Context, rawURL string, client *http.Client) (
 		}
 
 		etag := resp.Header.Get("ETag")
-		data, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+		data, err := ReadBounded(resp.Body, 10<<20)
 		_ = resp.Body.Close()
 		if err != nil {
 			lastErr = fmt.Errorf("reading catalog response: %w", err)

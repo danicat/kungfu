@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"net/http"
 	"os"
@@ -257,7 +256,10 @@ func (c *Catalog) Sync(ctx context.Context, force bool) error {
 		return nil
 	}
 
+	prevForce := c.forceRefresh
 	c.forceRefresh = force
+	defer func() { c.forceRefresh = prevForce }()
+
 	if err := c.fetchRemoteLocked(ctx); err != nil {
 		return err
 	}
@@ -268,13 +270,17 @@ func (c *Catalog) Sync(ctx context.Context, force bool) error {
 }
 
 func (c *Catalog) fetchRemoteLocked(ctx context.Context) error {
-	cachePath := GetCatalogCachePath()
-	if c.cacheDir != "" {
-		cachePath = filepath.Join(c.cacheDir, "index.json")
+	var cachePath string
+	if !c.noCache {
+		if c.cacheDir != "" {
+			cachePath = filepath.Join(c.cacheDir, "index.json")
+		} else {
+			cachePath = GetCatalogCachePath()
+		}
 	}
 
 	var cached *CachedCatalog
-	if !c.noCache {
+	if !c.noCache && cachePath != "" {
 		if loaded, err := LoadCachedCatalog(cachePath); err == nil && loaded != nil && loaded.URL == c.remoteURL {
 			cached = loaded
 		}
@@ -284,6 +290,7 @@ func (c *Catalog) fetchRemoteLocked(ctx context.Context) error {
 	if cached != nil && !c.forceRefresh && time.Since(cached.FetchedAt) < DefaultCatalogTTL {
 		ResolveManifestURLs(&cached.Manifest, c.remoteURL)
 		c.manifest = &cached.Manifest
+		c.items = make(map[string]Item)
 		for _, it := range cached.Manifest.Items {
 			c.items[strings.ToLower(it.ID)] = it
 			c.items[strings.ToLower(it.Name)] = it
@@ -308,14 +315,17 @@ func (c *Catalog) fetchRemoteLocked(ctx context.Context) error {
 		if resp.StatusCode == http.StatusNotModified && cached != nil {
 			// 304 Not Modified: refresh fetched timestamp and use cache
 			ResolveManifestURLs(&cached.Manifest, c.remoteURL)
-			_ = SaveCachedCatalog(cachePath, c.remoteURL, cached.Manifest, cached.ETag)
+			if !c.noCache && cachePath != "" {
+				_ = SaveCachedCatalog(cachePath, c.remoteURL, cached.Manifest, cached.ETag)
+			}
 			c.manifest = &cached.Manifest
+			c.items = make(map[string]Item)
 			for _, it := range cached.Manifest.Items {
 				c.items[strings.ToLower(it.ID)] = it
 				c.items[strings.ToLower(it.Name)] = it
 			}
 		} else if resp.StatusCode == http.StatusOK {
-			data, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+			data, err := ReadBounded(resp.Body, 10<<20)
 			if err != nil {
 				return fmt.Errorf("catalog: reading %s body: %w", c.remoteURL, err)
 			}
@@ -326,9 +336,10 @@ func (c *Catalog) fetchRemoteLocked(ctx context.Context) error {
 			ResolveManifestURLs(&manifest, c.remoteURL)
 			c.manifest = &manifest
 			etag := resp.Header.Get("ETag")
-			if !c.noCache {
+			if !c.noCache && cachePath != "" {
 				_ = SaveCachedCatalog(cachePath, c.remoteURL, manifest, etag)
 			}
+			c.items = make(map[string]Item)
 			for _, it := range manifest.Items {
 				c.items[strings.ToLower(it.ID)] = it
 				c.items[strings.ToLower(it.Name)] = it
@@ -347,7 +358,7 @@ func (c *Catalog) loadNamedCatalogsLocked() {
 	if c.noCache {
 		return
 	}
-	namedCaches, err := LoadAllNamedCatalogCaches()
+	namedCaches, err := LoadAllNamedCatalogCachesIn(c.resolveCacheRoot())
 	if err != nil || len(namedCaches) == 0 {
 		return
 	}
@@ -409,9 +420,18 @@ func (c *Catalog) AddCatalogManifest(name string, manifest *Manifest) {
 func (c *Catalog) RemoveCatalogItems(name string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	cleanName := strings.ToLower(name)
+	cleanName := strings.ToLower(strings.TrimSpace(name))
+	if cleanName == "" {
+		return
+	}
+	safeName := SafeCatalogFileName(cleanName)
+	suffix := "@" + cleanName
 	for k, it := range c.items {
-		if strings.EqualFold(it.Source, name) || strings.EqualFold(it.Source, cleanName) || strings.Contains(strings.ToLower(it.Source), cleanName) {
+		src := strings.ToLower(strings.TrimSpace(it.Source))
+		srcTrimmed := strings.TrimPrefix(src, "github:")
+		if src == cleanName || srcTrimmed == cleanName ||
+			(safeName != "" && (SafeCatalogFileName(src) == safeName || SafeCatalogFileName(srcTrimmed) == safeName)) ||
+			strings.HasSuffix(strings.ToLower(k), suffix) {
 			delete(c.items, k)
 		}
 	}
@@ -445,10 +465,15 @@ func (c *Catalog) ListByFilter(filter QueryFilter) []Item {
 	var result []Item
 
 	for _, item := range c.items {
-		if _, already := seen[item.ID]; already {
+		lowID := strings.ToLower(item.ID)
+		if primary, ok := c.items[lowID]; ok {
+			item = primary
+			lowID = strings.ToLower(item.ID)
+		}
+		if _, already := seen[lowID]; already {
 			continue
 		}
-		seen[item.ID] = struct{}{}
+		seen[lowID] = struct{}{}
 
 		// Check Category filter
 		if cat != "" && cat != "all" {
@@ -515,10 +540,15 @@ func (c *Catalog) Categories() []Category {
 	seen := make(map[string]struct{})
 
 	for _, item := range c.items {
-		if _, already := seen[item.ID]; already {
+		lowID := strings.ToLower(item.ID)
+		if primary, ok := c.items[lowID]; ok {
+			item = primary
+			lowID = strings.ToLower(item.ID)
+		}
+		if _, already := seen[lowID]; already {
 			continue
 		}
-		seen[item.ID] = struct{}{}
+		seen[lowID] = struct{}{}
 		if item.Category != "" {
 			catKey := strings.ToLower(item.Category)
 			catCount[catKey]++
@@ -582,10 +612,14 @@ func (c *Catalog) discoverLocalSkillsLocked() {
 		candidateRoots = append(candidateRoots, filepath.Join(wd, "skills"))
 	}
 
-	// 2. Global user directories
+	// 2. Global user directories and cache directory
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		candidateRoots = append(candidateRoots, filepath.Join(home, ".agents", "skills"))
-		candidateRoots = append(candidateRoots, filepath.Join(home, ".cache", "kungfu", "skills"))
+	}
+	var cacheSkillsDir string
+	if cacheRoot := c.resolveCacheRoot(); cacheRoot != "" && !c.noCache {
+		cacheSkillsDir = filepath.Join(cacheRoot, "skills")
+		candidateRoots = append(candidateRoots, cacheSkillsDir)
 	}
 
 	for _, root := range candidateRoots {
@@ -594,10 +628,13 @@ func (c *Catalog) discoverLocalSkillsLocked() {
 			continue
 		}
 		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
 			skillDir := filepath.Join(root, entry.Name())
+			if !entry.IsDir() {
+				info, err := os.Stat(skillDir)
+				if err != nil || !info.IsDir() {
+					continue
+				}
+			}
 			skillFile := filepath.Join(skillDir, "SKILL.md")
 			if _, err := os.Stat(skillFile); err != nil {
 				skillFile = filepath.Join(skillDir, "skill.md")
@@ -628,7 +665,8 @@ func (c *Catalog) discoverLocalSkillsLocked() {
 				if len(existing.Tags) == 0 && fm.Metadata != nil && fm.Metadata["tags"] != "" {
 					existing.Tags = ParseTags(fm.Metadata["tags"])
 				}
-				isCachePath := strings.Contains(filepath.ToSlash(skillFile), "/.cache/kungfu/skills/")
+				isCachePath := strings.Contains(filepath.ToSlash(skillFile), "/.cache/kungfu/skills/") ||
+					(cacheSkillsDir != "" && IsPathContained(cacheSkillsDir, skillFile))
 				if existing.Path == "" && !isCachePath {
 					existing.Path = skillFile
 				}
@@ -695,6 +733,9 @@ func (c *Catalog) resolveCacheRoot() string {
 	if c.cacheDir != "" {
 		return c.cacheDir
 	}
+	if envDir := os.Getenv("KUNGFU_CACHE_DIR"); envDir != "" {
+		return envDir
+	}
 	home, err := os.UserHomeDir()
 	if err == nil && home != "" {
 		return filepath.Join(home, ".cache", "kungfu")
@@ -736,7 +777,7 @@ func (c *Catalog) LoadContent(item *Item) (string, error) {
 		if resp.StatusCode != http.StatusOK {
 			return "", fmt.Errorf("failed to download skill %q from %s: HTTP %d", item.Name, remoteURL, resp.StatusCode)
 		}
-		data, err := io.ReadAll(io.LimitReader(resp.Body, DefaultMaxUnpackedBytes))
+		data, err := ReadBounded(resp.Body, DefaultMaxUnpackedBytes)
 		if err != nil {
 			return "", fmt.Errorf("failed to read response for %q: %w", item.Name, err)
 		}
@@ -762,7 +803,9 @@ func (c *Catalog) LoadContent(item *Item) (string, error) {
 			EnrichItemFromSkillMD(item, []byte(extractedMD))
 			if !c.noCache && item.Name != "" {
 				if cacheRoot := c.resolveCacheRoot(); cacheRoot != "" {
-					_, _ = UnpackArchiveToCache(data, cacheRoot, item.Name, expectedDigest)
+					if _, err := UnpackArchiveToCache(data, cacheRoot, item.Name, expectedDigest); err != nil {
+						return "", fmt.Errorf("failed to unpack archive for %q: %w", item.Name, err)
+					}
 				}
 			}
 			return extractedMD, nil

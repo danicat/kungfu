@@ -11,7 +11,7 @@ metadata:
   category: agents
   tags: "gateway, agent-skills, discovery, search, catalog, cli, learn, jit"
   author: Daniela Petruzalek (daniela@danicat.dev)
-  version: "0.6.5"
+  version: "0.6.6"
   catalog: https://skills.danicat.dev
 ---
 
@@ -24,8 +24,8 @@ metadata:
 > **NEVER write, embed, or leak KungFu notation into any other `SKILL.md` definition, `README.md`, documentation file, code comment, commit message, article, or agent output text unless the user explicitly tells you otherwise.**
 
 > [!IMPORTANT]
-> **CLI Version Check (`v0.6.5`)**:
-> Compare `kungfu --version` against this skill's frontmatter `version` (`0.6.5`). If the installed `kungfu` binary is older than `0.6.5`, upgrade the CLI and synchronize all catalogs immediately:
+> **CLI Version Check (`v0.6.6`)**:
+> Compare `kungfu --version` against this skill's frontmatter `version` (`0.6.6`). If the installed `kungfu` binary is older than `0.6.6`, upgrade the CLI and synchronize all catalogs immediately:
 > ```bash
 > go install github.com/danicat/kungfu@latest && kungfu update
 > ```
@@ -41,7 +41,7 @@ Activate `kungfu` whenever you encounter:
 
 ## 1. Search and discovery (`kungfu find` / `::?`)
 
-Use `kungfu find` to search skills by keyword using BM25 and TF-IDF ranking:
+Use `kungfu find` to search skills by keyword using hybrid BM25 + exact/fuzzy RRF ranking:
 
 ```bash
 kungfu find game
@@ -123,7 +123,7 @@ KungFu uses a compact shortcut notation for human-agent pair programming. When t
 
 | Notation | Command | Purpose |
 |---|---|---|
-| `::?keyword` | `kungfu find keyword` | **Discover skills** by keyword using hybrid BM25 + TF-IDF search |
+| `::?keyword` | `kungfu find keyword` | **Discover skills** by keyword using hybrid BM25 + exact/fuzzy RRF search |
 | `::?keyword@catalog` | `kungfu find keyword@catalog` | **Discover skills** within a specific catalog |
 | `::skill` *(or `//skill`)* | `kungfu load skill` | **JIT load** a skill from the default catalog (`::skill@default`) |
 | `::skill@catalog` | `kungfu load skill@catalog` | **JIT load** a skill from a specific catalog (such as `::go@go-skills`) |

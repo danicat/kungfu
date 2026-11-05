@@ -21,17 +21,22 @@ import (
 )
 
 // DefaultVersion is the fallback version string used in local development builds.
-var DefaultVersion = "0.6.5"
+var DefaultVersion = "0.6.6"
 
 // Get returns the dynamic version string resolved from runtime/debug build info
 // (e.g., when built via `go install module@version`), falling back to DefaultVersion.
 func Get() string {
 	if info, ok := debug.ReadBuildInfo(); ok {
-		if info.Main.Version != "" && info.Main.Version != "(devel)" {
-			if strings.Contains(info.Main.Version, "dirty") {
+		v := info.Main.Version
+		if v != "" && v != "(devel)" {
+			if strings.Contains(v, "dirty") {
 				return DefaultVersion + "+dirty"
 			}
-			return strings.TrimPrefix(info.Main.Version, "v")
+			// Ignore VCS pseudo-versions from local untagged git checkouts (e.g. v0.0.0-2026... or v0.6.4-0.2026...)
+			if strings.HasPrefix(v, "v0.0.0-") || strings.Contains(v, "-0.20") {
+				return DefaultVersion
+			}
+			return strings.TrimPrefix(v, "v")
 		}
 	}
 	return DefaultVersion

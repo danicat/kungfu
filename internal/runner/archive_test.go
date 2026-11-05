@@ -90,7 +90,7 @@ func TestUnpackArchive_TarGz_Success(t *testing.T) {
 	data := createValidTarGz(t, files)
 
 	destDir := t.TempDir()
-	extracted, err := runner.UnpackArchive(data, destDir, runner.DefaultMaxUnpackedBytes)
+	extracted, err := catalog.UnpackArchive(data, destDir, catalog.DefaultMaxUnpackedBytes)
 	if err != nil {
 		t.Fatalf("UnpackArchive failed: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestUnpackArchive_Zip_Success(t *testing.T) {
 	data := createValidZip(t, files)
 
 	destDir := t.TempDir()
-	extracted, err := runner.UnpackArchive(data, destDir, runner.DefaultMaxUnpackedBytes)
+	extracted, err := catalog.UnpackArchive(data, destDir, catalog.DefaultMaxUnpackedBytes)
 	if err != nil {
 		t.Fatalf("UnpackArchive zip failed: %v", err)
 	}
@@ -135,8 +135,8 @@ func TestUnpackArchive_MissingSkillMD(t *testing.T) {
 	data := createValidTarGz(t, files)
 
 	destDir := t.TempDir()
-	_, err := runner.UnpackArchive(data, destDir, runner.DefaultMaxUnpackedBytes)
-	if !errors.Is(err, runner.ErrArchiveMissingSkillMD) {
+	_, err := catalog.UnpackArchive(data, destDir, catalog.DefaultMaxUnpackedBytes)
+	if !errors.Is(err, catalog.ErrArchiveMissingSkillMD) {
 		t.Fatalf("expected ErrArchiveMissingSkillMD, got: %v", err)
 	}
 }
@@ -157,8 +157,8 @@ func TestUnpackArchive_PathTraversal_Rejected(t *testing.T) {
 	_ = gzw.Close()
 
 	destDir := t.TempDir()
-	_, err := runner.UnpackArchive(buf.Bytes(), destDir, runner.DefaultMaxUnpackedBytes)
-	if !errors.Is(err, runner.ErrArchiveTraversal) {
+	_, err := catalog.UnpackArchive(buf.Bytes(), destDir, catalog.DefaultMaxUnpackedBytes)
+	if !errors.Is(err, catalog.ErrArchiveTraversal) {
 		t.Fatalf("expected ErrArchiveTraversal for .., got: %v", err)
 	}
 
@@ -176,8 +176,8 @@ func TestUnpackArchive_PathTraversal_Rejected(t *testing.T) {
 	_ = tw.Close()
 	_ = gzw.Close()
 
-	_, err = runner.UnpackArchive(buf.Bytes(), destDir, runner.DefaultMaxUnpackedBytes)
-	if !errors.Is(err, runner.ErrArchiveTraversal) {
+	_, err = catalog.UnpackArchive(buf.Bytes(), destDir, catalog.DefaultMaxUnpackedBytes)
+	if !errors.Is(err, catalog.ErrArchiveTraversal) {
 		t.Fatalf("expected ErrArchiveTraversal for absolute path, got: %v", err)
 	}
 }
@@ -197,8 +197,8 @@ func TestUnpackArchive_SymlinkEscape_Rejected(t *testing.T) {
 	_ = gzw.Close()
 
 	destDir := t.TempDir()
-	_, err := runner.UnpackArchive(buf.Bytes(), destDir, runner.DefaultMaxUnpackedBytes)
-	if !errors.Is(err, runner.ErrArchiveSymlinkEscapes) {
+	_, err := catalog.UnpackArchive(buf.Bytes(), destDir, catalog.DefaultMaxUnpackedBytes)
+	if !errors.Is(err, catalog.ErrArchiveSymlinkEscapes) {
 		t.Fatalf("expected ErrArchiveSymlinkEscapes, got: %v", err)
 	}
 }
@@ -212,8 +212,8 @@ func TestUnpackArchive_DecompressionBomb_Rejected(t *testing.T) {
 
 	destDir := t.TempDir()
 	// limit to 10 bytes
-	_, err := runner.UnpackArchive(data, destDir, 10)
-	if !errors.Is(err, runner.ErrArchiveDecompressionBomb) {
+	_, err := catalog.UnpackArchive(data, destDir, 10)
+	if !errors.Is(err, catalog.ErrArchiveDecompressionBomb) {
 		t.Fatalf("expected ErrArchiveDecompressionBomb, got: %v", err)
 	}
 }

@@ -25,7 +25,6 @@ import (
 	"time"
 
 	"github.com/danicat/kungfu/internal/catalog"
-	"github.com/danicat/kungfu/internal/config"
 	"github.com/danicat/kungfu/internal/state"
 )
 
@@ -119,13 +118,13 @@ func (a *App) runCatalogAdd(args []string) int {
 		m, err := catalog.DiscoverLocalCatalog(source)
 		if err != nil {
 			_, _ = fmt.Fprintf(a.Stderr, "error: discovering local catalog %s: %v\n", source, err)
-			return ExitGeneral
+			return MapErrorToExitCode(err)
 		}
 		manifest = m
 	} else if isExplicitLocalPath {
 		_, _ = fmt.Fprintf(a.Stderr, "error: local catalog directory %q not found: %v\n", source, err)
 		return MapErrorToExitCode(err)
-	} else if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") && !strings.Contains(source, "github.com") {
+	} else if (strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://")) && (!strings.Contains(source, "github.com") || strings.HasSuffix(strings.ToLower(source), ".json")) {
 		// 2. HTTP Manifest URL
 		catType = state.CatalogTypeHTTP
 		catURL = source
@@ -137,10 +136,13 @@ func (a *App) runCatalogAdd(args []string) int {
 			catName = strings.TrimSuffix(catName, "/catalog.json")
 			catName = strings.TrimSuffix(catName, "/")
 		}
+		if refreshFlag {
+			_ = catalog.DeleteNamedCatalogCacheIn(a.cacheRootDir(), catName)
+		}
 		m, tag, err := catalog.FetchHTTPCatalog(ctx, source, a.getHTTPClient())
 		if err != nil {
 			_, _ = fmt.Fprintf(a.Stderr, "error: fetching http catalog %s: %v\n", source, err)
-			return ExitGeneral
+			return MapErrorToExitCode(err)
 		}
 		manifest = m
 		etag = tag
@@ -166,11 +168,14 @@ func (a *App) runCatalogAdd(args []string) int {
 				catName += "/" + target.Subpath
 			}
 		}
+		if refreshFlag {
+			_ = catalog.DeleteNamedCatalogCacheIn(a.cacheRootDir(), catName)
+		}
 
 		m, err := catalog.FetchGitHubCatalog(ctx, target, a.getHTTPClient())
 		if err != nil {
 			_, _ = fmt.Fprintf(a.Stderr, "error: fetching github catalog %s: %v\n", source, err)
-			return ExitGeneral
+			return MapErrorToExitCode(err)
 		}
 		manifest = m
 	}
@@ -181,7 +186,7 @@ func (a *App) runCatalogAdd(args []string) int {
 	}
 
 	// Save cache
-	if err := catalog.SaveNamedCatalogCache(catName, catURL, *manifest, etag); err != nil {
+	if err := catalog.SaveNamedCatalogCacheIn(a.cacheRootDir(), catName, catURL, *manifest, etag); err != nil {
 		a.logError("saving catalog cache: %v", err)
 	}
 
@@ -227,7 +232,11 @@ func (a *App) runCatalogAdd(args []string) int {
 		_ = enc.Encode(res)
 		return ExitSuccess
 	case OutputModeRaw:
-		_, _ = fmt.Fprintf(a.Stdout, "added\t%s\t%s\t%d\n", catName, catType, len(manifest.Items))
+		_, _ = fmt.Fprintf(a.Stdout, "added\t%s\t%s\t%d\n",
+			sanitizeTSVField(catName),
+			sanitizeTSVField(catType),
+			len(manifest.Items),
+		)
 		return ExitSuccess
 	default:
 		_, _ = fmt.Fprintf(a.Stdout, "✓ Added catalog %q (%s, %d skills indexed)\n", catName, catType, len(manifest.Items))
@@ -264,10 +273,7 @@ func (a *App) runCatalogList(args []string) int {
 
 	var views []CatalogView
 
-	defaultURL := config.DefaultCatalogURL
-	if a.Config != nil && a.Config.GetCatalogURL("default") != "" {
-		defaultURL = a.Config.GetCatalogURL("default")
-	}
+	defaultURL := a.resolveDefaultCatalogURL()
 
 	for _, c := range registered {
 		src := c.Source
@@ -312,7 +318,13 @@ func (a *App) runCatalogList(args []string) int {
 		return ExitSuccess
 	case OutputModeRaw:
 		for _, v := range views {
-			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%d\t%s\n", v.Name, v.Type, v.Source, v.SkillCount, v.UpdatedAt)
+			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%d\t%s\n",
+				sanitizeTSVField(v.Name),
+				sanitizeTSVField(v.Type),
+				sanitizeTSVField(v.Source),
+				v.SkillCount,
+				sanitizeTSVField(v.UpdatedAt),
+			)
 		}
 		return ExitSuccess
 	default:
@@ -400,7 +412,7 @@ func (a *App) runCatalogRemove(args []string) int {
 		}
 
 		if st.RemoveCatalog(name) {
-			_ = catalog.DeleteNamedCatalogCache(name)
+			_ = catalog.DeleteNamedCatalogCacheIn(a.cacheRootDir(), name)
 			a.Store.RemoveCatalogItems(name)
 			results = append(results, struct {
 				Name    string `json:"name"`
@@ -440,7 +452,11 @@ func (a *App) runCatalogRemove(args []string) int {
 		return ExitSuccess
 	case OutputModeRaw:
 		for _, r := range results {
-			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\n", r.Status, r.Name, r.Message)
+			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\n",
+				sanitizeTSVField(r.Status),
+				sanitizeTSVField(r.Name),
+				sanitizeTSVField(r.Message),
+			)
 		}
 		if hasError {
 			return ExitUsage
@@ -482,6 +498,7 @@ func (a *App) syncRegisteredCatalogs(ctx context.Context, st *state.State, mode 
 	}
 
 	var results []SyncResult
+	errExitCode := ExitSuccess
 	for _, cat := range targets {
 		var m *catalog.Manifest
 		var etag string
@@ -489,24 +506,13 @@ func (a *App) syncRegisteredCatalogs(ctx context.Context, st *state.State, mode 
 
 		switch cat.Type {
 		case state.CatalogTypeDefault:
-			defaultURL := config.DefaultCatalogURL
-			if envURL := os.Getenv("KUNGFU_URL"); envURL != "" {
-				defaultURL = envURL
-			} else if envURL := os.Getenv("KUNGFU_REMOTE_URL"); envURL != "" {
-				defaultURL = envURL
-			} else if a.Config != nil && a.Config.GetCatalogURL("default") != "" {
-				defaultURL = a.Config.GetCatalogURL("default")
-			}
-			defaultURL = catalog.ResolveCatalogURL(defaultURL)
+			defaultURL := a.resolveDefaultCatalogURL()
 			cat.Source = defaultURL
 			cat.URL = defaultURL
 			m, etag, err = catalog.FetchHTTPCatalog(ctx, defaultURL, a.getHTTPClient())
 			if err == nil && m != nil {
 				// Save to index.json cache
-				cachePath := catalog.GetCatalogCachePath()
-				if a.Options.CacheDir != "" {
-					cachePath = filepath.Join(a.Options.CacheDir, "index.json")
-				}
+				cachePath := a.catalogIndexCachePath()
 				_ = catalog.SaveCachedCatalog(cachePath, defaultURL, *m, etag)
 				if syncer, ok := a.Store.(interface {
 					Sync(context.Context, bool) error
@@ -532,6 +538,11 @@ func (a *App) syncRegisteredCatalogs(ctx context.Context, st *state.State, mode 
 		}
 
 		if err != nil || m == nil {
+			if err != nil {
+				if code := MapErrorToExitCode(err); errExitCode == ExitSuccess || errExitCode == ExitGeneral {
+					errExitCode = code
+				}
+			}
 			results = append(results, SyncResult{
 				Name:    cat.Name,
 				Type:    cat.Type,
@@ -542,7 +553,7 @@ func (a *App) syncRegisteredCatalogs(ctx context.Context, st *state.State, mode 
 		}
 
 		if cat.Type != state.CatalogTypeDefault {
-			_ = catalog.SaveNamedCatalogCache(cat.Name, cat.URL, *m, etag)
+			_ = catalog.SaveNamedCatalogCacheIn(a.cacheRootDir(), cat.Name, cat.URL, *m, etag)
 			a.Store.AddCatalogManifest(cat.Name, m)
 		}
 		cat.SkillCount = len(m.Items)
@@ -569,7 +580,11 @@ func (a *App) syncRegisteredCatalogs(ctx context.Context, st *state.State, mode 
 
 	exitCode := ExitSuccess
 	if hasError {
-		exitCode = ExitGeneral
+		if errExitCode != ExitSuccess {
+			exitCode = errExitCode
+		} else {
+			exitCode = ExitGeneral
+		}
 	}
 
 	a.pruneSkillCache(!hasError)

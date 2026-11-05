@@ -72,6 +72,8 @@ func TestMapErrorToExitCode(t *testing.T) {
 		{"http 404", errors.New("HTTP 404 Not Found"), ExitNotFound},
 		{"network timeout", errors.New("connection timeout"), ExitNetwork},
 		{"connection refused", syscall.ECONNREFUSED, ExitNetwork},
+		{"connection reset", syscall.ECONNRESET, ExitNetwork},
+		{"net OpError wrapping ECONNRESET", &net.OpError{Op: "read", Net: "tcp", Err: &os.SyscallError{Syscall: "read", Err: syscall.ECONNRESET}}, ExitNetwork},
 		{"custom net error", &net.DNSError{Err: "no such host"}, ExitNetwork},
 		{"unclassified error", errors.New("some unexpected syntax error"), ExitGeneral},
 	}
@@ -368,5 +370,111 @@ func TestCatalogSyncRemoved(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "unknown catalog subcommand") {
 		t.Errorf("expected unknown catalog subcommand error, got %q", stderr.String())
+	}
+}
+
+func TestStatusUnknownSkillReturnsNotFound(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"status", "nonexistent-skill-xyz"}, &stdout, &stderr)
+	if code != ExitNotFound {
+		t.Fatalf("Run(status nonexistent-skill-xyz) = %d, want %d; stderr: %s", code, ExitNotFound, stderr.String())
+	}
+}
+
+func TestGlobalFlagStopAtDoubleDashAndSubcommandNamedConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	// Create a config file literally named "list" in tmpDir
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(origWD) }()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "list"), []byte("telemetry:\n  enabled: false\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--config", "list", "status", "--json"}, &stdout, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("Run(--config list status --json) = %d, want %d; stderr: %s", code, ExitSuccess, stderr.String())
+	}
+}
+
+func TestLoadLocalSubpathAndCorruptDigestForceGuard(t *testing.T) {
+	tmpHome := t.TempDir()
+	tmpCache := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	var subpathHits int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/agent-skills/index.json":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"version": "0.2.0",
+				"skills": [
+					{
+						"name": "bad-digest-skill",
+						"type": "skill-md",
+						"description": "Skill with mismatched digest",
+						"category": "coding",
+						"url": "http://` + r.Host + `/skills/bad/SKILL.md",
+						"digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+					}
+				]
+			}`))
+		case "/skills/bad/SKILL.md":
+			_, _ = w.Write([]byte("---\nname: bad-digest-skill\n---\n# Tampered Content\n"))
+		case "/skills/bad/references/secret.md":
+			subpathHits++
+			_, _ = w.Write([]byte("# Remote Subpath\n"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("KUNGFU_URL", server.URL)
+
+	// 1. Prime index cache by running list
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"--cache-dir", tmpCache, "list"}, &stdout, &stderr); code != ExitSuccess {
+		t.Fatalf("Run(list) failed: %d, stderr: %s", code, stderr.String())
+	}
+
+	// 2. `load bad-digest-skill/references/secret.md --local` must NOT hit the network
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{"--cache-dir", tmpCache, "load", "bad-digest-skill/references/secret.md", "--local"}, &stdout, &stderr)
+	if code != ExitNotFound {
+		t.Fatalf("expected ExitNotFound for uncached --local subpath load, got %d (stderr: %s)", code, stderr.String())
+	}
+	if subpathHits != 0 {
+		t.Errorf("expected 0 network requests for --local subpath load, got %d", subpathHits)
+	}
+
+	// 3. `load bad-digest-skill --force` bypasses verification for stdout, but must NOT poison the shared cache
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{"--cache-dir", tmpCache, "load", "bad-digest-skill", "--force"}, &stdout, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("expected ExitSuccess when bypassing integrity with --force, got %d (stderr: %s)", code, stderr.String())
+	}
+	cachedFile := filepath.Join(tmpCache, "skills", "bad-digest-skill", "SKILL.md")
+	if _, err := os.Stat(cachedFile); !os.IsNotExist(err) {
+		t.Errorf("expected corrupt skill content NOT to be written to cache %s", cachedFile)
+	}
+
+	// Subsequent `load bad-digest-skill` without --force must still fail with ExitIntegrity
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{"--cache-dir", tmpCache, "load", "bad-digest-skill"}, &stdout, &stderr)
+	if code != ExitIntegrity {
+		t.Fatalf("expected ExitIntegrity (4) on subsequent load without --force, got %d (stderr: %s)", code, stderr.String())
 	}
 }

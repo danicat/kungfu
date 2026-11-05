@@ -147,6 +147,7 @@ type rawFrontmatter struct {
 	License       string         `yaml:"license"`
 	Compatibility string         `yaml:"compatibility"`
 	AllowedTools  any            `yaml:"allowed-tools"`
+	Version       any            `yaml:"version"`
 	Metadata      map[string]any `yaml:"metadata"`
 }
 
@@ -198,6 +199,11 @@ func parseYAMLFrontmatter(data []byte) (*Frontmatter, error) {
 			fm.Metadata[k] = strings.Join(strParts, ", ")
 		default:
 			fm.Metadata[k] = fmt.Sprint(val)
+		}
+	}
+	if raw.Version != nil && fm.Metadata["version"] == "" {
+		if v := strings.TrimSpace(fmt.Sprint(raw.Version)); v != "" {
+			fm.Metadata["version"] = v
 		}
 	}
 

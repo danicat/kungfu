@@ -363,3 +363,43 @@ func BenchmarkSearch_Hybrid(b *testing.B) {
 		_ = eng.Search("2D game physics", "hybrid", 5, 0.0)
 	}
 }
+
+func TestEngine_CatalogFilterAndBlankQueryAndSuggestRanking(t *testing.T) {
+	items := append([]catalog.Item{}, sampleCatalogItems...)
+	items = append(items, catalog.Item{
+		ID:          "go-specialist",
+		Name:        "go-specialist",
+		Title:       "Go Specialist",
+		Description: "Idiomatic Go patterns",
+		Category:    "coding",
+		Tags:        []string{"go", "patterns"},
+		Source:      "github:go-skills",
+	})
+
+	eng := search.NewEngine()
+	_ = eng.Index(items)
+
+	// 1. Blank or whitespace-only query returns no results
+	if got := eng.Search("   ", "hybrid", 10, 0.0); len(got) != 0 {
+		t.Errorf("expected 0 results for whitespace query, got %d", len(got))
+	}
+
+	// 2. @<catalog> suffix filters to matching catalog
+	resAt := eng.Search("go@go-skills", "hybrid", 10, 0.0)
+	if len(resAt) != 1 || resAt[0].Item.ID != "go-specialist" {
+		t.Errorf("expected go@go-skills to return only go-specialist, got %+v", resAt)
+	}
+
+	// 3. Filter-only @<catalog> returns items from that catalog
+	resCatOnly := eng.Search("@go-skills", "hybrid", 10, 0.0)
+	if len(resCatOnly) != 1 || resCatOnly[0].Item.ID != "go-specialist" {
+		t.Errorf("expected @go-skills to return only go-specialist, got %+v", resCatOnly)
+	}
+
+	// 4. Suggest ranks prefix and substring matches strictly ahead of edit-distance matches
+	candidates := []string{"go-skills", "developing-genkit-go-extra-long-name-that-used-to-overflow-bucket", "godoctor"}
+	suggs := search.Suggest("genkit", candidates, 3)
+	if len(suggs) == 0 || suggs[0] != "developing-genkit-go-extra-long-name-that-used-to-overflow-bucket" {
+		t.Errorf("expected substring match to rank first in Suggest, got %v", suggs)
+	}
+}

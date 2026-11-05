@@ -449,3 +449,76 @@ func TestRunScript_JITRemoteFetch(t *testing.T) {
 		t.Errorf("expected output to contain JIT_SUCCESS alpha, got: %q", stdout.String())
 	}
 }
+
+func TestInstallSkillContext_UpgradesAndPrunesStaleFiles(t *testing.T) {
+	version := 1
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/skills/upgrader/SKILL.md":
+			w.WriteHeader(http.StatusOK)
+			if version == 1 {
+				_, _ = w.Write([]byte("# Upgrader v1\nSee [Guide](references/guide.md) and [Old](references/old.md).\n"))
+			} else {
+				_, _ = w.Write([]byte("# Upgrader v2\nSee [Guide](references/guide.md).\n"))
+			}
+		case "/skills/upgrader/references/guide.md":
+			w.WriteHeader(http.StatusOK)
+			if version == 1 {
+				_, _ = w.Write([]byte("guide v1"))
+			} else {
+				_, _ = w.Write([]byte("guide v2"))
+			}
+		case "/skills/upgrader/references/old.md":
+			if version == 1 {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("old v1"))
+			} else {
+				w.WriteHeader(http.StatusNotFound)
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	runner.SetCacheDir(t.TempDir())
+	defer runner.SetCacheDir("")
+
+	destDir := filepath.Join(t.TempDir(), "upgrader")
+	item := catalog.Item{
+		ID:   "upgrader",
+		Name: "upgrader",
+		URL:  server.URL + "/skills/upgrader/SKILL.md",
+	}
+
+	ctx := context.Background()
+	filesV1, err := runner.InstallSkillContext(ctx, item, destDir, "", nil, server.Client())
+	if err != nil {
+		t.Fatalf("v1 InstallSkillContext failed: %v", err)
+	}
+	if len(filesV1) != 3 {
+		t.Fatalf("expected 3 files in v1, got %v", filesV1)
+	}
+
+	// Upgrade to v2: references/guide.md content changed on server, and references/old.md was removed
+	version = 2
+	filesV2, err := runner.InstallSkillContext(ctx, item, destDir, "", nil, server.Client())
+	if err != nil {
+		t.Fatalf("v2 InstallSkillContext failed: %v", err)
+	}
+	if len(filesV2) != 2 {
+		t.Fatalf("expected 2 files in v2, got %v", filesV2)
+	}
+
+	guideBytes, err := os.ReadFile(filepath.Join(destDir, "references", "guide.md"))
+	if err != nil {
+		t.Fatalf("failed reading upgraded guide.md: %v", err)
+	}
+	if string(guideBytes) != "guide v2" {
+		t.Errorf("expected fresh remote guide.md content 'guide v2', got %q", string(guideBytes))
+	}
+
+	if _, err := os.Stat(filepath.Join(destDir, "references", "old.md")); !os.IsNotExist(err) {
+		t.Errorf("expected stale file references/old.md to be pruned on upgrade, stat err: %v", err)
+	}
+}

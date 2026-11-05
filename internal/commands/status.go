@@ -80,6 +80,34 @@ func (a *App) RunStatus(args []string) int {
 		}
 	}
 
+	var missingTargets []string
+	if len(posArgs) > 0 {
+		for _, name := range posArgs {
+			_, inGInst := globalInstalled[name]
+			_, inGForg := globalForgotten[name]
+			_, inHist := filteredHistory[name]
+			inWSInst := false
+			inWSForg := false
+			if !globalFlag {
+				_, inWSInst = wsInstalled[name]
+				_, inWSForg = wsForgotten[name]
+			}
+			if !inGInst && !inGForg && !inHist && !inWSInst && !inWSForg {
+				missingTargets = append(missingTargets, name)
+			}
+		}
+	}
+
+	combinedForgotten := make(map[string]state.SkillRecord)
+	for k, v := range globalForgotten {
+		combinedForgotten[k] = v
+	}
+	if !globalFlag {
+		for k, v := range wsForgotten {
+			combinedForgotten[k] = v
+		}
+	}
+
 	type StatusOutput struct {
 		Workspace       string                          `json:"workspace,omitempty"`
 		WorkspaceSkills map[string]state.SkillRecord    `json:"workspace_skills,omitempty"`
@@ -89,13 +117,13 @@ func (a *App) RunStatus(args []string) int {
 	}
 
 	out := StatusOutput{
-		GlobalSkills: globalInstalled,
-		History:      filteredHistory,
+		GlobalSkills:    globalInstalled,
+		ForgottenSkills: combinedForgotten,
+		History:         filteredHistory,
 	}
 	if !globalFlag {
 		out.Workspace = wsDir
 		out.WorkspaceSkills = wsInstalled
-		out.ForgottenSkills = wsForgotten
 	}
 
 	mode := a.resolveMode(jsonFlag, rawFlag)
@@ -104,6 +132,9 @@ func (a *App) RunStatus(args []string) int {
 		enc := json.NewEncoder(a.Stdout)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(out)
+		if len(missingTargets) > 0 {
+			return ExitNotFound
+		}
 		return ExitSuccess
 	case OutputModeRaw:
 		if !globalFlag {
@@ -114,10 +145,24 @@ func (a *App) RunStatus(args []string) int {
 			sort.Strings(wsNames)
 			for _, n := range wsNames {
 				rec := wsInstalled[n]
-				_, _ = fmt.Fprintf(a.Stdout, "workspace\t%s\t%s\tinstalled\t%s\n", rec.Name, rec.Version, rec.Origin)
+				_, _ = fmt.Fprintf(a.Stdout, "workspace\t%s\t%s\tinstalled\t%s\n",
+					sanitizeTSVField(rec.Name),
+					sanitizeTSVField(rec.Version),
+					sanitizeTSVField(rec.Origin),
+				)
 			}
-			for _, rec := range wsForgotten {
-				_, _ = fmt.Fprintf(a.Stdout, "workspace\t%s\t%s\tforgotten\t%s\n", rec.Name, rec.Version, rec.Origin)
+			var wsForgNames []string
+			for n := range wsForgotten {
+				wsForgNames = append(wsForgNames, n)
+			}
+			sort.Strings(wsForgNames)
+			for _, n := range wsForgNames {
+				rec := wsForgotten[n]
+				_, _ = fmt.Fprintf(a.Stdout, "workspace\t%s\t%s\tforgotten\t%s\n",
+					sanitizeTSVField(rec.Name),
+					sanitizeTSVField(rec.Version),
+					sanitizeTSVField(rec.Origin),
+				)
 			}
 		}
 		var gNames []string
@@ -127,10 +172,27 @@ func (a *App) RunStatus(args []string) int {
 		sort.Strings(gNames)
 		for _, n := range gNames {
 			rec := globalInstalled[n]
-			_, _ = fmt.Fprintf(a.Stdout, "global\t%s\t%s\tinstalled\t%s\n", rec.Name, rec.Version, rec.Origin)
+			_, _ = fmt.Fprintf(a.Stdout, "global\t%s\t%s\tinstalled\t%s\n",
+				sanitizeTSVField(rec.Name),
+				sanitizeTSVField(rec.Version),
+				sanitizeTSVField(rec.Origin),
+			)
 		}
-		for _, rec := range globalForgotten {
-			_, _ = fmt.Fprintf(a.Stdout, "global\t%s\t%s\tforgotten\t%s\n", rec.Name, rec.Version, rec.Origin)
+		var gForgNames []string
+		for n := range globalForgotten {
+			gForgNames = append(gForgNames, n)
+		}
+		sort.Strings(gForgNames)
+		for _, n := range gForgNames {
+			rec := globalForgotten[n]
+			_, _ = fmt.Fprintf(a.Stdout, "global\t%s\t%s\tforgotten\t%s\n",
+				sanitizeTSVField(rec.Name),
+				sanitizeTSVField(rec.Version),
+				sanitizeTSVField(rec.Origin),
+			)
+		}
+		if len(missingTargets) > 0 {
+			return ExitNotFound
 		}
 		return ExitSuccess
 	default: // OutputModeHuman
@@ -195,7 +257,13 @@ func (a *App) RunStatus(args []string) int {
 		if forgottenCount > 0 {
 			_, _ = fmt.Fprintf(a.Stdout, "\nForgotten Skills:\n")
 			if !globalFlag {
-				for _, rec := range wsForgotten {
+				var wsForgNames []string
+				for n := range wsForgotten {
+					wsForgNames = append(wsForgNames, n)
+				}
+				sort.Strings(wsForgNames)
+				for _, n := range wsForgNames {
+					rec := wsForgotten[n]
 					uninst := ""
 					if rec.UninstalledAt != nil {
 						uninst = rec.UninstalledAt.Format("2006-01-02")
@@ -203,7 +271,13 @@ func (a *App) RunStatus(args []string) int {
 					_, _ = fmt.Fprintf(a.Stdout, "  ✗ %-20s (workspace, uninstalled %s)\n", rec.Name, uninst)
 				}
 			}
-			for _, rec := range globalForgotten {
+			var gForgNames []string
+			for n := range globalForgotten {
+				gForgNames = append(gForgNames, n)
+			}
+			sort.Strings(gForgNames)
+			for _, n := range gForgNames {
+				rec := globalForgotten[n]
 				uninst := ""
 				if rec.UninstalledAt != nil {
 					uninst = rec.UninstalledAt.Format("2006-01-02")
@@ -237,6 +311,13 @@ func (a *App) RunStatus(args []string) int {
 				}
 				_, _ = fmt.Fprintf(a.Stdout, "  • %-20s (%s, %s)\n", n, h.LastSeenAt.Format("2006-01-02 15:04"), details)
 			}
+		}
+
+		if len(missingTargets) > 0 {
+			for _, name := range missingTargets {
+				_, _ = fmt.Fprintf(a.Stderr, "⚠ Skill %q has no installation or usage history.\n", name)
+			}
+			return ExitNotFound
 		}
 
 		return ExitSuccess

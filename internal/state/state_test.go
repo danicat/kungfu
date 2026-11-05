@@ -357,3 +357,97 @@ func TestState_TelemetryDeltaClampingAndSnapping(t *testing.T) {
 		t.Errorf("expected 0 pending deltas after ApplySyncedDeltas, got %+v", after)
 	}
 }
+
+func TestState_RecordInstallClearsDirtyDigestAndMergeInto(t *testing.T) {
+	s := state.NewState()
+	wsDir := "/tmp/ws"
+
+	// Initial install
+	s.RecordInstall(state.ScopeWorkspace, wsDir, state.SkillRecord{
+		Name:            "alpha",
+		Scope:           state.ScopeWorkspace,
+		Version:         "1.0.0",
+		Digest:          "sha256:1111",
+		InstalledDigest: "sha256:1111",
+	})
+
+	// Simulate local edit making Digest != InstalledDigest
+	wsSkills := s.GetInstalledSkills(state.ScopeWorkspace, wsDir)
+	dirtyRec := wsSkills["alpha"]
+	dirtyRec.Digest = "sha256:dirty"
+	s.RecordInstall(state.ScopeWorkspace, wsDir, dirtyRec)
+
+	// Wait: when RecordInstall is called during `update -f` with a new upstream digest,
+	// InstalledDigest must be updated to match the newly installed Digest so the skill is no longer dirty.
+	updatedRec := s.GetInstalledSkills(state.ScopeWorkspace, wsDir)["alpha"]
+	updatedRec.Version = "1.1.0"
+	updatedRec.Digest = "sha256:2222"
+	s.RecordInstall(state.ScopeWorkspace, wsDir, updatedRec)
+
+	finalRec := s.GetInstalledSkills(state.ScopeWorkspace, wsDir)["alpha"]
+	if finalRec.InstalledDigest != "sha256:2222" {
+		t.Errorf("expected InstalledDigest to be updated to sha256:2222, got %q", finalRec.InstalledDigest)
+	}
+
+	// Test MergeInto preserves concurrent history and honors catalog deletions
+	s.AddCatalog(state.CatalogRecord{Name: "cat-a", Type: state.CatalogTypeGitHub, Source: "org/a"})
+	s.AddCatalog(state.CatalogRecord{Name: "cat-b", Type: state.CatalogTypeGitHub, Source: "org/b"})
+
+	disk := state.NewState()
+	disk.AddCatalog(state.CatalogRecord{Name: "cat-a", Type: state.CatalogTypeGitHub, Source: "org/a"})
+	disk.AddCatalog(state.CatalogRecord{Name: "cat-b", Type: state.CatalogTypeGitHub, Source: "org/b"})
+	disk.RecordLoadDetailed("concurrent-skill", "", 1)
+
+	// Remove cat-a in s and merge into disk
+	s.RemoveCatalog("cat-a")
+	s.MergeInto(disk)
+
+	if _, ok := disk.GetCatalog("cat-a"); ok {
+		t.Errorf("expected cat-a to be removed from disk state after MergeInto")
+	}
+	if _, ok := disk.GetCatalog("cat-b"); !ok {
+		t.Errorf("expected cat-b to remain in disk state after MergeInto")
+	}
+	if disk.History["concurrent-skill"] == nil || disk.History["concurrent-skill"].LoadCount != 1 {
+		t.Errorf("expected concurrent-skill history to be preserved in disk state, got %+v", disk.History["concurrent-skill"])
+	}
+}
+
+func TestState_ReconcileDiskSymlinkAndMissingSkillMD(t *testing.T) {
+	tmpDir := t.TempDir()
+	wsDir := filepath.Join(tmpDir, "workspace")
+	externalSkillTarget := filepath.Join(tmpDir, "external-skill")
+	if err := os.MkdirAll(externalSkillTarget, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(externalSkillTarget, "SKILL.md"), []byte("---\nname: linked-skill\nversion: \"3.0.0\"\n---\n# Linked"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	skillsBase := filepath.Join(wsDir, ".agents", "skills")
+	if err := os.MkdirAll(skillsBase, 0755); err != nil {
+		t.Fatal(err)
+	}
+	symlinkPath := filepath.Join(skillsBase, "linked-skill")
+	if err := os.Symlink(externalSkillTarget, symlinkPath); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	s := state.NewState()
+	if !s.ReconcileDisk(wsDir, "", nil) {
+		t.Fatalf("expected ReconcileDisk to discover symlinked skill directory")
+	}
+	installed := s.GetInstalledSkills(state.ScopeWorkspace, wsDir)
+	if rec, ok := installed["linked-skill"]; !ok || rec.Version != "3.0.0" {
+		t.Fatalf("expected linked-skill v3.0.0 to be installed, got %+v", installed)
+	}
+
+	// Remove SKILL.md inside the target directory while leaving the directory intact
+	_ = os.Remove(filepath.Join(externalSkillTarget, "SKILL.md"))
+	if !s.ReconcileDisk(wsDir, "", nil) {
+		t.Fatalf("expected ReconcileDisk to detect missing SKILL.md")
+	}
+	if len(s.GetInstalledSkills(state.ScopeWorkspace, wsDir)) != 0 {
+		t.Errorf("expected linked-skill to be marked uninstalled when SKILL.md is removed")
+	}
+}

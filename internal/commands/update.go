@@ -19,7 +19,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -52,17 +52,19 @@ func (a *App) RunUpdate(args []string) int {
 		return ExitUsage
 	}
 
-	scope := state.ScopeWorkspace
-	wsDir, _ := os.Getwd()
-	if globalFlag {
-		scope = state.ScopeGlobal
-		wsDir = ""
-	}
+	scope, wsDir := resolveScopeAndDir(globalFlag)
 
 	st := a.loadState()
 	mode := a.resolveMode(jsonFlag, rawFlag)
 
 	syncCtx, syncCancel := context.WithTimeout(context.Background(), 120*time.Second)
+	if refreshFlag {
+		if syncer, ok := a.Store.(interface {
+			Sync(context.Context, bool) error
+		}); ok {
+			_ = syncer.Sync(syncCtx, true)
+		}
+	}
 	syncExitCode := a.syncRegisteredCatalogs(syncCtx, st, mode)
 	syncCancel()
 
@@ -102,6 +104,7 @@ func (a *App) RunUpdate(args []string) int {
 	for k := range installed {
 		installedNames = append(installedNames, k)
 	}
+	sort.Strings(installedNames)
 
 	targetMap := make(map[string]bool)
 	if len(posArgs) > 0 {
@@ -116,13 +119,15 @@ func (a *App) RunUpdate(args []string) int {
 			}
 		}
 	} else {
-		for name := range installed {
+		for _, name := range installedNames {
 			targetMap[name] = true
 		}
 	}
 
+	errExitCode := ExitSuccess
 	syncedNamedCatalogs := make(map[string]bool)
-	for name, rec := range installed {
+	for _, name := range installedNames {
+		rec := installed[name]
 		if !targetMap[name] {
 			continue
 		}
@@ -220,6 +225,11 @@ func (a *App) RunUpdate(args []string) int {
 		}
 
 		if err != nil || item == nil {
+			if err != nil {
+				if code := MapErrorToExitCode(err); code != ExitNotFound && (errExitCode == ExitSuccess || errExitCode == ExitGeneral) {
+					errExitCode = code
+				}
+			}
 			checks = append(checks, SkillUpdateCheck{
 				Name:         name,
 				InstalledVer: rec.Version,
@@ -252,7 +262,7 @@ func (a *App) RunUpdate(args []string) int {
 		reason := ""
 
 		if remoteVer != "" && rec.Version != "" {
-			if isSemverGreater(remoteVer, rec.Version) {
+			if catalog.CompareSemver(remoteVer, rec.Version) > 0 {
 				hasUpdate = true
 				reason = fmt.Sprintf("new version available: %s -> %s", rec.Version, remoteVer)
 			} else if remoteVer == rec.Version {
@@ -311,12 +321,15 @@ func (a *App) RunUpdate(args []string) int {
 			} else {
 				content, err := a.loadItemContent(item)
 				if err != nil {
+					if code := MapErrorToExitCode(err); errExitCode == ExitSuccess || errExitCode == ExitGeneral {
+						errExitCode = code
+					}
 					check.Status = "error"
 					check.Message = err.Error()
 				} else {
 					var extraCandidates []string
-					for _, ref := range a.listReferences(*item) {
-						extraCandidates = append(extraCandidates, "references/"+ref+".md")
+					for _, refFile := range a.listReferenceFiles(*item) {
+						extraCandidates = append(extraCandidates, "references/"+refFile)
 					}
 					for _, scr := range a.listScripts(*item) {
 						extraCandidates = append(extraCandidates, "scripts/"+scr)
@@ -326,6 +339,9 @@ func (a *App) RunUpdate(args []string) int {
 					files, err := runner.InstallSkillContext(ctx, *item, rec.Path, content, extraCandidates, a.getHTTPClient())
 					cancel()
 					if err != nil {
+						if code := MapErrorToExitCode(err); errExitCode == ExitSuccess || errExitCode == ExitGeneral {
+							errExitCode = code
+						}
 						check.Status = "error"
 						check.Message = err.Error()
 					} else {
@@ -358,27 +374,42 @@ func (a *App) RunUpdate(args []string) int {
 	case OutputModeRaw:
 		for _, c := range checks {
 			if dryRun {
-				_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%s\n", c.Name, c.InstalledVer, c.RemoteVer, c.Status, c.Reason)
+				_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%s\n",
+					sanitizeTSVField(c.Name),
+					sanitizeTSVField(c.InstalledVer),
+					sanitizeTSVField(c.RemoteVer),
+					sanitizeTSVField(c.Status),
+					sanitizeTSVField(c.Reason),
+				)
 			} else {
 				if c.Status == "updated" {
-					_, _ = fmt.Fprintf(a.Stdout, "updated\t%s\t%s\n", c.Name, c.Reason)
+					_, _ = fmt.Fprintf(a.Stdout, "updated\t%s\t%s\n",
+						sanitizeTSVField(c.Name),
+						sanitizeTSVField(c.Reason),
+					)
 				} else {
 					msg := c.Reason
 					if c.Message != "" {
 						msg = c.Message
 					}
-					_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\n", c.Status, c.Name, msg)
+					_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\n",
+						sanitizeTSVField(c.Status),
+						sanitizeTSVField(c.Name),
+						sanitizeTSVField(msg),
+					)
 				}
 			}
 		}
 	default: // OutputModeHuman
 		if dryRun {
 			hasAnyUpdates := false
+			hasAnyErrors := false
 			_, _ = fmt.Fprintf(a.Stdout, "Checking for skill updates (%s scope)...\n\n", scope)
 			for _, c := range checks {
 				if c.Status == "custom" {
 					_, _ = fmt.Fprintf(a.Stdout, "  • %-20s [Custom skill] %s\n", c.Name, c.Reason)
 				} else if c.Status == "not_found" {
+					hasAnyErrors = true
 					_, _ = fmt.Fprintf(a.Stderr, "  ⚠ %-20s %s\n", c.Name, c.Reason)
 					if len(installedNames) > 0 {
 						suggs := search.Suggest(c.Name, installedNames, 3)
@@ -389,6 +420,13 @@ func (a *App) RunUpdate(args []string) int {
 							}
 						}
 					}
+				} else if c.Status == "error" {
+					hasAnyErrors = true
+					msg := c.Reason
+					if c.Message != "" {
+						msg = c.Message
+					}
+					_, _ = fmt.Fprintf(a.Stderr, "  ✗ %-20s [Error] %s\n", c.Name, msg)
 				} else if c.HasUpdate {
 					hasAnyUpdates = true
 					if c.IsDirty {
@@ -409,7 +447,7 @@ func (a *App) RunUpdate(args []string) int {
 				} else {
 					_, _ = fmt.Fprintln(a.Stdout, "\nRun 'kungfu update <skill>' or 'kungfu update --all' to apply updates.")
 				}
-			} else {
+			} else if !hasAnyErrors {
 				_, _ = fmt.Fprintln(a.Stdout, "\nAll installed skills are up to date.")
 			}
 		} else {
@@ -437,7 +475,11 @@ func (a *App) RunUpdate(args []string) int {
 				case "blocked":
 					_, _ = fmt.Fprintf(a.Stderr, "⚠ Skill %q was not updated: %s\n", c.Name, c.Message)
 				case "error":
-					_, _ = fmt.Fprintf(a.Stderr, "✗ Failed to update skill %q: %s\n", c.Name, c.Message)
+					msg := c.Message
+					if msg == "" {
+						msg = c.Reason
+					}
+					_, _ = fmt.Fprintf(a.Stderr, "✗ Failed to update skill %q: %s\n", c.Name, msg)
 				}
 			}
 		}
@@ -457,44 +499,11 @@ func (a *App) RunUpdate(args []string) int {
 	if hasNotFound {
 		return ExitNotFound
 	}
+	if errExitCode != ExitSuccess {
+		return errExitCode
+	}
 	if hasGeneralError {
 		return ExitGeneral
 	}
 	return syncExitCode
-}
-
-func parseSemver(v string) []int {
-	v = strings.TrimPrefix(v, "v")
-	v = strings.TrimPrefix(v, "V")
-	parts := strings.Split(v, ".")
-	var res []int
-	for _, p := range parts {
-		var n int
-		for _, r := range p {
-			if r >= '0' && r <= '9' {
-				n = n*10 + int(r-'0')
-			} else {
-				break
-			}
-		}
-		res = append(res, n)
-	}
-	for len(res) < 3 {
-		res = append(res, 0)
-	}
-	return res
-}
-
-func isSemverGreater(v1, v2 string) bool {
-	p1 := parseSemver(v1)
-	p2 := parseSemver(v2)
-	for i := 0; i < len(p1) && i < len(p2); i++ {
-		if p1[i] > p2[i] {
-			return true
-		}
-		if p1[i] < p2[i] {
-			return false
-		}
-	}
-	return len(p1) > len(p2)
 }

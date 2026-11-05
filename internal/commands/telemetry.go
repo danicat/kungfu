@@ -179,13 +179,6 @@ func (a *App) runTelemetryToggle(mode OutputMode, enable bool) int {
 	if a.Config == nil {
 		a.Config = config.DefaultConfig()
 	}
-	a.Config.SetTelemetryEnabled(enable)
-
-	savedPath, err := config.Save(a.Options.Config, a.Config)
-	if err != nil {
-		_, _ = fmt.Fprintf(a.Stderr, "error: saving telemetry configuration: %v\n", err)
-		return ExitGeneral
-	}
 
 	if enable {
 		if err := state.WithLockedState("", func(s *state.State) error {
@@ -195,6 +188,14 @@ func (a *App) runTelemetryToggle(mode OutputMode, enable bool) int {
 			_, _ = fmt.Fprintf(a.Stderr, "error: baselining telemetry watermarks: %v\n", err)
 			return ExitGeneral
 		}
+	}
+
+	a.Config.SetTelemetryEnabled(enable)
+
+	savedPath, err := config.Save(a.Options.Config, a.Config)
+	if err != nil {
+		_, _ = fmt.Fprintf(a.Stderr, "error: saving telemetry configuration: %v\n", err)
+		return ExitGeneral
 	}
 
 	switch mode {
