@@ -160,7 +160,7 @@ KungFu uses a compact shortcut notation for human-agent pair programming. When t
 # Install skills to workspace or global scope
 kungfu learn godoctor
 kungfu learn go@go-skills
-kungfu learn anthropics/anthropic-quickstarts/evals
+kungfu learn danicat/kungfu
 kungfu learn godoctor --load
 
 # List and inspect skills

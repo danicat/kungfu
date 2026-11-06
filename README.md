@@ -47,16 +47,15 @@ Stream `SKILL.md` instructions, references, or assets to `stdout`. Output pages 
 # Stream skill instructions (page 1)
 kungfu load godoctor
 
-# Read subsequent pages or stream full content
+# Read later pages
 kungfu load godoctor -p 2
-kungfu load godoctor --full
 
-# Stream directly from a GitHub repository
-kungfu load anthropics/anthropic-quickstarts/evals
+# Load from a specific catalog
+kungfu load go@go-skills
 
 # Load from local cache only or force an upstream refresh
 kungfu load godoctor --local
-kungfu load godoctor --update --force
+kungfu load godoctor -u -f
 
 # Load a companion reference document or asset
 kungfu load godoctor/references/architecture.md
@@ -81,7 +80,7 @@ kungfu list --json
 
 # Show metadata and bundled files for a skill
 kungfu show godoctor
-kungfu show anthropics/anthropic-quickstarts/evals
+kungfu show go@go-skills
 ```
 
 ### Install skills (`learn` / `add`)
@@ -92,8 +91,9 @@ Save skills to the workspace (`.agents/skills/`) or globally (`~/.agents/skills/
 # Install to workspace (.agents/skills/<skill>/)
 kungfu learn godoctor
 
-# Install from a GitHub repository
-kungfu learn anthropics/anthropic-quickstarts/evals
+# Install from a specific catalog or GitHub repository
+kungfu learn go@go-skills
+kungfu learn danicat/kungfu
 
 # Install globally to ~/.agents/skills/<skill>/
 kungfu learn godoctor -g
