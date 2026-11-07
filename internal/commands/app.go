@@ -100,6 +100,7 @@ type GlobalOptions struct {
 	Verbose  bool
 	NoColor  bool
 	CacheDir string
+	Offline  bool
 }
 
 type App struct {
@@ -140,6 +141,9 @@ func NewApp(opts GlobalOptions, stdout, stderr io.Writer) (*App, error) {
 	}
 	if opts.CacheDir != "" {
 		catOpts = append(catOpts, catalog.WithCacheDir(opts.CacheDir))
+	}
+	if opts.Offline {
+		catOpts = append(catOpts, catalog.WithOffline(true))
 	}
 	runner.SetCacheDir(opts.CacheDir)
 
@@ -594,6 +598,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
+	if (cmdName == "load" || cmdName == "get") && hasLocalFlag(cmdArgs) {
+		opts.Offline = true
+	}
+
 	app, err := NewApp(opts, stdout, stderr)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
@@ -648,6 +656,18 @@ func hasHelpFlag(cmdName string, args []string) bool {
 			return false
 		}
 		if arg == "--help" || arg == "-h" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasLocalFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		if arg == "--local" || strings.HasPrefix(arg, "--local=") {
 			return true
 		}
 	}

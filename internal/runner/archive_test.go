@@ -25,6 +25,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/danicat/kungfu/internal/catalog"
@@ -253,5 +254,46 @@ func TestInstallSkillContext_Archive(t *testing.T) {
 	archData, err := os.ReadFile(filepath.Join(destDir, "references", "arch.md"))
 	if err != nil || !bytes.Contains(archData, []byte("# Architecture")) {
 		t.Errorf("arch.md content mismatch: %s, err: %v", archData, err)
+	}
+}
+
+func TestUnpackArchiveToCache_ConcurrentSafety(t *testing.T) {
+	files := map[string]string{
+		"SKILL.md":           "---\nname: parskill\ndescription: parallel safety\n---\n# Parallel Skill",
+		"references/arch.md": "# Parallel Reference",
+		"scripts/check.sh":   "#!/bin/sh\necho ok\n",
+	}
+	tarData := createValidTarGz(t, files)
+	digest := catalog.ComputeDigest(tarData)
+	cacheRoot := t.TempDir()
+
+	// Seed initial unpack so concurrent readers and unpackers overlap
+	if _, err := catalog.UnpackArchiveToCache(tarData, cacheRoot, "parskill", digest); err != nil {
+		t.Fatalf("initial UnpackArchiveToCache failed: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 20)
+	for i := 0; i < 10; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if _, err := catalog.UnpackArchiveToCache(tarData, cacheRoot, "parskill", digest); err != nil {
+				errCh <- err
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			mdPath := filepath.Join(cacheRoot, "skills", "parskill", "SKILL.md")
+			if data, err := os.ReadFile(mdPath); err != nil || !bytes.Contains(data, []byte("# Parallel Skill")) {
+				errCh <- errors.New("concurrent read failed or returned partial SKILL.md")
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Errorf("concurrent UnpackArchiveToCache error: %v", err)
 	}
 }

@@ -176,8 +176,8 @@ func IsArchiveCachedWithDigest(cacheRoot, skillName, expectedDigest string) bool
 	return strings.TrimSpace(string(digestBytes)) == NormalizeDigest(expectedDigest)
 }
 
-// UnpackArchiveToCache wipes any stale cached skill directory, unpacks the archive into
-// <cacheRoot>/skills/<skillName>, and records the normalized digest in .digest.
+// UnpackArchiveToCache unpacks the archive into a temporary directory under <cacheRoot>/skills,
+// records the normalized digest in .digest, and atomically swaps it into <cacheRoot>/skills/<skillName>.
 func UnpackArchiveToCache(data []byte, cacheRoot, skillName, expectedDigest string) ([]string, error) {
 	if cacheRoot == "" || skillName == "" {
 		return nil, errors.New("cacheRoot and skillName are required")
@@ -186,16 +186,53 @@ func UnpackArchiveToCache(data []byte, cacheRoot, skillName, expectedDigest stri
 	if cleanSkillName == "" || cleanSkillName == "." || cleanSkillName == ".." {
 		return nil, fmt.Errorf("invalid skill name %q", skillName)
 	}
-	skillDir := filepath.Join(cacheRoot, "skills", cleanSkillName)
-	_ = os.RemoveAll(skillDir)
+	skillsParentDir := filepath.Join(cacheRoot, "skills")
+	if err := os.MkdirAll(skillsParentDir, 0755); err != nil {
+		return nil, fmt.Errorf("creating skills cache dir: %w", err)
+	}
 
-	extracted, err := UnpackArchive(data, skillDir, DefaultMaxUnpackedBytes)
+	tmpDir, err := os.MkdirTemp(skillsParentDir, "."+cleanSkillName+"-tmp-*")
 	if err != nil {
-		_ = os.RemoveAll(skillDir)
+		return nil, fmt.Errorf("creating temp archive dir: %w", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(tmpDir)
+	}()
+
+	extracted, err := UnpackArchive(data, tmpDir, DefaultMaxUnpackedBytes)
+	if err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(expectedDigest) != "" {
-		_ = os.WriteFile(filepath.Join(skillDir, ".digest"), []byte(NormalizeDigest(expectedDigest)), 0644)
+		_ = os.WriteFile(filepath.Join(tmpDir, ".digest"), []byte(NormalizeDigest(expectedDigest)), 0644)
+	}
+
+	// If another concurrent process already unpacked the exact same digest, leave skillDir intact.
+	if strings.TrimSpace(expectedDigest) != "" && IsArchiveCachedWithDigest(cacheRoot, cleanSkillName, expectedDigest) {
+		return extracted, nil
+	}
+
+	skillDir := filepath.Join(skillsParentDir, cleanSkillName)
+	var oldDir string
+	if _, statErr := os.Stat(skillDir); statErr == nil {
+		if trashDir, mkErr := os.MkdirTemp(skillsParentDir, "."+cleanSkillName+"-old-*"); mkErr == nil {
+			_ = os.Remove(trashDir)
+			if renErr := os.Rename(skillDir, trashDir); renErr == nil {
+				oldDir = trashDir
+			}
+		}
+	}
+	defer func() {
+		if oldDir != "" {
+			_ = os.RemoveAll(oldDir)
+		}
+	}()
+
+	if err := os.Rename(tmpDir, skillDir); err != nil {
+		if strings.TrimSpace(expectedDigest) != "" && IsArchiveCachedWithDigest(cacheRoot, cleanSkillName, expectedDigest) {
+			return extracted, nil
+		}
+		return nil, fmt.Errorf("moving unpacked skill into cache: %w", err)
 	}
 	return extracted, nil
 }

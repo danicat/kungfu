@@ -6,7 +6,7 @@
       "type": "skill-md",
       "description": "\"I know Kung Fu!\": Activate this skill to acquire knowledge about anything immediately. It teaches how to discover skills with keywords, JIT load skills into context, load reference guides and assets, execute companion scripts, and use the KungFu pair-programming shortcut dialect. When encountering unknown commands, niche domains, or ::notation, activate kungfu.",
       "url": "https://raw.githubusercontent.com/danicat/kungfu/main/skills/kungfu/SKILL.md",
-      "digest": "sha256:3f2c2f7ab9bef2190a25e4d58d78b518e477a94027367bb57d5064858ad3ca5f"
+      "digest": "sha256:8ba61f008d86141c5048d2e1feedebad2a068f1bce89749a77020ed48be15053"
     }
   ]
 }

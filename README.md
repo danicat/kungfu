@@ -2,7 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/danicat/kungfu.svg)](https://pkg.go.dev/github.com/danicat/kungfu)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.7.0-green.svg)](https://github.com/danicat/kungfu/releases)
+[![Release](https://img.shields.io/badge/release-v0.7.1-green.svg)](https://github.com/danicat/kungfu/releases)
 
 `kungfu` is a command-line tool for finding, streaming, running, and installing **Agent Skills** (`SKILL.md`). Coding agents can stream skill instructions and reference files into a session on demand (`kungfu load`) or install them into workspace and global folders (`kungfu learn`).
 
@@ -41,7 +41,7 @@ kungfu find "testing@go-skills"
 
 ### Load instructions (`load`)
 
-Stream `SKILL.md` instructions, references, or assets to `stdout`. Output pages at ~6,000 bytes to fit within 8 KiB agent buffers:
+Stream `SKILL.md` instructions, references, or assets to `stdout`. Output pages at ~6,000 bytes to fit within 8 KiB agent buffers, and cached skills in `~/.cache/kungfu/skills/` are served from disk whenever their `sha256` digest matches the catalog index:
 
 ```bash
 # Stream skill instructions (page 1)
@@ -53,7 +53,7 @@ kungfu load godoctor -p 2
 # Load from a specific catalog
 kungfu load go@go-skills
 
-# Load from local cache only or force an upstream refresh
+# Load from local cache only (offline-safe) or force an upstream refresh
 kungfu load godoctor --local
 kungfu load godoctor -u -f
 

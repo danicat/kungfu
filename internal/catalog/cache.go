@@ -23,8 +23,8 @@ import (
 	"time"
 )
 
-// DefaultCatalogTTL is the default cache duration for the catalog manifest (1 hour).
-const DefaultCatalogTTL = 1 * time.Hour
+// DefaultCatalogTTL is the default cache duration for the catalog manifest (24 hours).
+const DefaultCatalogTTL = 24 * time.Hour
 
 // CachedCatalog represents the cached index.json discovery envelope.
 type CachedCatalog struct {

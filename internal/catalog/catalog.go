@@ -125,6 +125,13 @@ func WithForceRefresh() Option {
 	}
 }
 
+// WithOffline configures the catalog to use cached manifests only without making network requests.
+func WithOffline(offline bool) Option {
+	return func(c *Catalog) {
+		c.offline = offline
+	}
+}
+
 // Catalog implements the Store interface with deterministic in-memory lookup.
 type Catalog struct {
 	mu           sync.RWMutex
@@ -137,6 +144,7 @@ type Catalog struct {
 	cacheDir     string
 	noCache      bool
 	forceRefresh bool
+	offline      bool
 }
 
 const (
@@ -286,8 +294,8 @@ func (c *Catalog) fetchRemoteLocked(ctx context.Context) error {
 		}
 	}
 
-	// If cache is fresh and not forced refresh, use cached manifest immediately
-	if cached != nil && !c.forceRefresh && time.Since(cached.FetchedAt) < DefaultCatalogTTL {
+	// If cache is fresh (or offline mode is active) and not forced refresh, use cached manifest immediately
+	if cached != nil && !c.forceRefresh && (c.offline || time.Since(cached.FetchedAt) < DefaultCatalogTTL) {
 		ResolveManifestURLs(&cached.Manifest, c.remoteURL)
 		c.manifest = &cached.Manifest
 		c.items = make(map[string]Item)
@@ -295,6 +303,9 @@ func (c *Catalog) fetchRemoteLocked(ctx context.Context) error {
 			c.items[strings.ToLower(it.ID)] = it
 			c.items[strings.ToLower(it.Name)] = it
 		}
+	} else if c.offline {
+		c.loadNamedCatalogsLocked()
+		return nil
 	} else {
 		reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
@@ -409,8 +420,12 @@ func (c *Catalog) AddCatalogManifest(name string, manifest *Manifest) {
 		it.Source = name
 		lowID := strings.ToLower(it.ID)
 		lowName := strings.ToLower(it.Name)
-		c.items[lowID] = it
-		c.items[lowName] = it
+		if existing, exists := c.items[lowID]; !exists || existing.Source == name || shouldPreferCatalogItem(existing, it) {
+			c.items[lowID] = it
+		}
+		if existing, exists := c.items[lowName]; !exists || existing.Source == name || shouldPreferCatalogItem(existing, it) {
+			c.items[lowName] = it
+		}
 		c.items[fmt.Sprintf("%s@%s", lowID, strings.ToLower(name))] = it
 		c.items[fmt.Sprintf("%s@%s", lowName, strings.ToLower(name))] = it
 	}
@@ -648,12 +663,38 @@ func (c *Catalog) LoadContent(item *Item) (string, error) {
 		return item.Body, nil
 	}
 
-	// 2. Remote URL: Stream live over HTTP into memory
+	// 2. Remote URL: Check digest-verified local cache first, otherwise stream live over HTTP
 	remoteURL := item.URL
 	if remoteURL == "" && item.Metadata != nil && item.Metadata["canonical"] != "" {
 		remoteURL = item.Metadata["canonical"]
 	}
 	if remoteURL != "" {
+		expectedDigest := item.Digest
+		if expectedDigest == "" {
+			expectedDigest = item.Sha256
+		}
+		if !c.noCache && !c.forceRefresh && item.Name != "" && expectedDigest != "" {
+			if cacheRoot := c.resolveCacheRoot(); cacheRoot != "" {
+				cleanSkillName := filepath.Base(filepath.Clean(item.Name))
+				if cleanSkillName != "" && cleanSkillName != "." && cleanSkillName != ".." {
+					cachedMD := filepath.Join(cacheRoot, "skills", cleanSkillName, "SKILL.md")
+					if IsArchiveItem(*item) {
+						if IsArchiveCachedWithDigest(cacheRoot, cleanSkillName, expectedDigest) {
+							if cachedData, err := os.ReadFile(cachedMD); err == nil && len(cachedData) > 0 {
+								EnrichItemFromSkillMD(item, cachedData)
+								return string(cachedData), nil
+							}
+						}
+					} else if cachedData, err := os.ReadFile(cachedMD); err == nil && len(cachedData) > 0 {
+						if VerifyDigest(cachedData, expectedDigest) == nil {
+							EnrichItemFromSkillMD(item, cachedData)
+							return string(cachedData), nil
+						}
+					}
+				}
+			}
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
@@ -675,10 +716,6 @@ func (c *Catalog) LoadContent(item *Item) (string, error) {
 		}
 		if len(data) == 0 {
 			return "", fmt.Errorf("empty content downloaded for %q", item.Name)
-		}
-		expectedDigest := item.Digest
-		if expectedDigest == "" {
-			expectedDigest = item.Sha256
 		}
 		if expectedDigest != "" {
 			if err := VerifyDigest(data, expectedDigest); err != nil {

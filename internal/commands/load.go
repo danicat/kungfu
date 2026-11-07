@@ -152,6 +152,22 @@ func (a *App) RunLoad(args []string) int {
 	}
 
 	item, err := a.Store.Get(skillName)
+	if err != nil && localFlag && skillName != "" {
+		cleanName := filepath.Base(filepath.Clean(skillName))
+		if cacheRoot := a.cacheRootDir(); cacheRoot != "" && cleanName != "." && cleanName != ".." {
+			cachedMD := filepath.Join(cacheRoot, "skills", cleanName, "SKILL.md")
+			if data, readErr := os.ReadFile(cachedMD); readErr == nil && len(data) > 0 {
+				synth := catalog.Item{
+					ID:     cleanName,
+					Name:   cleanName,
+					Source: "cache",
+				}
+				catalog.EnrichItemFromSkillMD(&synth, data)
+				item = &synth
+				err = nil
+			}
+		}
+	}
 	if err != nil && !localFlag && shouldProbeGitHubOnLoad(spec, subpath) {
 		if ghTarget, ok := catalog.ParseGitHubTarget(spec); ok {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -381,6 +397,13 @@ func (a *App) loadItemContentWithOpts(item *catalog.Item, localOnly, forceUpdate
 	}
 
 	if forceUpdate {
+		if cacheRoot := a.cacheRootDir(); cacheRoot != "" && item.Name != "" {
+			cleanName := filepath.Base(filepath.Clean(item.Name))
+			if cleanName != "" && cleanName != "." && cleanName != ".." {
+				_ = os.Remove(filepath.Join(cacheRoot, "skills", cleanName, ".digest"))
+				_ = os.Remove(filepath.Join(cacheRoot, "skills", cleanName, "SKILL.md"))
+			}
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		freshItem := a.refreshCatalogForItem(ctx, item, a.resolveDefaultCatalogURL())
 		cancel()

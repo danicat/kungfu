@@ -10,6 +10,25 @@ This backlog tracks roadmap items and completed releases for `kungfu`.
 ### 2. Skill Dependency Graph
 - Support `dependencies` in skill frontmatter (`dependencies: [ebitengineer, procedural-art]`) and chained loading (`kungfu load --with-deps <skill>`).
 
+## Completed (`v0.7.1`)
+
+- [x] 24-hour catalog cache TTL: Increased `DefaultCatalogTTL` from 1 hour to 24 hours in `internal/catalog/cache.go` (`kungfu update` and `kungfu load -u` force immediate refreshes).
+- [x] Digest-verified local skill cache for `kungfu load`: Updated `Catalog.LoadContent` to serve cached `<cacheRoot>/skills/<name>/SKILL.md` files directly from disk whenever the SHA-256 digest matches the catalog entry, avoiding repeated remote downloads across pages (`-p 2`) and sessions.
+- [x] True offline `--local` mode: Added `catalog.WithOffline(true)` when running `kungfu load --local` so catalog initialization uses cached manifests without network calls and falls back to reading `<cacheRoot>/skills/<name>/SKILL.md` directly from disk.
+- [x] Atomic cache extraction for parallel subagents: Updated `UnpackArchiveToCache` (`internal/catalog/archive.go`) and `cacheSkillFile` (`internal/runner/runner.go`) to extract into temporary paths and atomically swap into place so concurrent subagents never wipe or truncate each other's skill cache.
+- [x] Catalog precedence consistency: Updated `Catalog.AddCatalogManifest` to apply `shouldPreferCatalogItem` when merging unscoped skill names, matching `loadNamedCatalogsLocked`.
+
+## Completed (`v0.7.0`)
+
+- [x] Category removal: Removed legacy `Category` fields and filtering across `catalog`, `search`, and CLI commands (`find`, `list`, `show`).
+- [x] Telemetry backfill (`kungfu telemetry sync --backfill` / `-b`): Added watermark reset flag to backfill full local usage history to Cloud Firestore, and skipped no-op remote transactions when all counter deltas are zero.
+- [x] Documentation refresh: Updated `README.md` and `skills/kungfu/SKILL.md` examples (`kungfu load`, `show`, `learn`, `telemetry sync -b`).
+
+## Completed (`v0.6.2` – `v0.6.6`)
+
+- [x] RFC v0.2.0 archive skills & cache pruning (`v0.6.5`–`v0.6.6`): Added `.tar.gz` (`type: "archive"`) skill extraction (`~/.cache/kungfu/skills/<name>`), tar bomb and symlink traversal guards, and orphan cache pruning during `kungfu update` and `kungfu forget`.
+- [x] CLI ergonomics & flag validation (`v0.6.3`–`v0.6.6`): Removed `--full` pagination footer hint, improved subcommand `--help` routing and exit codes, constrained `kungfu show` companion file listing to local disk only, and aligned `kungfu catalog list` table columns.
+
 ## Completed (`v0.6.1`)
 
 - [x] Centralized updates (`kungfu update`): Removed `kungfu catalog sync` so `kungfu update` synchronizes all registered catalogs (`default`, `github`, `http`, `local`), flushes opt-in telemetry, and checks or updates installed skills.

@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/danicat/kungfu/internal/catalog"
@@ -465,5 +466,83 @@ func TestTelemetryRecording_LoadLearnRun(t *testing.T) {
 	}
 	if h.RunCount != 1 {
 		t.Errorf("expected RunCount=1, got %d", h.RunCount)
+	}
+}
+
+func TestRunLoad_DigestCacheHitAndOfflineLocal(t *testing.T) {
+	skillContent := "---\nname: cachedpage\ndescription: pagination cache test\n---\n# Cached Page Skill\n" + strings.Repeat("Line of body for multi-page test.\n", 40)
+	digest := catalog.ComputeDigest([]byte(skillContent))
+
+	var skillFetchCount atomic.Int32
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "SKILL.md") {
+			skillFetchCount.Add(1)
+			w.Header().Set("Content-Type", "text/markdown")
+			_, _ = w.Write([]byte(skillContent))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{
+			"$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
+			"skills": [
+				{
+					"name": "cachedpage",
+					"type": "skill-md",
+					"description": "pagination cache test",
+					"url": "%s/skills/cachedpage/SKILL.md",
+					"digest": "%s"
+				}
+			]
+		}`, server.URL, digest)
+	}))
+	defer server.Close()
+	t.Setenv("KUNGFU_URL", server.URL)
+
+	tmpCache := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	// 1. Page 1 downloads from remote (skillFetchCount == 1)
+	if code := Run([]string{"--cache-dir", tmpCache, "load", "cachedpage", "--page-size=500", "-p", "1"}, &stdout, &stderr); code != ExitSuccess {
+		t.Fatalf("page 1 load failed: %d (%s)", code, stderr.String())
+	}
+	if got := skillFetchCount.Load(); got != 1 {
+		t.Fatalf("expected 1 remote fetch on page 1, got %d", got)
+	}
+
+	// 2. Page 2 uses the digest-verified local cache without a second HTTP download (skillFetchCount == 1)
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{"--cache-dir", tmpCache, "load", "cachedpage", "--page-size=500", "-p", "2"}, &stdout, &stderr); code != ExitSuccess {
+		t.Fatalf("page 2 load failed: %d (%s)", code, stderr.String())
+	}
+	if got := skillFetchCount.Load(); got != 1 {
+		t.Fatalf("expected page 2 to hit digest-verified cache (1 fetch total), got %d", got)
+	}
+
+	// 3. Passing -u forces a fresh remote check and download (skillFetchCount == 2)
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{"--cache-dir", tmpCache, "load", "cachedpage", "-u"}, &stdout, &stderr); code != ExitSuccess {
+		t.Fatalf("load -u failed: %d (%s)", code, stderr.String())
+	}
+	if got := skillFetchCount.Load(); got != 2 {
+		t.Fatalf("expected load -u to re-fetch from remote (2 fetches total), got %d", got)
+	}
+
+	// 4. Close the remote server and expire index.json; `load cachedpage --local` must still succeed offline
+	server.Close()
+	indexPath := filepath.Join(tmpCache, "index.json")
+	if data, err := os.ReadFile(indexPath); err == nil {
+		expired := strings.ReplaceAll(string(data), `"fetched_at": "20`, `"fetched_at": "2020-01-01T00:00:00Z", "old_fetched_at": "20`)
+		_ = os.WriteFile(indexPath, []byte(expired), 0644)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{"--cache-dir", tmpCache, "load", "cachedpage", "--local"}, &stdout, &stderr); code != ExitSuccess {
+		t.Fatalf("expected offline load --local with expired index cache to succeed, got %d (%s)", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "# Cached Page Skill") {
+		t.Errorf("expected cached skill content from offline --local load, got %q", stdout.String())
 	}
 }

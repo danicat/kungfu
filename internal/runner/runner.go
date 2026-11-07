@@ -184,10 +184,23 @@ func cacheSkillFile(skillName, relPath string, data []byte) {
 		return
 	}
 	targetPath := filepath.Join(cacheRoot, "skills", cleanSkillName, filepath.FromSlash(cleanRel))
-	_ = os.MkdirAll(filepath.Dir(targetPath), 0755)
+	targetDir := filepath.Dir(targetPath)
+	_ = os.MkdirAll(targetDir, 0755)
 	perm := os.FileMode(0644)
 	if strings.HasPrefix(cleanRel, "scripts/") || strings.HasSuffix(cleanRel, ".sh") || strings.HasSuffix(cleanRel, ".py") || strings.HasSuffix(cleanRel, ".js") {
 		perm = 0755
+	}
+	if tmpFile, err := os.CreateTemp(targetDir, "."+filepath.Base(targetPath)+"-tmp-*"); err == nil {
+		tmpName := tmpFile.Name()
+		_, writeErr := tmpFile.Write(data)
+		closeErr := tmpFile.Close()
+		if writeErr == nil && closeErr == nil {
+			_ = os.Chmod(tmpName, perm)
+			if err := os.Rename(tmpName, targetPath); err == nil {
+				return
+			}
+		}
+		_ = os.Remove(tmpName)
 	}
 	if err := os.WriteFile(targetPath, data, perm); err == nil {
 		_ = os.Chmod(targetPath, perm)
