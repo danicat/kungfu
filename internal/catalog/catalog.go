@@ -449,17 +449,11 @@ func (c *Catalog) Get(idOrName string) (*Item, error) {
 	return nil, fmt.Errorf("%w: %s", ErrItemNotFound, idOrName)
 }
 
-// List returns items filtered by category.
-func (c *Catalog) List(category string) ([]Item, error) {
-	return c.ListByFilter(QueryFilter{Category: category}), nil
-}
-
-// ListByFilter filters unique catalog items by category and/or boolean tag query.
+// ListByFilter filters unique catalog items by boolean tag query.
 func (c *Catalog) ListByFilter(filter QueryFilter) []Item {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	cat := strings.ToLower(strings.TrimSpace(filter.Category))
 	tagQuery := strings.TrimSpace(filter.TagQuery)
 	seen := make(map[string]struct{})
 	var result []Item
@@ -474,28 +468,6 @@ func (c *Catalog) ListByFilter(filter QueryFilter) []Item {
 			continue
 		}
 		seen[lowID] = struct{}{}
-
-		// Check Category filter
-		if cat != "" && cat != "all" {
-			itemCat := strings.ToLower(item.Category)
-			if itemCat != cat {
-				// Check against manifest category Name / ID aliases
-				matched := false
-				if c.manifest != nil {
-					for _, mc := range c.manifest.Categories {
-						mcID := strings.ToLower(mc.ID)
-						mcName := strings.ToLower(mc.Name)
-						if (cat == mcID || cat == mcName) && (itemCat == mcID || itemCat == mcName) {
-							matched = true
-							break
-						}
-					}
-				}
-				if !matched {
-					continue
-				}
-			}
-		}
 
 		// Check Tag Query filter
 		if tagQuery != "" && !MatchTags(item.Tags, tagQuery) {
@@ -527,80 +499,6 @@ func (c *Catalog) AddItem(item Item) {
 // All returns all unique items in the catalog.
 func (c *Catalog) All() []Item {
 	return c.ListByFilter(QueryFilter{})
-}
-
-// Categories returns the distinct categories in the catalog with item counts.
-// Categories are dynamically discovered from skills and manifest declarations; never hardcoded.
-func (c *Catalog) Categories() []Category {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	catCount := make(map[string]int)
-	catNames := make(map[string]string)
-	seen := make(map[string]struct{})
-
-	for _, item := range c.items {
-		lowID := strings.ToLower(item.ID)
-		if primary, ok := c.items[lowID]; ok {
-			item = primary
-			lowID = strings.ToLower(item.ID)
-		}
-		if _, already := seen[lowID]; already {
-			continue
-		}
-		seen[lowID] = struct{}{}
-		if item.Category != "" {
-			catKey := strings.ToLower(item.Category)
-			catCount[catKey]++
-			if catNames[catKey] == "" {
-				catNames[catKey] = item.Category
-			}
-		}
-	}
-
-	var result []Category
-	seenCats := make(map[string]struct{})
-
-	// 1. Include categories from manifest if explicitly defined
-	if c.manifest != nil {
-		for _, mc := range c.manifest.Categories {
-			idLower := strings.ToLower(mc.ID)
-			if idLower == "" {
-				idLower = strings.ToLower(mc.Name)
-			}
-			if idLower == "" {
-				continue
-			}
-			seenCats[idLower] = struct{}{}
-			result = append(result, Category{
-				ID:          mc.ID,
-				Name:        mc.Name,
-				Emoji:       mc.Emoji,
-				Description: mc.Description,
-				Count:       catCount[idLower],
-			})
-		}
-	}
-
-	// 2. Include dynamic categories discovered from items
-	for catKey, count := range catCount {
-		if _, exists := seenCats[catKey]; !exists {
-			name := catNames[catKey]
-			if name == "" {
-				name = catKey
-			}
-			result = append(result, Category{
-				ID:    catKey,
-				Name:  name,
-				Count: count,
-			})
-		}
-	}
-
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].Name < result[j].Name
-	})
-	return result
 }
 
 func (c *Catalog) discoverLocalSkillsLocked() {
@@ -658,10 +556,7 @@ func (c *Catalog) discoverLocalSkillsLocked() {
 
 			existing, exists := c.items[key]
 			if exists && existing.Source != "local" {
-				// For remote catalog items, only populate category/tags if empty; keep remote version authoritative
-				if existing.Category == "" && fm.Metadata != nil && fm.Metadata["category"] != "" {
-					existing.Category = fm.Metadata["category"]
-				}
+				// For remote catalog items, only populate tags if empty; keep remote version authoritative
 				if len(existing.Tags) == 0 && fm.Metadata != nil && fm.Metadata["tags"] != "" {
 					existing.Tags = ParseTags(fm.Metadata["tags"])
 				}
@@ -703,9 +598,6 @@ func (c *Catalog) discoverLocalSkillsLocked() {
 					existing.Metadata = make(map[string]string)
 				}
 				maps.Copy(existing.Metadata, fm.Metadata)
-				if cat, ok := fm.Metadata["category"]; ok && cat != "" {
-					existing.Category = cat
-				}
 				if ver, ok := fm.Metadata["version"]; ok && ver != "" {
 					existing.Version = ver
 				}

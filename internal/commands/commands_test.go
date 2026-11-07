@@ -222,7 +222,6 @@ func TestDidYouMeanSuggestions(t *testing.T) {
 					"name": "kungfu",
 					"type": "skill-md",
 					"description": "Agent skills gateway",
-					"category": "agents",
 					"url": "https://skills.danicat.dev/agents/kungfu/SKILL.md",
 					"digest": "sha256:345678"
 				},
@@ -230,7 +229,6 @@ func TestDidYouMeanSuggestions(t *testing.T) {
 					"name": "godoctor",
 					"type": "skill-md",
 					"description": "Go doctor",
-					"category": "coding",
 					"url": "https://skills.danicat.dev/coding/godoctor/SKILL.md",
 					"digest": "sha256:123456"
 				},
@@ -238,7 +236,6 @@ func TestDidYouMeanSuggestions(t *testing.T) {
 					"name": "tech-writer",
 					"type": "skill-md",
 					"description": "Tech writer",
-					"category": "writing",
 					"url": "https://skills.danicat.dev/writing/tech-writer/SKILL.md",
 					"digest": "sha256:234567"
 				},
@@ -246,7 +243,6 @@ func TestDidYouMeanSuggestions(t *testing.T) {
 					"name": "developing-genkit-go",
 					"type": "skill-md",
 					"description": "Develop AI-powered applications using Genkit in Go",
-					"category": "coding",
 					"url": "https://skills.danicat.dev/coding/developing-genkit-go/SKILL.md",
 					"digest": "sha256:456781"
 				},
@@ -254,7 +250,6 @@ func TestDidYouMeanSuggestions(t *testing.T) {
 					"name": "developing-genkit-js",
 					"type": "skill-md",
 					"description": "Develop AI-powered applications using Genkit in Node.js/TypeScript",
-					"category": "coding",
 					"url": "https://skills.danicat.dev/coding/developing-genkit-js/SKILL.md",
 					"digest": "sha256:456782"
 				},
@@ -262,7 +257,6 @@ func TestDidYouMeanSuggestions(t *testing.T) {
 					"name": "developing-genkit-python",
 					"type": "skill-md",
 					"description": "Develop AI-powered applications using Genkit in Python",
-					"category": "coding",
 					"url": "https://skills.danicat.dev/coding/developing-genkit-python/SKILL.md",
 					"digest": "sha256:456783"
 				},
@@ -270,7 +264,6 @@ func TestDidYouMeanSuggestions(t *testing.T) {
 					"name": "developing-genkit-dart",
 					"type": "skill-md",
 					"description": "Generates code and provides documentation for the Genkit Dart SDK",
-					"category": "coding",
 					"url": "https://skills.danicat.dev/coding/developing-genkit-dart/SKILL.md",
 					"digest": "sha256:456784"
 				},
@@ -278,7 +271,6 @@ func TestDidYouMeanSuggestions(t *testing.T) {
 					"name": "lyria",
 					"type": "skill-md",
 					"description": "Generative music and audio synthesis from text prompts or reference images",
-					"category": "media",
 					"tags": ["audio", "music", "lyria"],
 					"url": "https://skills.danicat.dev/media/lyria/SKILL.md",
 					"digest": "sha256:567890"
@@ -336,7 +328,7 @@ func TestDidYouMeanSuggestions(t *testing.T) {
 			},
 		},
 		{
-			name:     "show unknown name suggests category match and find",
+			name:     "show unknown name suggests description match and find",
 			args:     []string{"show", "agents"},
 			wantCode: ExitNotFound,
 			wantStderr: []string{
@@ -423,7 +415,6 @@ func TestLoadLocalSubpathAndCorruptDigestForceGuard(t *testing.T) {
 						"name": "bad-digest-skill",
 						"type": "skill-md",
 						"description": "Skill with mismatched digest",
-						"category": "coding",
 						"url": "http://` + r.Host + `/skills/bad/SKILL.md",
 						"digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 					}

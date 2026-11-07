@@ -45,7 +45,6 @@ func startMockKungfuServer(t *testing.T) (*httptest.Server, string) {
 					"name": "kungfu",
 					"type": "skill-md",
 					"description": "agent skills gateway",
-					"category": "agents",
 					"url": "%s/skills/kungfu/SKILL.md",
 					"digest": "%s"
 				}

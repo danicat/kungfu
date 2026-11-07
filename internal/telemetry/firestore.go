@@ -47,16 +47,6 @@ const (
 	MaxWritesPerCommit = 500
 )
 
-var validCategories = map[string]bool{
-	"agents":    true,
-	"analytics": true,
-	"coding":    true,
-	"game-dev":  true,
-	"media":     true,
-	"writing":   true,
-	"standards": true,
-}
-
 type StringValue struct {
 	StringValue string `json:"stringValue"`
 }
@@ -121,9 +111,6 @@ func clampDelta(v int) int {
 }
 
 func isValidSkillWrite(d state.TelemetryDelta) bool {
-	if !validCategories[d.Category] {
-		return false
-	}
 	if len(d.Skill) < 1 || len(d.Skill) > 64 || strings.Contains(d.Skill, "/") {
 		return false
 	}
@@ -149,7 +136,7 @@ func BuildCommitPayload(projectID string, deltas []state.TelemetryDelta) (*Commi
 
 		clamped := state.TelemetryDelta{
 			Skill:        d.Skill,
-			Category:     d.Category,
+			Catalog:      d.Catalog,
 			Loads:        clampDelta(d.Loads),
 			PageLoads:    clampDelta(d.PageLoads),
 			SubpathLoads: clampDelta(d.SubpathLoads),
@@ -185,16 +172,15 @@ func BuildCommitPayload(projectID string, deltas []state.TelemetryDelta) (*Commi
 			SetToServerValue: "REQUEST_TIME",
 		})
 
-		docName := fmt.Sprintf("projects/%s/databases/(default)/documents/skills/%s-%s", projectID, d.Category, d.Skill)
+		docName := fmt.Sprintf("projects/%s/databases/(default)/documents/skills/%s", projectID, d.Skill)
 		writes = append(writes, WriteOperation{
 			Update: DocumentUpdate{
 				Name: docName,
 				Fields: map[string]StringValue{
-					"category": {StringValue: d.Category},
-					"skill":    {StringValue: d.Skill},
+					"skill": {StringValue: d.Skill},
 				},
 			},
-			UpdateMask:       DocumentMask{FieldPaths: []string{"category", "skill"}},
+			UpdateMask:       DocumentMask{FieldPaths: []string{"skill"}},
 			UpdateTransforms: transforms,
 		})
 		applied = append(applied, clamped)

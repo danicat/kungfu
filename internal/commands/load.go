@@ -266,7 +266,7 @@ func (a *App) RunLoad(args []string) int {
 	}
 
 	currentPageContent := pages[pageFlag-1]
-	a.recordSkillLoad(target.item.Name, target.subpath, pageFlag)
+	a.recordSkillLoad(target.item, target.subpath, pageFlag)
 
 	if mode == OutputModeJSON {
 		ver := target.item.Version
@@ -284,7 +284,6 @@ func (a *App) RunLoad(args []string) int {
 		type LoadResultItem struct {
 			Name        string `json:"name"`
 			Subpath     string `json:"subpath,omitempty"`
-			Category    string `json:"category"`
 			Version     string `json:"version,omitempty"`
 			Description string `json:"description"`
 			Page        int    `json:"page,omitempty"`
@@ -297,7 +296,6 @@ func (a *App) RunLoad(args []string) int {
 		res := LoadResultItem{
 			Name:        target.item.Name,
 			Subpath:     target.subpath,
-			Category:    target.item.Category,
 			Version:     ver,
 			Description: target.item.Description,
 			Page:        pageNum,

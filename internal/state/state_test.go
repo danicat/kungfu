@@ -335,26 +335,42 @@ func TestState_WithLockedStateAndDetailedTelemetry(t *testing.T) {
 	}
 }
 
-func TestState_TelemetryDeltaClampingAndSnapping(t *testing.T) {
+func TestState_TelemetryDeltaClampingAndBackfill(t *testing.T) {
 	s := state.NewState()
 	for range 150 {
-		s.RecordLoadDetailed("godoctor", "", 1)
+		s.RecordLoadDetailedWithCatalog("godoctor", "https://skills.danicat.dev", "", 1)
 	}
-	deltas := s.ComputeTelemetryDeltas(func(name string) (string, bool) {
-		return "coding", name == "godoctor"
-	})
+	resolveOfficial := func(name string) (string, bool) {
+		return "https://skills.danicat.dev", name == "godoctor"
+	}
+	deltas := s.ComputeTelemetryDeltas(resolveOfficial)
 	if len(deltas) != 1 || deltas[0].Loads != state.MaxTelemetryDelta {
 		t.Fatalf("expected Loads clamped to %d, got %+v", state.MaxTelemetryDelta, deltas)
 	}
 	s.ApplySyncedDeltas(deltas, time.Now().UTC())
-	if s.History["godoctor"].SyncedLoadCount != 150 {
-		t.Errorf("expected SyncedLoadCount snapped to 150, got %d", s.History["godoctor"].SyncedLoadCount)
+	if s.History["godoctor"].LoadCount != 150 {
+		t.Errorf("expected immutable LoadCount=150, got %d", s.History["godoctor"].LoadCount)
 	}
-	after := s.ComputeTelemetryDeltas(func(name string) (string, bool) {
-		return "coding", name == "godoctor"
-	})
+	if s.History["godoctor"].SyncedLoadCount != 100 {
+		t.Errorf("expected SyncedLoadCount advanced by 100 (not snapped to 150), got %d", s.History["godoctor"].SyncedLoadCount)
+	}
+	remaining := s.ComputeTelemetryDeltas(resolveOfficial)
+	if len(remaining) != 1 || remaining[0].Loads != 50 {
+		t.Fatalf("expected 50 remaining unsynced loads, got %+v", remaining)
+	}
+	s.ApplySyncedDeltas(remaining, time.Now().UTC())
+	if s.History["godoctor"].SyncedLoadCount != 150 {
+		t.Errorf("expected SyncedLoadCount=150 after second batch, got %d", s.History["godoctor"].SyncedLoadCount)
+	}
+	after := s.ComputeTelemetryDeltas(resolveOfficial)
 	if len(after) != 0 {
-		t.Errorf("expected 0 pending deltas after ApplySyncedDeltas, got %+v", after)
+		t.Errorf("expected 0 pending deltas after full sync, got %+v", after)
+	}
+
+	// Resetting watermarks allows backfilling the full immutable 150 loads
+	s.ResetTelemetryWatermarks()
+	if s.History["godoctor"].LoadCount != 150 || s.History["godoctor"].SyncedLoadCount != 0 {
+		t.Errorf("expected LoadCount=150 and SyncedLoadCount=0 after ResetTelemetryWatermarks, got %+v", s.History["godoctor"])
 	}
 }
 

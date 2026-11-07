@@ -28,16 +28,14 @@ const (
 	WeightName        float32 = 4.0
 	WeightTitle       float32 = 4.0
 	WeightTags        float32 = 3.0
-	WeightCategory    float32 = 2.5
 	WeightDescription float32 = 1.5
 	WeightOther       float32 = 1.0
 
 	FieldMaskName        uint8 = 1 << 0
 	FieldMaskTitle       uint8 = 1 << 1
 	FieldMaskTags        uint8 = 1 << 2
-	FieldMaskCategory    uint8 = 1 << 3
-	FieldMaskDescription uint8 = 1 << 4
-	FieldMaskOther       uint8 = 1 << 5
+	FieldMaskDescription uint8 = 1 << 3
+	FieldMaskOther       uint8 = 1 << 4
 
 	// DefaultRRFK is the smoothing constant for Reciprocal Rank Fusion.
 	DefaultRRFK = 60.0
@@ -139,7 +137,6 @@ func (e *Engine) Index(items []catalog.Item) error {
 		for _, tag := range item.Tags {
 			indexField(tag, WeightTags, FieldMaskTags)
 		}
-		indexField(item.Category, WeightCategory, FieldMaskCategory)
 		indexField(item.Description, WeightDescription, FieldMaskDescription)
 		indexField(item.Path, WeightOther, FieldMaskOther)
 		indexField(item.Source, WeightOther, FieldMaskOther)
@@ -163,10 +160,9 @@ func (e *Engine) Index(items []catalog.Item) error {
 	return nil
 }
 
-// parsedFilter holds query directives like category:x, tag:y, type:z, catalog:w / @w.
+// parsedFilter holds query directives like tag:y, type:z, catalog:w / @w.
 type parsedFilter struct {
 	cleanQuery string
-	category   string
 	tags       []string
 	itemType   string
 	catalog    string
@@ -179,11 +175,7 @@ func parseQueryFilters(query string) parsedFilter {
 
 	for _, p := range parts {
 		low := strings.ToLower(p)
-		if after, ok := strings.CutPrefix(low, "category:"); ok {
-			filter.category = after
-		} else if after, ok := strings.CutPrefix(low, "cat:"); ok {
-			filter.category = after
-		} else if after, ok := strings.CutPrefix(low, "tag:"); ok {
+		if after, ok := strings.CutPrefix(low, "tag:"); ok {
 			filter.tags = append(filter.tags, after)
 		} else if after, ok := strings.CutPrefix(low, "type:"); ok {
 			filter.itemType = after
@@ -208,13 +200,8 @@ func parseQueryFilters(query string) parsedFilter {
 	return filter
 }
 
-// matchesFilter checks whether a catalog Item satisfies extracted category, tag, type, or catalog constraints.
+// matchesFilter checks whether a catalog Item satisfies extracted tag, type, or catalog constraints.
 func matchesFilter(item *catalog.Item, filter *parsedFilter) bool {
-	if len(filter.category) > 0 {
-		if !strings.EqualFold(item.Category, filter.category) {
-			return false
-		}
-	}
 	if len(filter.itemType) > 0 {
 		if !strings.EqualFold(string(item.Type), filter.itemType) {
 			return false
@@ -269,7 +256,7 @@ func (e *Engine) Search(query string, strategy string, limit int, threshold floa
 
 	filter := parseQueryFilters(query)
 	activeQuery := strings.TrimSpace(filter.cleanQuery)
-	hasFilter := filter.category != "" || filter.itemType != "" || len(filter.tags) > 0 || filter.catalog != ""
+	hasFilter := filter.itemType != "" || len(filter.tags) > 0 || filter.catalog != ""
 
 	if activeQuery == "" && !hasFilter {
 		return nil
@@ -290,9 +277,6 @@ func (e *Engine) Search(query string, strategy string, limit int, threshold floa
 	// If query text is empty after filtering directives, return matching candidate docs
 	if activeQuery == "" {
 		var matchFields []string
-		if filter.category != "" {
-			matchFields = append(matchFields, "category")
-		}
 		if len(filter.tags) > 0 {
 			matchFields = append(matchFields, "tags")
 		}
@@ -567,7 +551,6 @@ func (e *Engine) searchExact(query string, candidateDocIDs []uint32, limit int, 
 		itemName := strings.ToLower(item.Name)
 		itemTitle := strings.ToLower(item.Title)
 		itemID := strings.ToLower(item.ID)
-		itemCat := strings.ToLower(item.Category)
 		itemDesc := strings.ToLower(item.Description)
 
 		normName := normalizeKey(itemName)
@@ -613,14 +596,6 @@ func (e *Engine) searchExact(query string, candidateDocIDs []uint32, limit int, 
 				score += 3.0 * WeightTags
 				mask |= FieldMaskTags
 			}
-		}
-
-		if itemCat == queryNorm || (normQuery != "" && normalizeKey(itemCat) == normQuery) {
-			score += 6.0 * WeightCategory
-			mask |= FieldMaskCategory
-		} else if strings.Contains(itemCat, queryNorm) || (normQuery != "" && strings.Contains(normalizeKey(itemCat), normQuery)) {
-			score += 2.0 * WeightCategory
-			mask |= FieldMaskCategory
 		}
 
 		if strings.Contains(itemDesc, queryNorm) || (normQuery != "" && strings.Contains(normalizeKey(itemDesc), normQuery)) {
@@ -822,9 +797,6 @@ func maskToFieldNames(mask uint8) []string {
 	if mask&FieldMaskTags != 0 {
 		fields = append(fields, "tags")
 	}
-	if mask&FieldMaskCategory != 0 {
-		fields = append(fields, "category")
-	}
 	if mask&FieldMaskDescription != 0 {
 		fields = append(fields, "description")
 	}
@@ -844,8 +816,6 @@ func fieldNamesToMask(fields []string) uint8 {
 			mask |= FieldMaskTitle
 		case "tags":
 			mask |= FieldMaskTags
-		case "category":
-			mask |= FieldMaskCategory
 		case "description":
 			mask |= FieldMaskDescription
 		case "other":

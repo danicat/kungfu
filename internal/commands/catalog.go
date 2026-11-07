@@ -241,7 +241,7 @@ func (a *App) runCatalogAdd(args []string) int {
 	default:
 		_, _ = fmt.Fprintf(a.Stdout, "✓ Added catalog %q (%s, %d skills indexed)\n", catName, catType, len(manifest.Items))
 		for _, it := range manifest.Items {
-			_, _ = fmt.Fprintf(a.Stdout, "  • %-20s [%s] %s\n", it.Name, it.Category, it.Description)
+			_, _ = fmt.Fprintf(a.Stdout, "  • %-20s %s\n", it.Name, it.Description)
 		}
 		return ExitSuccess
 	}

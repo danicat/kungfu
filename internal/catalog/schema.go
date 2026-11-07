@@ -47,7 +47,6 @@ type Item struct {
 	Type               ItemType          `json:"type,omitempty" yaml:"type,omitempty"`
 	Title              string            `json:"title,omitempty" yaml:"title,omitempty"`
 	Description        string            `json:"description" yaml:"description"`
-	Category           string            `json:"category,omitempty" yaml:"category,omitempty"`
 	Tags               []string          `json:"tags,omitempty" yaml:"tags,omitempty"`
 	Author             string            `json:"author,omitempty" yaml:"author,omitempty"`
 	Version            string            `json:"version,omitempty" yaml:"version,omitempty"`
@@ -118,9 +117,6 @@ func (it *Item) Normalize() {
 	} else if it.Entrypoint != "" && it.Metadata["canonical"] == "" {
 		it.Metadata["canonical"] = it.Entrypoint
 	}
-	if it.Category == "" {
-		it.Category = it.Metadata["category"]
-	}
 	if it.Author == "" {
 		it.Author = it.Metadata["author"]
 	}
@@ -143,34 +139,15 @@ func (it *Item) Normalize() {
 			rel := targetURL[idx+len("/skills/"):]
 			parts := strings.Split(rel, "/")
 			if len(parts) >= 3 {
-				if it.Category == "" {
-					it.Category = parts[0]
-				}
 				if it.RelativePath == "" {
 					it.RelativePath = "skills/" + strings.Join(parts[:len(parts)-1], "/")
 				}
 			} else if len(parts) == 2 {
-				if it.Category == "" {
-					it.Category = "agents"
-				}
 				if it.RelativePath == "" {
 					it.RelativePath = "skills/" + parts[0]
 				}
 			}
-		} else if u, err := url.Parse(targetURL); err == nil {
-			cleanPath := strings.Trim(u.Path, "/")
-			parts := strings.Split(cleanPath, "/")
-			if len(parts) >= 2 && strings.EqualFold(parts[len(parts)-1], "SKILL.md") {
-				if len(parts) == 3 && it.Category == "" {
-					it.Category = parts[0]
-				} else if len(parts) >= 2 && it.Category == "" {
-					it.Category = parts[len(parts)-2]
-				}
-			}
 		}
-	}
-	if it.Category == "" {
-		it.Category = "agents"
 	}
 }
 
@@ -184,15 +161,6 @@ func (it *Item) UnmarshalJSON(data []byte) error {
 	*it = Item(aux)
 	it.Normalize()
 	return nil
-}
-
-// Category represents a grouping of catalog items.
-type Category struct {
-	ID          string `json:"id" yaml:"id"`
-	Name        string `json:"name" yaml:"name"`
-	Emoji       string `json:"emoji,omitempty" yaml:"emoji,omitempty"`
-	Description string `json:"description" yaml:"description"`
-	Count       int    `json:"count,omitempty" yaml:"count,omitempty"`
 }
 
 // Gateway represents catalog gateway metadata and shortcuts.
@@ -218,19 +186,18 @@ type Frontmatter struct {
 
 // Manifest represents a remote or local discovery index (catalog.json / index.json).
 type Manifest struct {
-	Schema      string     `json:"$schema,omitempty" yaml:"$schema,omitempty"`
-	Version     string     `json:"version,omitempty" yaml:"version,omitempty"`
-	Name        string     `json:"name,omitempty" yaml:"name,omitempty"`
-	Title       string     `json:"title,omitempty" yaml:"title,omitempty"`
-	Generator   string     `json:"generator,omitempty" yaml:"generator,omitempty"`
-	URL         string     `json:"url,omitempty" yaml:"url,omitempty"`
-	Repository  string     `json:"repository,omitempty" yaml:"repository,omitempty"`
-	TotalSkills int        `json:"totalSkills,omitempty" yaml:"totalSkills,omitempty"`
-	UpdatedAt   any        `json:"updatedAt,omitempty" yaml:"updatedAt,omitempty"`
-	Categories  []Category `json:"categories,omitempty" yaml:"categories,omitempty"`
-	Gateway     *Gateway   `json:"gateway,omitempty" yaml:"gateway,omitempty"`
-	Items       []Item     `json:"items,omitempty" yaml:"items,omitempty"`
-	Skills      []Item     `json:"skills,omitempty" yaml:"skills,omitempty"`
+	Schema      string   `json:"$schema,omitempty" yaml:"$schema,omitempty"`
+	Version     string   `json:"version,omitempty" yaml:"version,omitempty"`
+	Name        string   `json:"name,omitempty" yaml:"name,omitempty"`
+	Title       string   `json:"title,omitempty" yaml:"title,omitempty"`
+	Generator   string   `json:"generator,omitempty" yaml:"generator,omitempty"`
+	URL         string   `json:"url,omitempty" yaml:"url,omitempty"`
+	Repository  string   `json:"repository,omitempty" yaml:"repository,omitempty"`
+	TotalSkills int      `json:"totalSkills,omitempty" yaml:"totalSkills,omitempty"`
+	UpdatedAt   any      `json:"updatedAt,omitempty" yaml:"updatedAt,omitempty"`
+	Gateway     *Gateway `json:"gateway,omitempty" yaml:"gateway,omitempty"`
+	Items       []Item   `json:"items,omitempty" yaml:"items,omitempty"`
+	Skills      []Item   `json:"skills,omitempty" yaml:"skills,omitempty"`
 }
 
 // Cloudflare RFC v0.2.0 schema URI.
@@ -353,17 +320,14 @@ func parseSemverParts(v string) []int {
 
 // QueryFilter defines criteria for filtering catalog items.
 type QueryFilter struct {
-	Category string
 	TagQuery string
 }
 
 // Store defines the public catalog query interface.
 type Store interface {
 	Get(idOrName string) (*Item, error)
-	List(category string) ([]Item, error)
 	ListByFilter(filter QueryFilter) []Item
 	All() []Item
-	Categories() []Category
 	LoadContent(item *Item) (string, error)
 	AddCatalogManifest(name string, manifest *Manifest)
 	RemoveCatalogItems(name string)

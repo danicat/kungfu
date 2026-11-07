@@ -44,24 +44,12 @@ func TestSchemaTypesAndErrors(t *testing.T) {
 		ID:          "test-skill",
 		Name:        "test-skill",
 		Type:        ItemTypeSkill,
-		Category:    "development",
 		Tags:        []string{"go", "testing"},
 		Description: "A test skill for unit testing",
 	}
 
 	if it.ID != "test-skill" || it.Type != ItemTypeSkill {
 		t.Errorf("unexpected item fields: %+v", it)
-	}
-
-	cat := Category{
-		Name:        "development",
-		Emoji:       "🛠️",
-		Description: "Dev tools",
-		Count:       1,
-	}
-
-	if cat.Name != "development" || cat.Count != 1 {
-		t.Errorf("unexpected category fields: %+v", cat)
 	}
 
 	if !errors.Is(ErrItemNotFound, ErrItemNotFound) {
@@ -99,9 +87,6 @@ func TestFrontmatterExtractionAndParsing(t *testing.T) {
 func TestCatalogStoreOperations(t *testing.T) {
 	manifest := &Manifest{
 		Version: "1.0.0",
-		Categories: []Category{
-			{ID: "tooling", Name: "Tooling", Description: "Developer tools"},
-		},
 		Items: []Item{
 			{
 				ID:          "my-skill",
@@ -109,7 +94,6 @@ func TestCatalogStoreOperations(t *testing.T) {
 				Type:        ItemTypeSkill,
 				Title:       "My Skill",
 				Description: "A test skill for discovery",
-				Category:    "tooling",
 				Tags:        []string{"cli", "golang"},
 				Source:      "remote",
 			},
@@ -136,9 +120,6 @@ func TestCatalogStoreOperations(t *testing.T) {
 	if item.Description != "A test skill for discovery" {
 		t.Errorf("Get my-skill unexpected content: %+v", item)
 	}
-	if item.Category != "tooling" {
-		t.Errorf("Get my-skill expected category tooling, got %q", item.Category)
-	}
 	itemCase, err := cat.Get("MY-SKILL")
 	if err != nil {
 		t.Fatalf("Get MY-SKILL (case-insensitive) failed: %v", err)
@@ -149,13 +130,6 @@ func TestCatalogStoreOperations(t *testing.T) {
 	_, err = cat.Get("nonexistent")
 	if !errors.Is(err, ErrItemNotFound) {
 		t.Errorf("expected ErrItemNotFound, got: %v", err)
-	}
-	toolingItems, err := cat.List("tooling")
-	if err != nil {
-		t.Fatalf("List tooling failed: %v", err)
-	}
-	if len(toolingItems) != 1 {
-		t.Errorf("expected 1 tooling item, got %d", len(toolingItems))
 	}
 
 	tagFiltered := cat.ListByFilter(QueryFilter{TagQuery: "golang AND cli"})
@@ -185,13 +159,9 @@ func TestManifestNormalization(t *testing.T) {
 		"items": [
 			{
 				"name": "ebitengineer",
-				"category": "game-dev",
-				"categoryName": "Game Development",
-				"categoryEmoji": "🕹️",
 				"sha256": "abcdef123456",
 				"installCommand": "npx skills add danicat/skills --skill ebitengineer -y",
 				"metadata": {
-					"category": "game-dev",
 					"tags": "game-dev, ebitengine, 2d, golang",
 					"author": "Daniela Petruzalek (daniela@danicat.dev)",
 					"version": "1.2.0",
@@ -448,7 +418,6 @@ func TestCatalog_NewCatalog_RetryRecovery(t *testing.T) {
 				Type:        ItemTypeSkill,
 				Title:       "Retry Skill",
 				Description: "Skill recovered after retry",
-				Category:    "testing",
 				Source:      "remote",
 			},
 		},
@@ -502,11 +471,11 @@ func TestReadBounded_And_CatalogIsolation(t *testing.T) {
 	}
 	cat.AddCatalogManifest("go", &Manifest{
 		Version: "1.0",
-		Items:   []Item{{ID: "go-lint", Name: "go-lint", Category: "coding"}},
+		Items:   []Item{{ID: "go-lint", Name: "go-lint"}},
 	})
 	cat.AddCatalogManifest("go-extra", &Manifest{
 		Version: "1.0",
-		Items:   []Item{{ID: "go-vet", Name: "go-vet", Category: "coding"}},
+		Items:   []Item{{ID: "go-vet", Name: "go-vet"}},
 	})
 
 	cat.RemoveCatalogItems("go")

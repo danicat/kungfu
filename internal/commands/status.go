@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"sort"
 
@@ -99,13 +100,9 @@ func (a *App) RunStatus(args []string) int {
 	}
 
 	combinedForgotten := make(map[string]state.SkillRecord)
-	for k, v := range globalForgotten {
-		combinedForgotten[k] = v
-	}
+	maps.Copy(combinedForgotten, globalForgotten)
 	if !globalFlag {
-		for k, v := range wsForgotten {
-			combinedForgotten[k] = v
-		}
+		maps.Copy(combinedForgotten, wsForgotten)
 	}
 
 	type StatusOutput struct {

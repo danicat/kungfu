@@ -250,9 +250,6 @@ func probeGitHubRef(ctx context.Context, target *GitHubTarget, ref string, clien
 		if item.Metadata["version"] != "" {
 			item.Version = item.Metadata["version"]
 		}
-		if item.Metadata["category"] != "" {
-			item.Category = item.Metadata["category"]
-		}
 		if item.Metadata["tags"] != "" {
 			item.Tags = ParseTags(item.Metadata["tags"])
 		}
@@ -497,25 +494,11 @@ func probeGitHubCatalogRef(ctx context.Context, target *GitHubTarget, ref string
 			githubTreeURL += "/" + dirPath
 		}
 
-		category := ""
-		if fm.Metadata != nil {
-			category = fm.Metadata["category"]
-		}
-		if category == "" {
-			parts := strings.Split(relPath, "/")
-			if len(parts) >= 3 {
-				category = parts[len(parts)-3]
-			} else {
-				category = "agents"
-			}
-		}
-
 		item := Item{
 			ID:           skillName,
 			Name:         skillName,
 			Type:         ItemTypeSkill,
 			Description:  fm.Description,
-			Category:     category,
 			License:      fm.License,
 			AllowedTools: fm.AllowedTools,
 			Body:         string(skillData),
@@ -711,20 +694,11 @@ func DiscoverLocalCatalog(dirPath string) (*Manifest, error) {
 			sum := sha256.Sum256(content)
 			digest := hex.EncodeToString(sum[:])
 
-			category := ""
-			if fm.Metadata != nil {
-				category = fm.Metadata["category"]
-			}
-			if category == "" {
-				category = "agents"
-			}
-
 			item := Item{
 				ID:           skillName,
 				Name:         skillName,
 				Type:         ItemTypeSkill,
 				Description:  fm.Description,
-				Category:     category,
 				License:      fm.License,
 				AllowedTools: fm.AllowedTools,
 				Body:         string(content),

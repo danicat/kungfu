@@ -224,6 +224,7 @@ func (a *App) RunLearn(args []string) int {
 			rawURL = item.URL
 		}
 
+		catSource := normalizeItemCatalog(item)
 		rec := state.SkillRecord{
 			Name:            item.Name,
 			Scope:           scope,
@@ -242,7 +243,7 @@ func (a *App) RunLearn(args []string) int {
 			Files:           files,
 		}
 		st.RecordInstall(scope, wsDir, rec)
-		st.RecordLearn(item.Name)
+		st.RecordLearnWithCatalog(item.Name, catSource)
 
 		res := InstallResult{
 			Name:    item.Name,
@@ -254,7 +255,7 @@ func (a *App) RunLearn(args []string) int {
 		}
 		if loadFlag {
 			res.Content = stripFrontmatter(content)
-			st.RecordLoadDetailed(item.Name, "", 1)
+			st.RecordLoadDetailedWithCatalog(item.Name, catSource, "", 1)
 		}
 		results = append(results, res)
 	}

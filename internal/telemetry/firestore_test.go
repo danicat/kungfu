@@ -29,7 +29,7 @@ func TestBuildCommitPayload_ClampsAndFormats(t *testing.T) {
 	deltas := []state.TelemetryDelta{
 		{
 			Skill:        "godoctor",
-			Category:     "coding",
+			Catalog:      "https://skills.danicat.dev",
 			Loads:        150, // Should clamp to MaxDeltaPerBatch (100)
 			PageLoads:    2,
 			SubpathLoads: 0,
@@ -37,14 +37,12 @@ func TestBuildCommitPayload_ClampsAndFormats(t *testing.T) {
 			Learns:       1,
 		},
 		{
-			Skill:    "invalid-cat-skill",
-			Category: "unknown-category",
-			Loads:    5,
+			Skill: "",
+			Loads: 5,
 		},
 		{
-			Skill:    "bad/slash",
-			Category: "coding",
-			Loads:    5,
+			Skill: "bad/slash",
+			Loads: 5,
 		},
 	}
 
@@ -59,9 +57,15 @@ func TestBuildCommitPayload_ClampsAndFormats(t *testing.T) {
 		t.Fatalf("expected 1 write operation, got %d", len(req.Writes))
 	}
 	w := req.Writes[0]
-	wantDoc := "projects/danicat-dev/databases/(default)/documents/skills/coding-godoctor"
+	wantDoc := "projects/danicat-dev/databases/(default)/documents/skills/godoctor"
 	if w.Update.Name != wantDoc {
 		t.Errorf("expected doc name %q, got %q", wantDoc, w.Update.Name)
+	}
+	if _, hasCat := w.Update.Fields["category"]; hasCat {
+		t.Errorf("expected no category field in Firestore write, got %+v", w.Update.Fields)
+	}
+	if w.Update.Fields["skill"].StringValue != "godoctor" {
+		t.Errorf("expected skill field godoctor, got %+v", w.Update.Fields)
 	}
 	// Expect 4 counter transforms (loads, page_loads, runs, learns) + 1 lastUpdated transform = 5
 	if len(w.UpdateTransforms) != 5 {
@@ -103,10 +107,10 @@ func TestClient_Flush(t *testing.T) {
 
 	deltas := []state.TelemetryDelta{
 		{
-			Skill:    "skill-analytics",
-			Category: "analytics",
-			Loads:    3,
-			Runs:     2,
+			Skill:   "skill-analytics",
+			Catalog: "https://skills.danicat.dev",
+			Loads:   3,
+			Runs:    2,
 		},
 	}
 

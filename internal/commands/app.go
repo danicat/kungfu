@@ -206,9 +206,24 @@ func (a *App) saveState(s *state.State) {
 	}
 }
 
-func (a *App) recordSkillLoad(skillName, subpath string, page int) {
+func normalizeItemCatalog(item catalog.Item) string {
+	src := strings.TrimSpace(item.Source)
+	if src == "" || src == "remote" || src == "default" {
+		if strings.HasPrefix(item.URL, "https://skills.danicat.dev/") {
+			return "https://skills.danicat.dev"
+		}
+		return src
+	}
+	src = strings.TrimSuffix(src, "/.well-known/agent-skills/index.json")
+	src = strings.TrimSuffix(src, "/index.json")
+	src = strings.TrimSuffix(src, "/catalog.json")
+	return src
+}
+
+func (a *App) recordSkillLoad(item catalog.Item, subpath string, page int) {
+	cat := normalizeItemCatalog(item)
 	err := state.WithLockedState("", func(s *state.State) error {
-		s.RecordLoadDetailed(skillName, subpath, page)
+		s.RecordLoadDetailedWithCatalog(item.Name, cat, subpath, page)
 		return nil
 	})
 	if err != nil {
@@ -216,9 +231,10 @@ func (a *App) recordSkillLoad(skillName, subpath string, page int) {
 	}
 }
 
-func (a *App) recordSkillRun(skillName string) {
+func (a *App) recordSkillRun(item catalog.Item) {
+	cat := normalizeItemCatalog(item)
 	err := state.WithLockedState("", func(s *state.State) error {
-		s.RecordRun(skillName)
+		s.RecordRunWithCatalog(item.Name, cat)
 		return nil
 	})
 	if err != nil {
@@ -371,7 +387,7 @@ func (a *App) printNotFoundWithSuggestions(cmd, query string) {
 		}
 	}
 
-	// 2. Hybrid semantic/keyword search across Name, Category, Tags, and Description
+	// 2. Hybrid semantic/keyword search across Name, Tags, and Description
 	if len(matchedItems) < maxSuggestions && a.Searcher != nil && len(allItems) > 0 {
 		_ = a.Searcher.Index(allItems)
 		for _, r := range a.Searcher.Search(searchQuery, "hybrid", maxSuggestions, 0.0) {
@@ -408,10 +424,6 @@ func (a *App) printNotFoundWithSuggestions(cmd, query string) {
 	} else {
 		_, _ = fmt.Fprintln(a.Stderr, "\nRun 'kungfu find <term>' to search for relevant skills across descriptions and keywords.")
 	}
-}
-
-func (a *App) getSkillStatus(item *catalog.Item) string {
-	return a.getSkillStatusWithState(item, a.loadState())
 }
 
 func (a *App) getSkillStatusWithState(item *catalog.Item, st *state.State) string {
@@ -649,7 +661,7 @@ func PrintSubcommandHelp(w io.Writer, cmdName string, args []string) bool {
 		_, _ = fmt.Fprintln(w, `USAGE:
   kungfu find <keywords...> [flags]
 
-Search across skill names, descriptions, categories, and tags.
+Search across skill names, descriptions, and tags.
 
 FLAGS:
   -n, --limit <int>   Maximum number of search results to return (default 10)
@@ -805,13 +817,13 @@ ALIASES:
 		return true
 	case "telemetry":
 		_, _ = fmt.Fprintln(w, `USAGE:
-  kungfu telemetry [status|enable|disable|sync] [--json] [--raw]
+  kungfu telemetry [status|enable|disable|sync] [--backfill] [--json] [--raw]
 
 SUBCOMMANDS:
   status   Show telemetry status and pending official skill deltas (default).
-  enable   Opt in to anonymous community usage counters (baselines existing history).
+  enable   Opt in to anonymous community usage counters.
   disable  Opt out of community usage counters.
-  sync     Flush pending official skill counter deltas to Cloud Firestore.`)
+  sync     Flush pending official skill counter deltas to Cloud Firestore (--backfill replays full history).`)
 		return true
 	default:
 		return false

@@ -45,7 +45,6 @@ func TestRunLoad(t *testing.T) {
 					"name": "kungfu",
 					"type": "skill-md",
 					"description": "Agent skills gateway",
-					"category": "agents",
 					"url": "%s/skills/kungfu/SKILL.md",
 					"digest": "%s"
 				}
@@ -97,10 +96,9 @@ func TestRunLoad_Resilience(t *testing.T) {
 	}
 	if cat, ok := app.Store.(*catalog.Catalog); ok {
 		cat.AddItem(catalog.Item{
-			ID:       "local-skill",
-			Name:     "local-skill",
-			Category: "test",
-			Path:     skillDir,
+			ID:   "local-skill",
+			Name: "local-skill",
+			Path: skillDir,
 		})
 	}
 
@@ -132,7 +130,7 @@ func TestRunLoad_Subpath(t *testing.T) {
 	_ = os.MkdirAll(refsDir, 0755)
 	_ = os.MkdirAll(scriptsDir, 0755)
 
-	_ = os.WriteFile(filepath.Join(tmpDir, "SKILL.md"), []byte("---\nname: subskill\ncategory: test\n---\n# Root Playbook\nRoot body."), 0644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "SKILL.md"), []byte("---\nname: subskill\n---\n# Root Playbook\nRoot body."), 0644)
 	_ = os.WriteFile(filepath.Join(refsDir, "schema.md"), []byte("---\ntitle: Schema\n---\n# Database Schema\nSchema body content."), 0644)
 	_ = os.WriteFile(filepath.Join(scriptsDir, "sync.py"), []byte("#!/usr/bin/env python3\nprint('syncing')\n"), 0755)
 
@@ -143,11 +141,10 @@ func TestRunLoad_Subpath(t *testing.T) {
 	}
 	if cat, ok := app.Store.(*catalog.Catalog); ok {
 		cat.AddItem(catalog.Item{
-			ID:       "subskill",
-			Name:     "subskill",
-			Category: "test",
-			Path:     tmpDir,
-			Body:     "---\nname: subskill\ncategory: test\n---\n# Root Playbook\nRoot body.",
+			ID:   "subskill",
+			Name: "subskill",
+			Path: tmpDir,
+			Body: "---\nname: subskill\n---\n# Root Playbook\nRoot body.",
 		})
 	}
 
@@ -187,7 +184,7 @@ func TestRunRun(t *testing.T) {
 	scriptsDir := filepath.Join(tmpDir, "scripts")
 	_ = os.MkdirAll(scriptsDir, 0755)
 
-	_ = os.WriteFile(filepath.Join(tmpDir, "SKILL.md"), []byte("---\nname: runskill\ncategory: test\n---\n# Run Skill"), 0644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "SKILL.md"), []byte("---\nname: runskill\n---\n# Run Skill"), 0644)
 	_ = os.WriteFile(filepath.Join(scriptsDir, "echo.sh"), []byte("#!/bin/sh\necho \"kungfu-run-ok: $1\"\n"), 0755)
 
 	var stdout, stderr bytes.Buffer
@@ -197,11 +194,10 @@ func TestRunRun(t *testing.T) {
 	}
 	if cat, ok := app.Store.(*catalog.Catalog); ok {
 		cat.AddItem(catalog.Item{
-			ID:       "runskill",
-			Name:     "runskill",
-			Category: "test",
-			Path:     tmpDir,
-			Body:     "---\nname: runskill\ncategory: test\n---\n# Run Skill",
+			ID:   "runskill",
+			Name: "runskill",
+			Path: tmpDir,
+			Body: "---\nname: runskill\n---\n# Run Skill",
 		})
 	}
 
@@ -264,7 +260,6 @@ func TestRunLoad_Pagination(t *testing.T) {
 					"name": "kungfu",
 					"type": "skill-md",
 					"description": "Agent skills gateway",
-					"category": "agents",
 					"url": "%s/skills/kungfu/SKILL.md",
 					"digest": "%s"
 				}
@@ -410,7 +405,7 @@ func TestTelemetryRecording_LoadLearnRun(t *testing.T) {
 	_ = os.MkdirAll(refsDir, 0755)
 	_ = os.MkdirAll(scriptsDir, 0755)
 
-	body := "---\nname: teleskill\ncategory: test\n---\n# Telemetry Skill\n" + strings.Repeat("Line of skill body for pagination.\n", 30)
+	body := "---\nname: teleskill\n---\n# Telemetry Skill\n" + strings.Repeat("Line of skill body for pagination.\n", 30)
 	_ = os.WriteFile(filepath.Join(tmpDir, "SKILL.md"), []byte(body), 0644)
 	_ = os.WriteFile(filepath.Join(refsDir, "guide.md"), []byte("# Guide Reference\nDetails."), 0644)
 	_ = os.WriteFile(filepath.Join(scriptsDir, "ping.sh"), []byte("#!/bin/sh\necho pong\n"), 0755)
@@ -422,11 +417,12 @@ func TestTelemetryRecording_LoadLearnRun(t *testing.T) {
 	}
 	if cat, ok := app.Store.(*catalog.Catalog); ok {
 		cat.AddItem(catalog.Item{
-			ID:       "teleskill",
-			Name:     "teleskill",
-			Category: "test",
-			Path:     tmpDir,
-			Body:     body,
+			ID:     "teleskill",
+			Name:   "teleskill",
+			Source: "remote",
+			URL:    "https://skills.danicat.dev/.well-known/agent-skills/teleskill/SKILL.md",
+			Path:   tmpDir,
+			Body:   body,
 		})
 	}
 
@@ -454,6 +450,9 @@ func TestTelemetryRecording_LoadLearnRun(t *testing.T) {
 	h, ok := st.History["teleskill"]
 	if !ok {
 		t.Fatalf("expected teleskill in state.History")
+	}
+	if h.Catalog != "https://skills.danicat.dev" {
+		t.Errorf("expected Catalog=%q, got %q", "https://skills.danicat.dev", h.Catalog)
 	}
 	if h.LoadCount != 1 {
 		t.Errorf("expected LoadCount=1, got %d", h.LoadCount)

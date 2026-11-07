@@ -135,7 +135,6 @@ var sampleCatalogItems = []catalog.Item{
 		Name:        "ebitengineer",
 		Type:        catalog.ItemTypeSkill,
 		Title:       "2D Game Engine for Go",
-		Category:    "game-dev",
 		Tags:        []string{"ebitengine", "game", "2d", "graphics"},
 		Description: "Master orchestrator for building 2D games with Ebitengine in pure Go",
 	},
@@ -144,7 +143,6 @@ var sampleCatalogItems = []catalog.Item{
 		Name:        "astro-loader",
 		Type:        catalog.ItemTypeSkill,
 		Title:       "Astro Content Loader",
-		Category:    "web",
 		Tags:        []string{"astro", "ssg", "ssr", "content"},
 		Description: "Content loader and CMS connector for Astro 5 static and dynamic sites",
 	},
@@ -153,7 +151,6 @@ var sampleCatalogItems = []catalog.Item{
 		Name:        "godoctor",
 		Type:        catalog.ItemTypeSkill,
 		Title:       "Go Quality & AST Tooling",
-		Category:    "tooling",
 		Tags:        []string{"go", "ast", "quality", "testing"},
 		Description: "AST-aware Go code intelligence, test analytics, and quality enforcement",
 	},
@@ -162,7 +159,6 @@ var sampleCatalogItems = []catalog.Item{
 		Name:        "physics-2d",
 		Type:        catalog.ItemTypeSkill,
 		Title:       "2D Rigid Body Physics Engine",
-		Category:    "game-dev",
 		Tags:        []string{"physics", "simulation", "math", "game"},
 		Description: "Impulse resolution, verlet integration, and broadphase collision detection",
 	},
@@ -171,7 +167,6 @@ var sampleCatalogItems = []catalog.Item{
 		Name:        "buffer-cli",
 		Type:        catalog.ItemTypeSkill,
 		Title:       "Buffer Social Media CLI",
-		Category:    "marketing",
 		Tags:        []string{"buffer", "social", "publishing", "analytics"},
 		Description: "Manage and schedule social media campaigns across LinkedIn and Twitter",
 	},
@@ -223,13 +218,6 @@ func TestEngine_IndexAndSearch(t *testing.T) {
 			limit:       1,
 			expectFirst: "buffer-cli",
 			minResults:  1,
-		},
-		{
-			name:       "category filtering directive",
-			query:      "category:game-dev",
-			strategy:   "hybrid",
-			limit:      5,
-			minResults: 2,
 		},
 		{
 			name:        "tag filtering with keyword",
@@ -335,7 +323,7 @@ func TestEngine_ConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func(iter int) {
 			defer wg.Done()
-			queries := []string{"game", "astro", "godoctor", "physics", "category:game-dev"}
+			queries := []string{"game", "astro", "godoctor", "physics", "tag:game"}
 			q := queries[iter%len(queries)]
 			results := eng.Search(q, "hybrid", 3, 0.0)
 			if len(results) == 0 {
@@ -371,7 +359,6 @@ func TestEngine_CatalogFilterAndBlankQueryAndSuggestRanking(t *testing.T) {
 		Name:        "go-specialist",
 		Title:       "Go Specialist",
 		Description: "Idiomatic Go patterns",
-		Category:    "coding",
 		Tags:        []string{"go", "patterns"},
 		Source:      "github:go-skills",
 	})

@@ -80,7 +80,6 @@ func (a *App) RunFind(args []string) int {
 
 	type FindResultItem struct {
 		Name        string   `json:"name"`
-		Category    string   `json:"category"`
 		Description string   `json:"description"`
 		Score       float32  `json:"score"`
 		Strategy    string   `json:"strategy"`
@@ -94,7 +93,6 @@ func (a *App) RunFind(args []string) int {
 	for _, r := range results {
 		outputItems = append(outputItems, FindResultItem{
 			Name:        r.Item.Name,
-			Category:    r.Item.Category,
 			Description: r.Item.Description,
 			Score:       r.Score,
 			Strategy:    r.Strategy,
@@ -112,17 +110,17 @@ func (a *App) RunFind(args []string) int {
 		return ExitSuccess
 	case OutputModeRaw:
 		for _, o := range outputItems {
-			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%.4f\t%s\t%s\n", o.Name, o.Category, o.Score, o.Status, sanitizeTSVField(o.Description))
+			_, _ = fmt.Fprintf(a.Stdout, "%s\t%.4f\t%s\t%s\n", o.Name, o.Score, o.Status, sanitizeTSVField(o.Description))
 		}
 		return ExitSuccess
 	default: // OutputModeHuman
 		_, _ = fmt.Fprintf(a.Stdout, "SEARCH RESULTS FOR %q (%s, %d matches):\n\n", query, strategy, len(outputItems))
-		_, _ = fmt.Fprintf(a.Stdout, "%-22s %-14s %-8s %-12s %s\n", "NAME", "CATEGORY", "SCORE", "STATUS", "DESCRIPTION")
-		_, _ = fmt.Fprintf(a.Stdout, "%-22s %-14s %-8s %-12s %s\n", "----------------------", "--------------", "--------", "------------", "--------------------------------------------------")
+		_, _ = fmt.Fprintf(a.Stdout, "%-24s %-8s %-12s %s\n", "NAME", "SCORE", "STATUS", "DESCRIPTION")
+		_, _ = fmt.Fprintf(a.Stdout, "%-24s %-8s %-12s %s\n", "------------------------", "--------", "------------", "--------------------------------------------------")
 		for _, o := range outputItems {
 			statusBadge := "[" + o.Status + "]"
-			desc := truncateRunes(o.Description, 50)
-			_, _ = fmt.Fprintf(a.Stdout, "%-22s %-14s %-8.3f %-12s %s\n", o.Name, o.Category, o.Score, statusBadge, desc)
+			desc := truncateRunes(o.Description, 55)
+			_, _ = fmt.Fprintf(a.Stdout, "%-24s %-8.3f %-12s %s\n", o.Name, o.Score, statusBadge, desc)
 		}
 		return ExitSuccess
 	}

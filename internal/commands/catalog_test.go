@@ -44,7 +44,6 @@ func TestRunCatalog(t *testing.T) {
 				{
 					"name": "remoteskill",
 					"description": "A remote test skill",
-					"category": "remote",
 					"url": "https://example.com/skill/SKILL.md"
 				}
 			]

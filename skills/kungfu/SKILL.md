@@ -11,7 +11,7 @@ metadata:
   category: agents
   tags: "gateway, agent-skills, discovery, search, catalog, cli, learn, jit"
   author: Daniela Petruzalek (daniela@danicat.dev)
-  version: "0.6.6"
+  version: "0.7.0"
   catalog: https://skills.danicat.dev
 ---
 
@@ -24,8 +24,8 @@ metadata:
 > **NEVER write, embed, or leak KungFu notation into any other `SKILL.md` definition, `README.md`, documentation file, code comment, commit message, article, or agent output text unless the user explicitly tells you otherwise.**
 
 > [!IMPORTANT]
-> **CLI Version Check (`v0.6.6`)**:
-> Compare `kungfu --version` against this skill's frontmatter `version` (`0.6.6`). If the installed `kungfu` binary is older than `0.6.6`, upgrade the CLI and synchronize all catalogs immediately:
+> **CLI Version Check (`v0.7.0`)**:
+> Compare `kungfu --version` against this skill's frontmatter `version` (`0.7.0`). If the installed `kungfu` binary is older than `0.7.0`, upgrade the CLI and synchronize all catalogs immediately:
 > ```bash
 > go install github.com/danicat/kungfu@latest && kungfu update
 > ```
@@ -189,6 +189,7 @@ kungfu telemetry status
 kungfu telemetry enable
 kungfu telemetry disable
 kungfu telemetry sync
+kungfu telemetry sync -b
 ```
 
 ### Core rules

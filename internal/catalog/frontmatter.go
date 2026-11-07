@@ -126,9 +126,6 @@ func EnrichItemFromSkillMD(item *Item, data []byte) {
 				item.Metadata[k] = v
 			}
 		}
-		if (item.Category == "" || item.Category == "agents") && fm.Metadata["category"] != "" {
-			item.Category = fm.Metadata["category"]
-		}
 		if item.Version == "" && fm.Metadata["version"] != "" {
 			item.Version = fm.Metadata["version"]
 		}

@@ -238,9 +238,10 @@ func UnpackArchive(data []byte, destDir string, maxUnpackedBytes int64) ([]strin
 		}
 	}
 
-	if format == "tar.gz" {
+	switch format {
+	case "tar.gz":
 		extracted, err = unpackTarGz(data, cleanDest, maxUnpackedBytes)
-	} else if format == "zip" {
+	case "zip":
 		extracted, err = unpackZip(data, cleanDest, maxUnpackedBytes)
 	}
 
@@ -308,10 +309,6 @@ func IsPathContained(baseDir, targetPath string) bool {
 	return true
 }
 
-func isArchiveContained(baseDir, targetPath string) bool {
-	return IsPathContained(baseDir, targetPath)
-}
-
 func validateArchivePath(targetRel, destDir string) (string, error) {
 	cleanRel := filepath.ToSlash(filepath.Clean(targetRel))
 	cleanRel = strings.TrimPrefix(cleanRel, "./")
@@ -367,7 +364,7 @@ func unpackTarGz(data []byte, destDir string, maxBytes int64) ([]string, error) 
 				return extracted, fmt.Errorf("creating dir %s: %w", fullPath, err)
 			}
 
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
 			if hdr.Size < 0 || hdr.Size > maxBytes-totalBytes {
 				return extracted, fmt.Errorf("%w: exceeded %d bytes", ErrArchiveDecompressionBomb, maxBytes)
 			}

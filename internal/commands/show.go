@@ -120,7 +120,6 @@ func (a *App) renderShowItems(items []catalog.Item, mode OutputMode) int {
 	type ShowDetail struct {
 		Name         string            `json:"name"`
 		Title        string            `json:"title,omitempty"`
-		Category     string            `json:"category"`
 		Version      string            `json:"version,omitempty"`
 		Description  string            `json:"description"`
 		Author       string            `json:"author,omitempty"`
@@ -158,7 +157,6 @@ func (a *App) renderShowItems(items []catalog.Item, mode OutputMode) int {
 		details = append(details, ShowDetail{
 			Name:         it.Name,
 			Title:        it.Title,
-			Category:     it.Category,
 			Version:      ver,
 			Description:  it.Description,
 			Author:       author,
@@ -191,7 +189,7 @@ func (a *App) renderShowItems(items []catalog.Item, mode OutputMode) int {
 			tagsStr := strings.Join(d.Tags, ",")
 			refsStr := strings.Join(d.References, ",")
 			scriptsStr := strings.Join(d.Scripts, ",")
-			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", d.Name, d.Category, d.Version, d.Status, tagsStr, sanitizeTSVField(d.AllowedTools), refsStr, scriptsStr, sanitizeTSVField(d.Description))
+			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", d.Name, d.Version, d.Status, tagsStr, sanitizeTSVField(d.AllowedTools), refsStr, scriptsStr, sanitizeTSVField(d.Description))
 		}
 		return ExitSuccess
 	default: // OutputModeHuman
@@ -205,7 +203,6 @@ func (a *App) renderShowItems(items []catalog.Item, mode OutputMode) int {
 			if d.Title != "" && d.Title != d.Name {
 				_, _ = fmt.Fprintf(a.Stdout, "Title:        %s\n", d.Title)
 			}
-			_, _ = fmt.Fprintf(a.Stdout, "Category:     %s\n", d.Category)
 			if d.Version != "" {
 				_, _ = fmt.Fprintf(a.Stdout, "Version:      %s\n", d.Version)
 			}

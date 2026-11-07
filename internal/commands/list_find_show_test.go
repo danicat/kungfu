@@ -42,7 +42,6 @@ func setupTestCatalogServer(t *testing.T) *httptest.Server {
 					"name": "kungfu",
 					"type": "skill-md",
 					"description": "Agent skills gateway and discovery hybrid tool",
-					"category": "agents",
 					"tags": ["gateway", "discovery"],
 					"url": "https://skills.danicat.dev/agents/kungfu/SKILL.md",
 					"digest": "sha256:123"
@@ -51,7 +50,6 @@ func setupTestCatalogServer(t *testing.T) *httptest.Server {
 					"name": "godoctor",
 					"type": "skill-md",
 					"description": "Go doctor",
-					"category": "coding",
 					"tags": ["go", "linter"],
 					"url": "https://skills.danicat.dev/coding/godoctor/SKILL.md",
 					"digest": "sha256:456"
@@ -93,8 +91,7 @@ func TestRunList(t *testing.T) {
 			wantCode: ExitSuccess,
 			checkOut: func(t *testing.T, out string) {
 				var items []struct {
-					Name     string `json:"name"`
-					Category string `json:"category"`
+					Name string `json:"name"`
 				}
 				if err := json.Unmarshal([]byte(out), &items); err != nil {
 					t.Fatalf("failed to parse json output: %v, out: %s", err, out)
@@ -210,7 +207,7 @@ func TestRunShow(t *testing.T) {
 	}{
 		{"show missing arg", []string{"show"}, ExitUsage, ""},
 		{"show single skill human default", []string{"show", "kungfu"}, ExitSuccess, "SKILL: kungfu"},
-		{"show skill raw", []string{"show", "kungfu", "--raw"}, ExitSuccess, "kungfu\tagents"},
+		{"show skill raw", []string{"show", "kungfu", "--raw"}, ExitSuccess, "kungfu\t"},
 		{"show skill json", []string{"show", "kungfu", "--json"}, ExitSuccess, "\"name\": \"kungfu\""},
 		{"show multiple skills", []string{"show", "kungfu", "godoctor"}, ExitSuccess, "SKILL: kungfu"},
 	}
@@ -400,7 +397,7 @@ func (rt *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error)
 
 func TestGitHubSkillSpec_ShowAndLoad(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	skillMD := "---\nname: evals\ndescription: Evaluation quickstart skill\nmetadata:\n  category: coding\n---\n# Evals Playbook\nRun evaluation suites.\n"
+	skillMD := "---\nname: evals\ndescription: Evaluation quickstart skill\n---\n# Evals Playbook\nRun evaluation suites.\n"
 
 	var ghHits int
 	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

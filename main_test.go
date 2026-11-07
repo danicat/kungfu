@@ -95,8 +95,8 @@ func TestRun_CLI_ListAndShow(t *testing.T) {
 	if code != ExitSuccess {
 		t.Fatalf("Run(list) = %d; stderr: %s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "CATEGORY") {
-		t.Errorf("expected category listing in stdout: %s", stdout.String())
+	if !strings.Contains(stdout.String(), "AVAILABLE SKILLS") {
+		t.Errorf("expected available skills listing in stdout: %s", stdout.String())
 	}
 
 	stdout.Reset()

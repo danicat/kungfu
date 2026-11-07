@@ -83,9 +83,9 @@ func createValidZip(t *testing.T, files map[string]string) []byte {
 
 func TestUnpackArchive_TarGz_Success(t *testing.T) {
 	files := map[string]string{
-		"SKILL.md":             "---\nname: myarchive\ndescription: test\n---\n# My Archive",
-		"references/GUIDE.md":  "# Guide content",
-		"scripts/run.sh":       "#!/bin/bash\necho hello",
+		"SKILL.md":            "---\nname: myarchive\ndescription: test\n---\n# My Archive",
+		"references/GUIDE.md": "# Guide content",
+		"scripts/run.sh":      "#!/bin/bash\necho hello",
 	}
 	data := createValidTarGz(t, files)
 
@@ -107,8 +107,8 @@ func TestUnpackArchive_TarGz_Success(t *testing.T) {
 
 func TestUnpackArchive_Zip_Success(t *testing.T) {
 	files := map[string]string{
-		"SKILL.md":             "---\nname: myzip\ndescription: test\n---\n# My Zip",
-		"references/DOCS.md":   "# Docs content",
+		"SKILL.md":           "---\nname: myzip\ndescription: test\n---\n# My Zip",
+		"references/DOCS.md": "# Docs content",
 	}
 	data := createValidZip(t, files)
 
@@ -205,8 +205,8 @@ func TestUnpackArchive_SymlinkEscape_Rejected(t *testing.T) {
 
 func TestUnpackArchive_DecompressionBomb_Rejected(t *testing.T) {
 	files := map[string]string{
-		"SKILL.md":   "---\nname: bomb\n---\n# Bomb",
-		"large.txt":  "01234567890123456789", // 20 bytes
+		"SKILL.md":  "---\nname: bomb\n---\n# Bomb",
+		"large.txt": "01234567890123456789", // 20 bytes
 	}
 	data := createValidTarGz(t, files)
 

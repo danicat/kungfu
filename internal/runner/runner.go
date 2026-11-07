@@ -1018,9 +1018,9 @@ func pruneStaleInstalledFiles(cleanDest string, installedMap map[string]bool) {
 		}
 		return nil
 	})
-	for i := len(dirs) - 1; i >= 0; i-- {
-		if entries, err := os.ReadDir(dirs[i]); err == nil && len(entries) == 0 {
-			_ = os.Remove(dirs[i])
+	for _, dir := range slices.Backward(dirs) {
+		if entries, err := os.ReadDir(dir); err == nil && len(entries) == 0 {
+			_ = os.Remove(dir)
 		}
 	}
 }

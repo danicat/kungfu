@@ -57,7 +57,6 @@ func (a *App) RunList(args []string) int {
 
 	type SkillListing struct {
 		Name         string   `json:"name"`
-		Category     string   `json:"category"`
 		Description  string   `json:"description"`
 		Tags         []string `json:"tags,omitempty"`
 		Version      string   `json:"version,omitempty"`
@@ -70,7 +69,6 @@ func (a *App) RunList(args []string) int {
 	for _, it := range items {
 		listings = append(listings, SkillListing{
 			Name:         it.Name,
-			Category:     it.Category,
 			Description:  it.Description,
 			Tags:         it.Tags,
 			Version:      it.Version,
@@ -88,17 +86,17 @@ func (a *App) RunList(args []string) int {
 	case OutputModeRaw:
 		for _, l := range listings {
 			tagsStr := strings.Join(l.Tags, ",")
-			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%s\n", l.Name, l.Category, l.Status, tagsStr, sanitizeTSVField(l.Description))
+			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\n", l.Name, l.Status, tagsStr, sanitizeTSVField(l.Description))
 		}
 		return ExitSuccess
 	default: // OutputModeHuman
 		_, _ = fmt.Fprintf(a.Stdout, "AVAILABLE SKILLS (%d total):\n\n", len(listings))
-		_, _ = fmt.Fprintf(a.Stdout, "%-22s %-14s %-12s %s\n", "NAME", "CATEGORY", "STATUS", "DESCRIPTION")
-		_, _ = fmt.Fprintf(a.Stdout, "%-22s %-14s %-12s %s\n", "----------------------", "--------------", "------------", "--------------------------------------------------")
+		_, _ = fmt.Fprintf(a.Stdout, "%-24s %-12s %s\n", "NAME", "STATUS", "DESCRIPTION")
+		_, _ = fmt.Fprintf(a.Stdout, "%-24s %-12s %s\n", "------------------------", "------------", "--------------------------------------------------")
 		for _, l := range listings {
 			statusBadge := "[" + l.Status + "]"
-			desc := truncateRunes(l.Description, 60)
-			_, _ = fmt.Fprintf(a.Stdout, "%-22s %-14s %-12s %s\n", l.Name, l.Category, statusBadge, desc)
+			desc := truncateRunes(l.Description, 65)
+			_, _ = fmt.Fprintf(a.Stdout, "%-24s %-12s %s\n", l.Name, statusBadge, desc)
 		}
 		return ExitSuccess
 	}

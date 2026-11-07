@@ -2,7 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/danicat/kungfu.svg)](https://pkg.go.dev/github.com/danicat/kungfu)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.6.6-green.svg)](https://github.com/danicat/kungfu/releases)
+[![Release](https://img.shields.io/badge/release-v0.7.0-green.svg)](https://github.com/danicat/kungfu/releases)
 
 `kungfu` is a command-line tool for finding, streaming, running, and installing **Agent Skills** (`SKILL.md`). Coding agents can stream skill instructions and reference files into a session on demand (`kungfu load`) or install them into workspace and global folders (`kungfu learn`).
 
@@ -26,7 +26,7 @@ kungfu --version
 
 ### Search skills (`find`)
 
-Search across skill names, descriptions, categories, and tags:
+Search across skill names, descriptions, and tags:
 
 ```bash
 # Search by keyword
@@ -170,6 +170,9 @@ kungfu telemetry enable
 
 # Flush pending counter deltas to Cloud Firestore immediately
 kungfu telemetry sync
+
+# Reset watermarks and backfill full local history
+kungfu telemetry sync --backfill
 
 # Opt out at any time
 kungfu telemetry disable

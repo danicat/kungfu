@@ -85,9 +85,10 @@ type WorkspaceState struct {
 	Skills map[string]SkillRecord `json:"skills"`
 }
 
-// HistoryRecord tracks JIT load, learn, and script execution activity for a skill,
-// along with synced watermarks for opt-in community telemetry.
+// HistoryRecord tracks immutable cumulative JIT load, learn, and script execution counts for a skill,
+// along with its source catalog provenance and synced watermarks for opt-in community telemetry.
 type HistoryRecord struct {
+	Catalog          string    `json:"catalog,omitempty"`
 	LastSeenAt       time.Time `json:"last_seen_at"`
 	LoadCount        int       `json:"load_count"`
 	PageLoadCount    int       `json:"page_load_count,omitempty"`
@@ -106,7 +107,7 @@ type HistoryRecord struct {
 // TelemetryDelta represents unsent positive counter increments for an official catalog skill.
 type TelemetryDelta struct {
 	Skill        string `json:"skill"`
-	Category     string `json:"category"`
+	Catalog      string `json:"catalog,omitempty"`
 	Loads        int    `json:"loads"`
 	PageLoads    int    `json:"page_loads"`
 	SubpathLoads int    `json:"subpath_loads"`
@@ -405,12 +406,17 @@ func (s *State) RecordForget(scope string, workspaceDir string, skillName string
 
 // RecordLoad updates the last seen timestamp and increments primary load count for a skill.
 func (s *State) RecordLoad(skillName string) {
-	s.RecordLoadDetailed(skillName, "", 1)
+	s.RecordLoadDetailedWithCatalog(skillName, "", "", 1)
 }
 
 // RecordLoadDetailed updates the last seen timestamp and increments the appropriate counter
 // (LoadCount for primary page-1 loads, PageLoadCount for continuation pages > 1, or SubpathLoadCount for subpaths).
 func (s *State) RecordLoadDetailed(skillName, subpath string, page int) {
+	s.RecordLoadDetailedWithCatalog(skillName, "", subpath, page)
+}
+
+// RecordLoadDetailedWithCatalog updates the last seen timestamp, source catalog, and increments the appropriate counter.
+func (s *State) RecordLoadDetailedWithCatalog(skillName, catalogSource, subpath string, page int) {
 	if skillName == "" {
 		return
 	}
@@ -421,11 +427,15 @@ func (s *State) RecordLoadDetailed(skillName, subpath string, page int) {
 	rec, ok := s.History[skillName]
 	if !ok || rec == nil {
 		rec = &HistoryRecord{
+			Catalog:    strings.TrimSpace(catalogSource),
 			LastSeenAt: now,
 		}
 		s.History[skillName] = rec
 	} else {
 		rec.LastSeenAt = now
+		if catalogSource != "" {
+			rec.Catalog = strings.TrimSpace(catalogSource)
+		}
 	}
 
 	if subpath != "" {
@@ -439,6 +449,11 @@ func (s *State) RecordLoadDetailed(skillName, subpath string, page int) {
 
 // RecordRun updates the last seen timestamp and increments the script execution count for a skill.
 func (s *State) RecordRun(skillName string) {
+	s.RecordRunWithCatalog(skillName, "")
+}
+
+// RecordRunWithCatalog updates the last seen timestamp, source catalog, and increments the script execution count for a skill.
+func (s *State) RecordRunWithCatalog(skillName, catalogSource string) {
 	if skillName == "" {
 		return
 	}
@@ -449,18 +464,27 @@ func (s *State) RecordRun(skillName string) {
 	rec, ok := s.History[skillName]
 	if !ok || rec == nil {
 		rec = &HistoryRecord{
+			Catalog:    strings.TrimSpace(catalogSource),
 			LastSeenAt: now,
 			RunCount:   1,
 		}
 		s.History[skillName] = rec
 	} else {
 		rec.LastSeenAt = now
+		if catalogSource != "" {
+			rec.Catalog = strings.TrimSpace(catalogSource)
+		}
 		rec.RunCount++
 	}
 }
 
 // RecordLearn updates the last seen timestamp and increments the learn count for a skill.
 func (s *State) RecordLearn(skillName string) {
+	s.RecordLearnWithCatalog(skillName, "")
+}
+
+// RecordLearnWithCatalog updates the last seen timestamp, source catalog, and increments the learn count for a skill.
+func (s *State) RecordLearnWithCatalog(skillName, catalogSource string) {
 	if skillName == "" {
 		return
 	}
@@ -471,12 +495,16 @@ func (s *State) RecordLearn(skillName string) {
 	rec, ok := s.History[skillName]
 	if !ok || rec == nil {
 		rec = &HistoryRecord{
+			Catalog:    strings.TrimSpace(catalogSource),
 			LastSeenAt: now,
 			LearnCount: 1,
 		}
 		s.History[skillName] = rec
 	} else {
 		rec.LastSeenAt = now
+		if catalogSource != "" {
+			rec.Catalog = strings.TrimSpace(catalogSource)
+		}
 		rec.LearnCount++
 	}
 }
@@ -488,12 +516,12 @@ func clampTelemetryDelta(v int) int {
 	return min(MaxTelemetryDelta, max(0, v))
 }
 
-// ComputeTelemetryDeltas computes positive unsent counter deltas (clamped to MaxTelemetryDelta) for all skills that pass resolveCategory.
-func (s *State) ComputeTelemetryDeltas(resolveCategory func(skillName string) (string, bool)) []TelemetryDelta {
+// ComputeTelemetryDeltas computes positive unsent counter deltas (clamped to MaxTelemetryDelta) for all official catalog skills.
+func (s *State) ComputeTelemetryDeltas(resolveOfficialCatalog func(skillName string) (string, bool)) []TelemetryDelta {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.History == nil || resolveCategory == nil {
+	if s.History == nil || resolveOfficialCatalog == nil {
 		return nil
 	}
 
@@ -509,9 +537,12 @@ func (s *State) ComputeTelemetryDeltas(resolveCategory func(skillName string) (s
 		if rec == nil {
 			continue
 		}
-		cat, ok := resolveCategory(name)
-		if !ok || cat == "" {
+		catalogSource, ok := resolveOfficialCatalog(name)
+		if !ok {
 			continue
+		}
+		if catalogSource == "" {
+			catalogSource = rec.Catalog
 		}
 
 		dLoads := clampTelemetryDelta(rec.LoadCount - rec.SyncedLoadCount)
@@ -526,7 +557,7 @@ func (s *State) ComputeTelemetryDeltas(resolveCategory func(skillName string) (s
 
 		deltas = append(deltas, TelemetryDelta{
 			Skill:        name,
-			Category:     cat,
+			Catalog:      catalogSource,
 			Loads:        dLoads,
 			PageLoads:    dPageLoads,
 			SubpathLoads: dSubpathLoads,
@@ -537,7 +568,7 @@ func (s *State) ComputeTelemetryDeltas(resolveCategory func(skillName string) (s
 	return deltas
 }
 
-// ApplySyncedDeltas snaps synced watermarks to current counter values for synced skills and records last_synced_at.
+// ApplySyncedDeltas advances synced watermarks by the applied delta amounts without resetting cumulative totals.
 func (s *State) ApplySyncedDeltas(applied []TelemetryDelta, syncedAt time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -551,31 +582,33 @@ func (s *State) ApplySyncedDeltas(applied []TelemetryDelta, syncedAt time.Time) 
 		if !ok || rec == nil {
 			continue
 		}
-		rec.SyncedLoadCount = rec.LoadCount
-		rec.SyncedPageLoadCount = rec.PageLoadCount
-		rec.SyncedSubpathLoadCount = rec.SubpathLoadCount
-		rec.SyncedRunCount = rec.RunCount
-		rec.SyncedLearnCount = rec.LearnCount
+		if rec.Catalog == "" && d.Catalog != "" {
+			rec.Catalog = d.Catalog
+		}
+		rec.SyncedLoadCount = min(rec.LoadCount, rec.SyncedLoadCount+max(0, d.Loads))
+		rec.SyncedPageLoadCount = min(rec.PageLoadCount, rec.SyncedPageLoadCount+max(0, d.PageLoads))
+		rec.SyncedSubpathLoadCount = min(rec.SubpathLoadCount, rec.SyncedSubpathLoadCount+max(0, d.SubpathLoads))
+		rec.SyncedRunCount = min(rec.RunCount, rec.SyncedRunCount+max(0, d.Runs))
+		rec.SyncedLearnCount = min(rec.LearnCount, rec.SyncedLearnCount+max(0, d.Learns))
 		rec.LastSyncedAt = &ts
 	}
 }
 
-// BaselineTelemetryWatermarks sets all synced watermarks equal to current counts so only future events produce deltas.
-func (s *State) BaselineTelemetryWatermarks(now time.Time) {
+// ResetTelemetryWatermarks resets synced watermarks to zero so immutable cumulative totals can be backfilled to remote.
+func (s *State) ResetTelemetryWatermarks() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	ts := now.UTC()
 	for _, rec := range s.History {
 		if rec == nil {
 			continue
 		}
-		rec.SyncedLoadCount = rec.LoadCount
-		rec.SyncedPageLoadCount = rec.PageLoadCount
-		rec.SyncedSubpathLoadCount = rec.SubpathLoadCount
-		rec.SyncedRunCount = rec.RunCount
-		rec.SyncedLearnCount = rec.LearnCount
-		rec.LastSyncedAt = &ts
+		rec.SyncedLoadCount = 0
+		rec.SyncedPageLoadCount = 0
+		rec.SyncedSubpathLoadCount = 0
+		rec.SyncedRunCount = 0
+		rec.SyncedLearnCount = 0
+		rec.LastSyncedAt = nil
 	}
 }
 
@@ -934,6 +967,9 @@ func (s *State) MergeInto(disk *State) {
 		}
 		if h.LastSeenAt.After(cur.LastSeenAt) {
 			cur.LastSeenAt = h.LastSeenAt
+		}
+		if cur.Catalog == "" && h.Catalog != "" {
+			cur.Catalog = h.Catalog
 		}
 		cur.LoadCount = max(cur.LoadCount, h.LoadCount)
 		cur.PageLoadCount = max(cur.PageLoadCount, h.PageLoadCount)

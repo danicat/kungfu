@@ -159,7 +159,6 @@ allowed-tools: [bash, python]
 license: MIT
 metadata:
   version: 1.2.0
-  category: coding
   tags: eval, testing
 ---
 # Custom Evals
@@ -214,7 +213,6 @@ func TestDiscoverLocalCatalog(t *testing.T) {
 name: skill-one
 description: Skill one for testing
 metadata:
-  category: coding
   author: tester
   version: 1.0.0
   tags: go, test
@@ -234,7 +232,6 @@ metadata:
 name: skill-two
 description: Skill two for testing
 metadata:
-  category: agents
   author: tester2
   version: 2.0.0
 ---
@@ -262,9 +259,6 @@ metadata:
 	if !ok {
 		t.Fatalf("skill-one not found in manifest")
 	}
-	if s1.Category != "coding" {
-		t.Errorf("expected category coding, got %q", s1.Category)
-	}
 	if s1.Author != "tester" {
 		t.Errorf("expected author tester, got %q", s1.Author)
 	}
@@ -275,12 +269,9 @@ metadata:
 		t.Errorf("expected 2 tags, got %v", s1.Tags)
 	}
 
-	s2, ok := itemsMap["skill-two"]
+	_, ok = itemsMap["skill-two"]
 	if !ok {
 		t.Fatalf("skill-two not found in manifest")
-	}
-	if s2.Category != "agents" {
-		t.Errorf("expected category agents, got %q", s2.Category)
 	}
 }
 
@@ -292,7 +283,6 @@ func TestFetchHTTPCatalog(t *testing.T) {
 				ID:          "remote-skill",
 				Name:        "remote-skill",
 				Description: "A remote skill",
-				Category:    "coding",
 			},
 		},
 	}
@@ -329,7 +319,6 @@ func TestNamedCatalogCache(t *testing.T) {
 				ID:          "cached-skill",
 				Name:        "cached-skill",
 				Description: "Cached skill desc",
-				Category:    "agents",
 			},
 		},
 	}
@@ -392,7 +381,6 @@ func TestFetchGitHubCatalog_StaticCatalog(t *testing.T) {
 				ID:          "skill-a",
 				Name:        "skill-a",
 				Description: "Skill A from static catalog",
-				Category:    "coding",
 			},
 		},
 	}
@@ -457,7 +445,6 @@ func TestFetchGitHubCatalog_TreeDiscovery(t *testing.T) {
 name: gemini-dev
 description: Gemini Dev Skill
 metadata:
-  category: coding
   author: google
   version: 1.0.0
 ---
@@ -497,9 +484,6 @@ metadata:
 	}
 	if len(m.Items) != 1 || m.Items[0].Name != "gemini-dev" {
 		t.Errorf("unexpected items from tree discovery: %+v", m.Items)
-	}
-	if m.Items[0].Category != "coding" {
-		t.Errorf("expected category coding, got %q", m.Items[0].Category)
 	}
 	if m.Items[0].Author != "google" {
 		t.Errorf("expected author google, got %q", m.Items[0].Author)
@@ -558,9 +542,6 @@ func TestFetchGitHubCatalog_GoogleIndexJSON(t *testing.T) {
 	if item1.Name != "agent-platform-alert-configuration" {
 		t.Errorf("item 0 name = %q, want agent-platform-alert-configuration", item1.Name)
 	}
-	if item1.Category != "cloud" {
-		t.Errorf("item 0 category = %q, want cloud", item1.Category)
-	}
 	if item1.RelativePath != "skills/cloud/agent-platform-alert-configuration" {
 		t.Errorf("item 0 relativePath = %q, want skills/cloud/agent-platform-alert-configuration", item1.RelativePath)
 	}
@@ -571,9 +552,6 @@ func TestFetchGitHubCatalog_GoogleIndexJSON(t *testing.T) {
 	item2 := m.Items[1]
 	if item2.Name != "data-manager-api-setup" {
 		t.Errorf("item 1 name = %q, want data-manager-api-setup", item2.Name)
-	}
-	if item2.Category != "ads" {
-		t.Errorf("item 1 category = %q, want ads", item2.Category)
 	}
 }
 
