@@ -44,8 +44,6 @@ func TestMain(m *testing.M) {
 		_ = os.Setenv("KUNGFU_STATE_PATH", filepath.Join(tempHome, ".config", "kungfu", "state.json"))
 		_ = os.Setenv("KUNGFU_CONFIG", "")
 		_ = os.Setenv("KUNGFU_URL", defaultServer.URL)
-		_ = os.Setenv("KUNGFU_TELEMETRY", "0")
-		_ = os.Setenv("DO_NOT_TRACK", "")
 	}
 	code := m.Run()
 	defaultServer.Close()
@@ -387,7 +385,7 @@ func TestGlobalFlagStopAtDoubleDashAndSubcommandNamedConfig(t *testing.T) {
 	if err := os.Chdir(tmpDir); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(tmpDir, "list"), []byte("telemetry:\n  enabled: false\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "list"), []byte("load:\n  auto_update: true\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -395,6 +393,28 @@ func TestGlobalFlagStopAtDoubleDashAndSubcommandNamedConfig(t *testing.T) {
 	code := Run([]string{"--config", "list", "status", "--json"}, &stdout, &stderr)
 	if code != ExitSuccess {
 		t.Fatalf("Run(--config list status --json) = %d, want %d; stderr: %s", code, ExitSuccess, stderr.String())
+	}
+}
+
+func TestTelemetryCommandRemoved(t *testing.T) {
+	for _, args := range [][]string{{"telemetry"}, {"telemetry", "status"}, {"telemetry", "sync"}} {
+		var stdout, stderr bytes.Buffer
+		code := Run(args, &stdout, &stderr)
+		if code != ExitUsage {
+			t.Fatalf("Run(%v) = %d, want ExitUsage (%d); stderr: %s", args, code, ExitUsage, stderr.String())
+		}
+		if !strings.Contains(stderr.String(), "unknown command") {
+			t.Errorf("Run(%v) expected unknown command error, got: %s", args, stderr.String())
+		}
+	}
+
+	var helpOut bytes.Buffer
+	PrintGlobalHelp(&helpOut)
+	if strings.Contains(helpOut.String(), "telemetry") {
+		t.Errorf("PrintGlobalHelp should not advertise removed telemetry command, got:\n%s", helpOut.String())
+	}
+	if PrintSubcommandHelp(&helpOut, "telemetry", nil) {
+		t.Errorf("PrintSubcommandHelp should return false for removed telemetry command")
 	}
 }
 

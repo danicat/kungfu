@@ -2,7 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/danicat/kungfu.svg)](https://pkg.go.dev/github.com/danicat/kungfu)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.7.1-green.svg)](https://github.com/danicat/kungfu/releases)
+[![Release](https://img.shields.io/badge/release-v0.8.0-green.svg)](https://github.com/danicat/kungfu/releases)
 
 `kungfu` is a command-line tool for finding, streaming, running, and installing **Agent Skills** (`SKILL.md`). Coding agents can stream skill instructions and reference files into a session on demand (`kungfu load`) or install them into workspace and global folders (`kungfu learn`).
 
@@ -118,7 +118,7 @@ kungfu status --json
 
 ### Update and remove skills (`update` / `forget`)
 
-Sync all catalogs, flush opt-in telemetry, and check or apply skill updates:
+Sync all catalogs and check or apply skill updates:
 
 ```bash
 # Synchronize all catalogs and check for available skill updates (dry run)
@@ -157,27 +157,6 @@ When indexing a catalog source, `kungfu` checks four formats in order:
 3. `catalog.json`: Legacy manifest (supported through `v0.7.0`).
 4. Directory tree: `agentskills.io` folder scan for `SKILL.md` files.
 
-### Opt-in community telemetry (`telemetry`)
-
-`kungfu` supports opt-in anonymous usage counters for official `skills.danicat.dev` catalog skills (`loads`, `page_loads`, `subpath_loads`, `runs`, `learns`). It excludes custom, local, and third-party skills. `kungfu load` never makes network calls for telemetry; `kungfu update` and `kungfu telemetry sync` flush pending counter deltas:
-
-```bash
-# View telemetry status and pending official skill deltas
-kungfu telemetry status
-
-# Opt in (baselines existing local history so only future usage is sent)
-kungfu telemetry enable
-
-# Flush pending counter deltas to Cloud Firestore immediately
-kungfu telemetry sync
-
-# Reset watermarks and backfill full local history
-kungfu telemetry sync --backfill
-
-# Opt out at any time
-kungfu telemetry disable
-```
-
 ## User configuration
 
 `kungfu` reads user settings from `~/.config/kungfu/config.yaml` (or `.json`):
@@ -187,15 +166,12 @@ catalogs:
   default: https://skills.danicat.dev/.well-known/agent-skills/index.json
 load:
   auto_update: true
-telemetry:
-  enabled: false
 ```
 
 | Key | Default | Description |
 |---|---|---|
 | `catalogs.default` | `https://skills.danicat.dev/.well-known/agent-skills/index.json` | Default catalog URL |
 | `load.auto_update` | `true` | Refresh cached skills when the upstream digest changes |
-| `telemetry.enabled` | `false` | Opt in to anonymous counters for official skills (`DO_NOT_TRACK=1` and `KUNGFU_TELEMETRY=0\|1` override) |
 
 ## Global flags
 

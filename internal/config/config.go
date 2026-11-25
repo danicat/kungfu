@@ -36,28 +36,18 @@ type LoadConfig struct {
 	AutoUpdate *bool `json:"auto_update,omitempty" yaml:"auto_update,omitempty"`
 }
 
-// TelemetryConfig holds configuration options for opt-in community usage telemetry.
-type TelemetryConfig struct {
-	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
-}
-
 // Config represents the user-level configuration (~/.config/kungfu/config.yaml or config.json).
 type Config struct {
-	Load      LoadConfig        `json:"load" yaml:"load,omitempty"`
-	Telemetry TelemetryConfig   `json:"telemetry" yaml:"telemetry,omitempty"`
-	Catalogs  map[string]string `json:"catalogs,omitempty" yaml:"catalogs,omitempty"`
+	Load     LoadConfig        `json:"load" yaml:"load,omitempty"`
+	Catalogs map[string]string `json:"catalogs,omitempty" yaml:"catalogs,omitempty"`
 }
 
-// DefaultConfig returns the default configuration (telemetry strictly opt-in / false by default).
+// DefaultConfig returns the default configuration.
 func DefaultConfig() *Config {
 	autoUpdate := true
-	telemetryEnabled := false
 	return &Config{
 		Load: LoadConfig{
 			AutoUpdate: &autoUpdate,
-		},
-		Telemetry: TelemetryConfig{
-			Enabled: &telemetryEnabled,
 		},
 		Catalogs: map[string]string{
 			"default": DefaultCatalogURL,
@@ -72,30 +62,6 @@ func (c *Config) IsAutoUpdate() bool {
 		return true
 	}
 	return *c.Load.AutoUpdate
-}
-
-// IsTelemetryEnabled returns true only if community telemetry is explicitly enabled via config or KUNGFU_TELEMETRY=1/true,
-// and DO_NOT_TRACK is not set to 1/true.
-func (c *Config) IsTelemetryEnabled() bool {
-	if dnt := strings.ToLower(strings.TrimSpace(os.Getenv("DO_NOT_TRACK"))); dnt == "1" || dnt == "true" {
-		return false
-	}
-	if env := strings.ToLower(strings.TrimSpace(os.Getenv("KUNGFU_TELEMETRY"))); env != "" {
-		return env == "1" || env == "true" || env == "on" || env == "yes"
-	}
-	if c == nil || c.Telemetry.Enabled == nil {
-		return false
-	}
-	return *c.Telemetry.Enabled
-}
-
-// SetTelemetryEnabled updates the telemetry enabled flag on the Config struct.
-func (c *Config) SetTelemetryEnabled(enabled bool) {
-	if c == nil {
-		return
-	}
-	v := enabled
-	c.Telemetry.Enabled = &v
 }
 
 // GetCatalogURL returns the URL for a catalog name, or empty string if not found.

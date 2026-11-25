@@ -10,6 +10,10 @@ This backlog tracks roadmap items and completed releases for `kungfu`.
 ### 2. Skill Dependency Graph
 - Support `dependencies` in skill frontmatter (`dependencies: [ebitengineer, procedural-art]`) and chained loading (`kungfu load --with-deps <skill>`).
 
+## Completed (`v0.8.0`)
+
+- [x] Removed remote telemetry permanently: Deleted the Cloud Firestore telemetry client (`internal/telemetry`), removed telemetry flushing during `kungfu update`, removed the `kungfu telemetry` CLI subcommand and `telemetry.enabled` config hooks, and cleaned sync watermark fields from `state.json` while preserving local skill usage history for `kungfu status`.
+
 ## Completed (`v0.7.1`)
 
 - [x] 24-hour catalog cache TTL: Increased `DefaultCatalogTTL` from 1 hour to 24 hours in `internal/catalog/cache.go` (`kungfu update` and `kungfu load -u` force immediate refreshes).

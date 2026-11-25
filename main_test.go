@@ -31,8 +31,6 @@ func TestMain(m *testing.M) {
 		_ = os.Setenv("KUNGFU_CONFIG_DIR", filepath.Join(tempHome, ".config", "kungfu"))
 		_ = os.Setenv("KUNGFU_STATE_PATH", filepath.Join(tempHome, ".config", "kungfu", "state.json"))
 		_ = os.Setenv("KUNGFU_CONFIG", "")
-		_ = os.Setenv("KUNGFU_TELEMETRY", "0")
-		_ = os.Setenv("DO_NOT_TRACK", "")
 	}
 	code := m.Run()
 	if tempHome != "" {

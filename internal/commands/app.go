@@ -231,7 +231,7 @@ func (a *App) recordSkillLoad(item catalog.Item, subpath string, page int) {
 		return nil
 	})
 	if err != nil {
-		_, _ = fmt.Fprintf(a.Stderr, "error: failed to record load telemetry in %s: %v\n", state.DefaultStateFilePath(), err)
+		_, _ = fmt.Fprintf(a.Stderr, "error: failed to record load history in %s: %v\n", state.DefaultStateFilePath(), err)
 	}
 }
 
@@ -242,7 +242,7 @@ func (a *App) recordSkillRun(item catalog.Item) {
 		return nil
 	})
 	if err != nil {
-		_, _ = fmt.Fprintf(a.Stderr, "error: failed to record run telemetry in %s: %v\n", state.DefaultStateFilePath(), err)
+		_, _ = fmt.Fprintf(a.Stderr, "error: failed to record run history in %s: %v\n", state.DefaultStateFilePath(), err)
 	}
 }
 
@@ -581,10 +581,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	switch cmdName {
 	case "list", "ls", "find", "search", "show", "info", "load", "get",
 		"learn", "install", "add", "forget", "unlearn", "update", "upgrade",
-		"status", "catalog", "catalogs", "telemetry", "run", "exec":
+		"status", "catalog", "catalogs", "run", "exec":
 	default:
 		validCommands := []string{
-			"list", "find", "show", "load", "learn", "forget", "update", "status", "catalog", "telemetry", "run", "version", "help",
+			"list", "find", "show", "load", "learn", "forget", "update", "status", "catalog", "run", "version", "help",
 		}
 		_, _ = fmt.Fprintf(stderr, "error: unknown command %q.\n", cmdName)
 		suggs := search.Suggest(cmdName, validCommands, 2)
@@ -627,8 +627,6 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return app.RunStatus(cmdArgs)
 	case "catalog", "catalogs":
 		return app.RunCatalog(cmdArgs)
-	case "telemetry":
-		return app.RunTelemetry(cmdArgs)
 	case "run", "exec":
 		return app.RunRun(cmdArgs)
 	default:
@@ -640,7 +638,7 @@ func isSubcommandName(name string) bool {
 	switch name {
 	case "list", "ls", "find", "search", "show", "info", "load", "get",
 		"learn", "install", "add", "forget", "unlearn", "update", "upgrade",
-		"status", "catalog", "catalogs", "telemetry", "run", "exec", "version", "help":
+		"status", "catalog", "catalogs", "run", "exec", "version", "help":
 		return true
 	default:
 		return false
@@ -835,16 +833,6 @@ SUBCOMMANDS:
 ALIASES:
   ls (list), rm / delete (remove)`)
 		return true
-	case "telemetry":
-		_, _ = fmt.Fprintln(w, `USAGE:
-  kungfu telemetry [status|enable|disable|sync] [--backfill] [--json] [--raw]
-
-SUBCOMMANDS:
-  status   Show telemetry status and pending official skill deltas (default).
-  enable   Opt in to anonymous community usage counters.
-  disable  Opt out of community usage counters.
-  sync     Flush pending official skill counter deltas to Cloud Firestore (--backfill replays full history).`)
-		return true
 	default:
 		return false
 	}
@@ -877,8 +865,6 @@ COMMANDS:
             Uninstall skills from workspace or global scope.
   catalog   <add|list|remove> [source] [flags]
             Manage external skill catalogs.
-  telemetry [status|enable|disable|sync] [--json] [--raw]
-            Manage opt-in anonymous community usage counters.
   version
             Print kungfu version.
 

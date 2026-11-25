@@ -396,7 +396,7 @@ func TestRunLoad_Pagination(t *testing.T) {
 	}
 }
 
-func TestTelemetryRecording_LoadLearnRun(t *testing.T) {
+func TestHistoryRecording_LoadLearnRun(t *testing.T) {
 	stateFile := filepath.Join(t.TempDir(), "state.json")
 	t.Setenv("KUNGFU_STATE_PATH", stateFile)
 

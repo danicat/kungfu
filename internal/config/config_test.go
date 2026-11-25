@@ -29,8 +29,6 @@ func TestMain(m *testing.M) {
 		_ = os.Setenv("HOME", tempHome)
 		_ = os.Setenv("KUNGFU_CONFIG_DIR", filepath.Join(tempHome, ".config", "kungfu"))
 		_ = os.Setenv("KUNGFU_CONFIG", "")
-		_ = os.Setenv("KUNGFU_TELEMETRY", "")
-		_ = os.Setenv("DO_NOT_TRACK", "")
 	}
 	code := m.Run()
 	if tempHome != "" {
@@ -56,11 +54,10 @@ func TestConfig_Default(t *testing.T) {
 	}
 }
 
-func TestConfig_SaveDoesNotLeakKeys(t *testing.T) {
+func TestConfig_SaveDoesNotEmitTelemetryOrKeys(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("KUNGFU_CONFIG_DIR", tmpDir)
 	cfg := config.DefaultConfig()
-	cfg.SetTelemetryEnabled(true)
 	savedPath, err := config.Save("", cfg)
 	if err != nil {
 		t.Fatalf("Save failed: %v", err)
@@ -69,8 +66,32 @@ func TestConfig_SaveDoesNotLeakKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile failed: %v", err)
 	}
-	if strings.Contains(string(raw), "api_key") || strings.Contains(string(raw), "project_id") {
-		t.Errorf("saved config should not contain api_key or project_id, got:\n%s", string(raw))
+	content := string(raw)
+	if strings.Contains(content, "telemetry") || strings.Contains(content, "api_key") || strings.Contains(content, "project_id") {
+		t.Errorf("saved config should not contain telemetry, api_key, or project_id, got:\n%s", content)
+	}
+}
+
+func TestConfig_LoadIgnoresLegacyTelemetryField(t *testing.T) {
+	tmpDir := t.TempDir()
+	yamlFile := filepath.Join(tmpDir, "config.yaml")
+	content := `
+load:
+  auto_update: false
+telemetry:
+  enabled: true
+catalogs:
+  default: "https://example.com/custom-catalog.json"
+`
+	if err := os.WriteFile(yamlFile, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write yaml file: %v", err)
+	}
+	cfg, err := config.Load(yamlFile)
+	if err != nil {
+		t.Fatalf("Load failed on legacy telemetry field: %v", err)
+	}
+	if cfg.IsAutoUpdate() {
+		t.Errorf("expected auto_update = false")
 	}
 }
 

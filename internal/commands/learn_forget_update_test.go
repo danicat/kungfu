@@ -143,7 +143,8 @@ func TestRunUpdate(t *testing.T) {
 		t.Fatalf("RunLearn = %d; stderr: %s", code, stderr.String())
 	}
 
-	// Check update (dry-run)
+	// Check update (dry-run) even if legacy telemetry config or KUNGFU_TELEMETRY=1 is present
+	t.Setenv("KUNGFU_TELEMETRY", "1")
 	stdout.Reset()
 	stderr.Reset()
 	code = app.RunUpdate([]string{})
@@ -152,6 +153,9 @@ func TestRunUpdate(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "kungfu") {
 		t.Errorf("expected kungfu in update check, got: %s", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "telemetry") || strings.Contains(stderr.String(), "telemetry") {
+		t.Errorf("RunUpdate should not run or mention telemetry: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }
 

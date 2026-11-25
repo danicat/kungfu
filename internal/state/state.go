@@ -86,7 +86,7 @@ type WorkspaceState struct {
 }
 
 // HistoryRecord tracks immutable cumulative JIT load, learn, and script execution counts for a skill,
-// along with its source catalog provenance and synced watermarks for opt-in community telemetry.
+// along with its source catalog provenance.
 type HistoryRecord struct {
 	Catalog          string    `json:"catalog,omitempty"`
 	LastSeenAt       time.Time `json:"last_seen_at"`
@@ -95,24 +95,6 @@ type HistoryRecord struct {
 	SubpathLoadCount int       `json:"subpath_load_count,omitempty"`
 	RunCount         int       `json:"run_count,omitempty"`
 	LearnCount       int       `json:"learn_count,omitempty"`
-
-	SyncedLoadCount        int        `json:"synced_load_count,omitempty"`
-	SyncedPageLoadCount    int        `json:"synced_page_load_count,omitempty"`
-	SyncedSubpathLoadCount int        `json:"synced_subpath_load_count,omitempty"`
-	SyncedRunCount         int        `json:"synced_run_count,omitempty"`
-	SyncedLearnCount       int        `json:"synced_learn_count,omitempty"`
-	LastSyncedAt           *time.Time `json:"last_synced_at,omitempty"`
-}
-
-// TelemetryDelta represents unsent positive counter increments for an official catalog skill.
-type TelemetryDelta struct {
-	Skill        string `json:"skill"`
-	Catalog      string `json:"catalog,omitempty"`
-	Loads        int    `json:"loads"`
-	PageLoads    int    `json:"page_loads"`
-	SubpathLoads int    `json:"subpath_loads"`
-	Runs         int    `json:"runs"`
-	Learns       int    `json:"learns"`
 }
 
 // State represents the complete root manifest in ~/.config/kungfu/state.json.
@@ -509,109 +491,6 @@ func (s *State) RecordLearnWithCatalog(skillName, catalogSource string) {
 	}
 }
 
-// MaxTelemetryDelta caps each counter increment in a single flush to match Firestore security rule bounds.
-const MaxTelemetryDelta = 100
-
-func clampTelemetryDelta(v int) int {
-	return min(MaxTelemetryDelta, max(0, v))
-}
-
-// ComputeTelemetryDeltas computes positive unsent counter deltas (clamped to MaxTelemetryDelta) for all official catalog skills.
-func (s *State) ComputeTelemetryDeltas(resolveOfficialCatalog func(skillName string) (string, bool)) []TelemetryDelta {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.History == nil || resolveOfficialCatalog == nil {
-		return nil
-	}
-
-	var names []string
-	for name := range s.History {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	var deltas []TelemetryDelta
-	for _, name := range names {
-		rec := s.History[name]
-		if rec == nil {
-			continue
-		}
-		catalogSource, ok := resolveOfficialCatalog(name)
-		if !ok {
-			continue
-		}
-		if catalogSource == "" {
-			catalogSource = rec.Catalog
-		}
-
-		dLoads := clampTelemetryDelta(rec.LoadCount - rec.SyncedLoadCount)
-		dPageLoads := clampTelemetryDelta(rec.PageLoadCount - rec.SyncedPageLoadCount)
-		dSubpathLoads := clampTelemetryDelta(rec.SubpathLoadCount - rec.SyncedSubpathLoadCount)
-		dRuns := clampTelemetryDelta(rec.RunCount - rec.SyncedRunCount)
-		dLearns := clampTelemetryDelta(rec.LearnCount - rec.SyncedLearnCount)
-
-		if dLoads == 0 && dPageLoads == 0 && dSubpathLoads == 0 && dRuns == 0 && dLearns == 0 {
-			continue
-		}
-
-		deltas = append(deltas, TelemetryDelta{
-			Skill:        name,
-			Catalog:      catalogSource,
-			Loads:        dLoads,
-			PageLoads:    dPageLoads,
-			SubpathLoads: dSubpathLoads,
-			Runs:         dRuns,
-			Learns:       dLearns,
-		})
-	}
-	return deltas
-}
-
-// ApplySyncedDeltas advances synced watermarks by the applied delta amounts without resetting cumulative totals.
-func (s *State) ApplySyncedDeltas(applied []TelemetryDelta, syncedAt time.Time) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.History == nil {
-		return
-	}
-	ts := syncedAt.UTC()
-	for _, d := range applied {
-		rec, ok := s.History[d.Skill]
-		if !ok || rec == nil {
-			continue
-		}
-		if rec.Catalog == "" && d.Catalog != "" {
-			rec.Catalog = d.Catalog
-		}
-		rec.SyncedLoadCount = min(rec.LoadCount, rec.SyncedLoadCount+max(0, d.Loads))
-		rec.SyncedPageLoadCount = min(rec.PageLoadCount, rec.SyncedPageLoadCount+max(0, d.PageLoads))
-		rec.SyncedSubpathLoadCount = min(rec.SubpathLoadCount, rec.SyncedSubpathLoadCount+max(0, d.SubpathLoads))
-		rec.SyncedRunCount = min(rec.RunCount, rec.SyncedRunCount+max(0, d.Runs))
-		rec.SyncedLearnCount = min(rec.LearnCount, rec.SyncedLearnCount+max(0, d.Learns))
-		rec.LastSyncedAt = &ts
-	}
-}
-
-// ResetTelemetryWatermarks resets synced watermarks to zero so immutable cumulative totals can be backfilled to remote.
-func (s *State) ResetTelemetryWatermarks() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for _, rec := range s.History {
-		if rec == nil {
-			continue
-		}
-		rec.SyncedLoadCount = 0
-		rec.SyncedPageLoadCount = 0
-		rec.SyncedSubpathLoadCount = 0
-		rec.SyncedRunCount = 0
-		rec.SyncedLearnCount = 0
-		rec.LastSyncedAt = nil
-	}
-}
-
 // GetSkill returns the SkillRecord for a skill in a workspace or global scope.
 func (s *State) GetSkill(scope string, workspaceDir string, skillName string) (SkillRecord, bool) {
 	s.mu.RLock()
@@ -976,15 +855,6 @@ func (s *State) MergeInto(disk *State) {
 		cur.SubpathLoadCount = max(cur.SubpathLoadCount, h.SubpathLoadCount)
 		cur.RunCount = max(cur.RunCount, h.RunCount)
 		cur.LearnCount = max(cur.LearnCount, h.LearnCount)
-		cur.SyncedLoadCount = max(cur.SyncedLoadCount, h.SyncedLoadCount)
-		cur.SyncedPageLoadCount = max(cur.SyncedPageLoadCount, h.SyncedPageLoadCount)
-		cur.SyncedSubpathLoadCount = max(cur.SyncedSubpathLoadCount, h.SyncedSubpathLoadCount)
-		cur.SyncedRunCount = max(cur.SyncedRunCount, h.SyncedRunCount)
-		cur.SyncedLearnCount = max(cur.SyncedLearnCount, h.SyncedLearnCount)
-		if h.LastSyncedAt != nil && (cur.LastSyncedAt == nil || h.LastSyncedAt.After(*cur.LastSyncedAt)) {
-			ts := *h.LastSyncedAt
-			cur.LastSyncedAt = &ts
-		}
 	}
 }
 

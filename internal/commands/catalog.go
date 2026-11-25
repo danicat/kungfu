@@ -601,13 +601,6 @@ func (a *App) syncRegisteredCatalogs(ctx context.Context, st *state.State, mode 
 		_, _ = fmt.Fprintln(a.Stdout)
 	}
 
-	if err := a.syncTelemetryIfEnabled(ctx, mode); err != nil {
-		_, _ = fmt.Fprintf(a.Stderr, "error: %v\n", err)
-		if exitCode == ExitSuccess {
-			exitCode = MapErrorToExitCode(err)
-		}
-	}
-
 	return exitCode
 }
 
