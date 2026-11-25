@@ -17,6 +17,7 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -91,10 +92,14 @@ func (a *App) RunLearn(args []string) int {
 			continue
 		}
 
-		item, err := a.Store.Get(spec)
+		item, err := a.resolveSkill(spec)
 		if err != nil {
-			notFounds = append(notFounds, spec)
-			continue
+			if errors.Is(err, catalog.ErrItemNotFound) {
+				notFounds = append(notFounds, spec)
+				continue
+			}
+			_, _ = fmt.Fprintf(a.Stderr, "error: %v\n", err)
+			return MapErrorToExitCode(err)
 		}
 		itemsToInstall = append(itemsToInstall, *item)
 	}

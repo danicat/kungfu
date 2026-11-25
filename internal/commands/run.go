@@ -43,7 +43,7 @@ func (a *App) RunRun(args []string) int {
 	scriptName := args[1]
 	scriptArgs := args[2:]
 
-	item, err := a.Store.Get(skillName)
+	item, err := a.resolveSkill(skillName)
 	if err != nil {
 		a.printNotFoundWithSuggestions("run", skillName)
 		return MapErrorToExitCode(err)

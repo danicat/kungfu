@@ -151,7 +151,7 @@ func (a *App) RunLoad(args []string) int {
 		subpath = parts[1]
 	}
 
-	item, err := a.Store.Get(skillName)
+	item, err := a.resolveSkill(skillName)
 	if err != nil && localFlag && skillName != "" {
 		cleanName := filepath.Base(filepath.Clean(skillName))
 		if cacheRoot := a.cacheRootDir(); cacheRoot != "" && cleanName != "." && cleanName != ".." {

@@ -82,7 +82,7 @@ func (a *App) RunShow(args []string) int {
 	var notFounds []string
 
 	for _, name := range posArgs {
-		item, err := a.Store.Get(name)
+		item, err := a.resolveSkill(name)
 		if err != nil && isGitHubSkillSpec(name) {
 			if target, ok := catalog.ParseGitHubTarget(name); ok {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

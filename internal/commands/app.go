@@ -15,6 +15,7 @@
 package commands
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -118,6 +119,102 @@ func (a *App) getHTTPClient() *http.Client {
 		return a.HTTPClient
 	}
 	return http.DefaultClient
+}
+
+// resolveSkill looks up a skill in the active catalog store. If it is not found
+// and the name (or @catalog qualifier) matches a registered named catalog that
+// has not been cached yet (such as the built-in "kungfu" catalog on a fresh install),
+// it fetches and caches that catalog on demand and retries the lookup.
+func (a *App) resolveSkill(spec string) (*catalog.Item, error) {
+	item, err := a.Store.Get(spec)
+	if err == nil {
+		return item, nil
+	}
+	if !errors.Is(err, catalog.ErrItemNotFound) || a.Options.Offline {
+		return nil, err
+	}
+
+	skillName := strings.TrimSpace(spec)
+	catQual := ""
+	if idx := strings.LastIndex(skillName, "@"); idx > 0 {
+		catQual = strings.TrimSpace(skillName[idx+1:])
+		skillName = strings.TrimSpace(skillName[:idx])
+	}
+
+	cand := catQual
+	if cand == "" {
+		cand = skillName
+	}
+	if cand == "" || strings.EqualFold(cand, state.CatalogTypeDefault) {
+		return nil, err
+	}
+
+	st := a.loadState()
+	catRec, ok := st.GetCatalog(cand)
+	if !ok {
+		// Try case-insensitive match against registered catalogs.
+		for _, rec := range st.GetCatalogs() {
+			if strings.EqualFold(rec.Name, cand) {
+				catRec = rec
+				ok = true
+				break
+			}
+		}
+	}
+	if !ok || catRec.Type == state.CatalogTypeDefault {
+		return nil, err
+	}
+
+	src := catRec.Source
+	catType := catRec.Type
+	if a.Config != nil && a.Config.Catalogs != nil {
+		if cfgSrc := strings.TrimSpace(a.Config.Catalogs[catRec.Name]); cfgSrc != "" && cfgSrc != src {
+			src = cfgSrc
+			if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
+				catType = state.CatalogTypeHTTP
+			}
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var m *catalog.Manifest
+	var etag string
+	var fetchErr error
+
+	switch catType {
+	case state.CatalogTypeGitHub:
+		target, okTarget := catalog.ParseGitHubTarget(src)
+		if !okTarget {
+			return nil, fmt.Errorf("invalid github catalog source %q for catalog %q", src, catRec.Name)
+		}
+		if catRec.Ref != "" {
+			target.Ref = catRec.Ref
+		}
+		if catRec.Subpath != "" {
+			target.Subpath = catRec.Subpath
+		}
+		m, fetchErr = catalog.FetchGitHubCatalog(ctx, target, a.getHTTPClient())
+	case state.CatalogTypeHTTP:
+		m, etag, fetchErr = catalog.FetchHTTPCatalog(ctx, src, a.getHTTPClient())
+	case state.CatalogTypeLocal:
+		m, fetchErr = catalog.DiscoverLocalCatalog(src)
+	default:
+		return nil, err
+	}
+
+	if fetchErr != nil {
+		return nil, fmt.Errorf("fetching registered catalog %q: %w", catRec.Name, fetchErr)
+	}
+	if m == nil {
+		return nil, err
+	}
+
+	_ = catalog.SaveNamedCatalogCacheIn(a.cacheRootDir(), catRec.Name, catRec.URL, *m, etag)
+	a.Store.AddCatalogManifest(catRec.Name, m)
+
+	return a.Store.Get(spec)
 }
 
 func NewApp(opts GlobalOptions, stdout, stderr io.Writer) (*App, error) {

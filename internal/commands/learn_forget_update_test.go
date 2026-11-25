@@ -219,3 +219,54 @@ func TestRunUpdate_ConflictAndForce(t *testing.T) {
 		t.Errorf("expected successful update message, got: %s", stdout.String())
 	}
 }
+
+func TestRunLearn_KungfuOutOfTheBox(t *testing.T) {
+	tmpDir := t.TempDir()
+	cacheDir := t.TempDir()
+	origWd, _ := os.Getwd()
+	_ = os.Chdir(tmpDir)
+	defer func() { _ = os.Chdir(origWd) }()
+
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("KUNGFU_CONFIG_DIR", filepath.Join(tmpDir, ".config", "kungfu"))
+	t.Setenv("KUNGFU_STATE_PATH", filepath.Join(tmpDir, ".config", "kungfu", "state.json"))
+	t.Setenv("KUNGFU_CACHE_DIR", cacheDir)
+
+	// Default catalog does NOT include "kungfu" (matches skills.danicat.dev on a fresh install).
+	emptyDefaultServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"$schema":"https://schemas.agentskills.io/discovery/0.2.0/schema.json","skills":[]}`))
+	}))
+	defer emptyDefaultServer.Close()
+	t.Setenv("KUNGFU_URL", emptyDefaultServer.URL)
+
+	// Built-in "kungfu" catalog serves the kungfu skill.
+	kungfuCatServer, _ := startMockKungfuServer(t)
+	defer kungfuCatServer.Close()
+
+	var stdout, stderr bytes.Buffer
+	app, err := NewApp(GlobalOptions{CacheDir: cacheDir}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("NewApp failed: %v", err)
+	}
+	app.Config.Catalogs["kungfu"] = kungfuCatServer.URL
+
+	// On a clean install before `kungfu update`, `kungfu learn kungfu` should work out of the box.
+	code := app.RunLearn([]string{"kungfu"})
+	if code != ExitSuccess {
+		t.Fatalf("RunLearn(kungfu) on fresh install = %d; stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `Learned skill "kungfu"`) {
+		t.Errorf("expected learned confirmation, got: %s", stdout.String())
+	}
+
+	installedMD := filepath.Join(tmpDir, ".agents", "skills", "kungfu", "SKILL.md")
+	if _, err := os.Stat(installedMD); err != nil {
+		t.Fatalf("expected installed SKILL.md at %s, got: %v", installedMD, err)
+	}
+
+	cachedCat := filepath.Join(cacheDir, "catalogs", "kungfu.json")
+	if _, err := os.Stat(cachedCat); err != nil {
+		t.Fatalf("expected built-in kungfu catalog to be cached at %s, got: %v", cachedCat, err)
+	}
+}
