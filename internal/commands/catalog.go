@@ -299,7 +299,7 @@ func (a *App) runCatalogList(args []string) int {
 
 	mode := a.resolveMode(jsonFlag)
 	configured := a.configuredCatalogs()
-	cachedMap, _ := catalog.LoadAllNamedCatalogCaches(a.cacheRootDir())
+	cacheRoot := a.cacheRootDir()
 
 	type CatalogView struct {
 		Name       string `json:"name"`
@@ -332,7 +332,7 @@ func (a *App) runCatalogList(args []string) int {
 		}
 		skillCount := 0
 		upStr := ""
-		if c, ok := cachedMap[name]; ok && c != nil {
+		if c, err := catalog.LoadNamedCatalogCache(cacheRoot, name); err == nil && c != nil {
 			skillCount = len(c.Manifest.Items)
 			if !c.FetchedAt.IsZero() {
 				upStr = c.FetchedAt.Format("2006-01-02 15:04")
@@ -597,6 +597,9 @@ func (a *App) syncRegisteredCatalogs(ctx context.Context, mode OutputMode) int {
 		}
 	}
 
+	if cacheRoot != "" {
+		_ = catalog.PruneNamedCatalogCaches(cacheRoot, names)
+	}
 	a.pruneSkillCache(!hasError)
 
 	if mode == OutputModeHuman && len(results) > 0 {

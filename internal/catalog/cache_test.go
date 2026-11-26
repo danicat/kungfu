@@ -195,3 +195,116 @@ func TestResolveCacheDir_Precedence(t *testing.T) {
 		t.Errorf("ResolveCacheDir(override) = %q, want %q", got, customDir)
 	}
 }
+
+func TestPruneNamedCatalogCaches(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	catsDir, err := catalog.GetCatalogsCacheDir(tmpDir)
+	if err != nil {
+		t.Fatalf("GetCatalogsCacheDir: %v", err)
+	}
+
+	manifest := catalog.Manifest{
+		Items: []catalog.Item{{ID: "go", Name: "go", Description: "Go skill"}},
+	}
+	if err := catalog.SaveNamedCatalogCache(tmpDir, "default", "https://example.com/default", manifest, ""); err != nil {
+		t.Fatalf("save default: %v", err)
+	}
+	if err := catalog.SaveNamedCatalogCache(tmpDir, "spf13/go-skills", "spf13/go-skills", manifest, ""); err != nil {
+		t.Fatalf("save spf13/go-skills: %v", err)
+	}
+	if err := catalog.SaveNamedCatalogCache(tmpDir, "removed/cat", "removed/cat", manifest, ""); err != nil {
+		t.Fatalf("save removed/cat: %v", err)
+	}
+
+	// Legacy unhashed v0.8.x cache file and non-JSON file.
+	legacyPath := filepath.Join(catsDir, "spf13-go-skills.json")
+	if err := os.WriteFile(legacyPath, []byte(`{"fetched_at":"2026-01-01T00:00:00Z","manifest":{"items":[]}}`), 0600); err != nil {
+		t.Fatalf("write legacy cache: %v", err)
+	}
+	notePath := filepath.Join(catsDir, "keep.txt")
+	if err := os.WriteFile(notePath, []byte("keep"), 0600); err != nil {
+		t.Fatalf("write note: %v", err)
+	}
+
+	if err := catalog.PruneNamedCatalogCaches(tmpDir, []string{"default", "spf13/go-skills"}); err != nil {
+		t.Fatalf("PruneNamedCatalogCaches: %v", err)
+	}
+
+	// Active catalogs and non-JSON file must remain.
+	for _, keep := range []string{
+		filepath.Join(catsDir, catalog.SafeCatalogFileName("default")),
+		filepath.Join(catsDir, catalog.SafeCatalogFileName("spf13/go-skills")),
+		notePath,
+	} {
+		if _, err := os.Stat(keep); err != nil {
+			t.Errorf("expected %s to remain, got err: %v", keep, err)
+		}
+	}
+
+	// Legacy unhashed and removed catalog caches must be gone.
+	for _, gone := range []string{
+		legacyPath,
+		filepath.Join(catsDir, catalog.SafeCatalogFileName("removed/cat")),
+	} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("expected %s to be pruned, got err: %v", gone, err)
+		}
+	}
+}
+
+func TestNewCatalog_WithNamedCatalogsIgnoresOrphansAndLegacyFiles(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	catsDir, err := catalog.GetCatalogsCacheDir(tmpDir)
+	if err != nil {
+		t.Fatalf("GetCatalogsCacheDir: %v", err)
+	}
+
+	activeManifest := catalog.Manifest{
+		Items: []catalog.Item{{ID: "go", Name: "go", Description: "Active Go skill"}},
+	}
+	orphanManifest := catalog.Manifest{
+		Items: []catalog.Item{{ID: "ghost", Name: "ghost", Description: "Orphan skill"}},
+	}
+	if err := catalog.SaveNamedCatalogCache(tmpDir, "spf13/go-skills", "spf13/go-skills", activeManifest, ""); err != nil {
+		t.Fatalf("save active: %v", err)
+	}
+	if err := catalog.SaveNamedCatalogCache(tmpDir, "removed/cat", "removed/cat", orphanManifest, ""); err != nil {
+		t.Fatalf("save orphan: %v", err)
+	}
+	// Legacy unhashed v0.8.x file with no "name" field (previously loaded as "spf13-go-skills").
+	legacyPath := filepath.Join(catsDir, "spf13-go-skills.json")
+	if err := os.WriteFile(legacyPath, []byte(`{"fetched_at":"2026-01-01T00:00:00Z","manifest":{"items":[{"id":"go","name":"go","description":"Legacy duplicate"}]}}`), 0600); err != nil {
+		t.Fatalf("write legacy cache: %v", err)
+	}
+
+	cat, err := catalog.NewCatalog(
+		catalog.WithRemoteSync(false),
+		catalog.WithLocalDiscovery(false),
+		catalog.WithCacheDir(tmpDir),
+		catalog.WithNamedCatalogs([]string{"default", "spf13/go-skills"}),
+	)
+	if err != nil {
+		t.Fatalf("NewCatalog: %v", err)
+	}
+
+	all := cat.All()
+	if len(all) != 1 {
+		t.Fatalf("len(All()) = %d, want 1 (only configured spf13/go-skills); got: %+v", len(all), all)
+	}
+	if all[0].ID != "go" || all[0].Source != "spf13/go-skills" {
+		t.Errorf("got item %+v, want go from spf13/go-skills", all[0])
+	}
+	if _, err := cat.Get("ghost"); err == nil {
+		t.Errorf("expected orphan skill 'ghost' to be ignored")
+	}
+	if _, err := cat.Get("go@spf13-go-skills"); err == nil {
+		t.Errorf("expected legacy unhashed catalog 'spf13-go-skills' to be ignored")
+	}
+	if stale := cat.StaleCatalogs(); len(stale) != 0 {
+		t.Errorf("expected no stale catalogs from ignored legacy cache, got %v", stale)
+	}
+}

@@ -30,6 +30,7 @@ import (
 	"testing"
 
 	"github.com/danicat/kungfu/internal/catalog"
+	"github.com/danicat/kungfu/internal/config"
 )
 
 func setupTestCatalogServer(t *testing.T) *httptest.Server {
@@ -499,6 +500,8 @@ func TestMultiCatalogFreshness_StaleRefreshOnDemandFindAndLocalDriftWarning(t *t
 	defer func() { _ = os.Chdir(origWd) }()
 
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, ".config"))
+	t.Setenv("KUNGFU_CONFIG_DIR", filepath.Join(tmpDir, ".config", "kungfu"))
 	t.Setenv("KUNGFU_CACHE_DIR", cacheDir)
 
 	// Default catalog serves godoctor v1.2.0 and a shadowed "go" skill.
@@ -575,12 +578,18 @@ func TestMultiCatalogFreshness_StaleRefreshOnDemandFindAndLocalDriftWarning(t *t
 	raw, _ := os.ReadFile(stalePath)
 	_ = os.WriteFile(stalePath, []byte(strings.ReplaceAll(string(raw), `"fetched_at": "20`, `"fetched_at": "2020-01-01T00:00:00Z", "old_fetched_at": "20`)), 0600)
 
+	cfgPath := filepath.Join(tmpDir, ".config", "kungfu", "config.yaml")
+	cfg := config.DefaultConfig()
+	cfg.Catalogs["spf13/go-skills"] = goCatSrv.URL
+	if _, err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatalf("config.Save: %v", err)
+	}
+
 	var stdout, stderr bytes.Buffer
-	app, err := NewApp(GlobalOptions{CacheDir: cacheDir}, &stdout, &stderr)
+	app, err := NewApp(GlobalOptions{Config: cfgPath, CacheDir: cacheDir}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("NewApp failed: %v", err)
 	}
-	app.Config.Catalogs["spf13/go-skills"] = goCatSrv.URL
 
 	// 1. `list` warns about stale named catalog and shows source provenance in JSON + both shadowed "go" entries.
 	if code := app.RunList([]string{"--json"}); code != ExitSuccess {

@@ -114,6 +114,20 @@ func WithOffline(offline bool) Option {
 	}
 }
 
+// WithNamedCatalogs restricts cached named-catalog loading to the exact configured catalog names.
+// When set, orphaned and legacy unhashed cache files in <cacheDir>/catalogs/ are ignored.
+func WithNamedCatalogs(names []string) Option {
+	return func(c *Catalog) {
+		c.filterNamedCatalogs = true
+		c.namedCatalogs = make([]string, 0, len(names))
+		for _, n := range names {
+			if trimmed := strings.TrimSpace(n); trimmed != "" {
+				c.namedCatalogs = append(c.namedCatalogs, trimmed)
+			}
+		}
+	}
+}
+
 type cachedCatalogMeta struct {
 	name      string
 	fetchedAt time.Time
@@ -121,19 +135,21 @@ type cachedCatalogMeta struct {
 
 // Catalog stores and resolves discovered Agent Skills with thread-safe access.
 type Catalog struct {
-	mu           sync.RWMutex
-	items        map[string]Item
-	catalogMeta  map[string]cachedCatalogMeta
-	manifest     *Manifest
-	remoteURL    string
-	httpClient   *http.Client
-	customClient bool
-	enableRemote bool
-	enableLocal  bool
-	cacheDir     string
-	noCache      bool
-	forceRefresh bool
-	offline      bool
+	mu                  sync.RWMutex
+	items               map[string]Item
+	catalogMeta         map[string]cachedCatalogMeta
+	manifest            *Manifest
+	remoteURL           string
+	httpClient          *http.Client
+	customClient        bool
+	enableRemote        bool
+	enableLocal         bool
+	cacheDir            string
+	noCache             bool
+	forceRefresh        bool
+	offline             bool
+	filterNamedCatalogs bool
+	namedCatalogs       []string
 }
 
 // NewCatalog constructs a Catalog instance with option modifiers.
@@ -276,8 +292,28 @@ func (c *Catalog) loadNamedCatalogsLocked() {
 	if cacheRoot == "" {
 		return
 	}
-	namedCaches, err := LoadAllNamedCatalogCaches(cacheRoot)
-	if err != nil || len(namedCaches) == 0 {
+
+	var namedCaches map[string]*CachedCatalog
+	if c.filterNamedCatalogs {
+		namedCaches = make(map[string]*CachedCatalog, len(c.namedCatalogs))
+		for _, catName := range c.namedCatalogs {
+			if strings.EqualFold(catName, "default") {
+				continue
+			}
+			cached, err := LoadNamedCatalogCache(cacheRoot, catName)
+			if err != nil || cached == nil {
+				continue
+			}
+			namedCaches[catName] = cached
+		}
+	} else {
+		var err error
+		namedCaches, err = LoadAllNamedCatalogCaches(cacheRoot)
+		if err != nil {
+			return
+		}
+	}
+	if len(namedCaches) == 0 {
 		return
 	}
 	catNames := make([]string, 0, len(namedCaches))

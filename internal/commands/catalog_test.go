@@ -23,6 +23,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/danicat/kungfu/internal/catalog"
 	"github.com/danicat/kungfu/internal/config"
 )
 
@@ -181,5 +182,114 @@ func TestRunCatalog(t *testing.T) {
 	}
 	if strings.Contains(stderr.String(), "github") {
 		t.Errorf("expected local file error, got github error: %s", stderr.String())
+	}
+}
+
+func TestNewApp_IgnoresOrphanAndLegacyCatalogCachesAndUpdatePrunes(t *testing.T) {
+	tmpDir := t.TempDir()
+	origWd, _ := os.Getwd()
+	_ = os.Chdir(tmpDir)
+	defer func() { _ = os.Chdir(origWd) }()
+
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmpDir, ".cache"))
+	t.Setenv("KUNGFU_CONFIG_DIR", filepath.Join(tmpDir, ".config", "kungfu"))
+	t.Setenv("KUNGFU_STATE_PATH", filepath.Join(tmpDir, ".kungfu-state.json"))
+
+	manifestJSON := `{
+		"$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
+		"skills": [
+			{"name": "alpha", "description": "Alpha skill", "type": "skill-md", "url": "/alpha/SKILL.md", "digest": "sha256:aaa"}
+		]
+	}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(manifestJSON))
+	}))
+	defer srv.Close()
+
+	// Create a local directory catalog so RunUpdate can sync both default, kungfu (via srv override), and team-skills offline/locally.
+	localCatDir := filepath.Join(tmpDir, "team-skills")
+	if err := os.MkdirAll(filepath.Join(localCatDir, "go"), 0755); err != nil {
+		t.Fatalf("mkdir local catalog: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(localCatDir, "go", "SKILL.md"), []byte("---\nname: go\ndescription: Go skill\n---\n# Go\n"), 0644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmpDir, ".config", "kungfu", "config.yaml")
+	cfg := config.DefaultConfig()
+	cfg.Catalogs["default"] = srv.URL + "/.well-known/agent-skills/index.json"
+	cfg.Catalogs["kungfu"] = srv.URL + "/.well-known/agent-skills/index.json"
+	cfg.Catalogs["team/go-skills"] = localCatDir
+	if _, err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatalf("config.Save: %v", err)
+	}
+
+	cacheDir := filepath.Join(tmpDir, ".cache", "kungfu")
+	catsDir, err := catalog.GetCatalogsCacheDir(cacheDir)
+	if err != nil {
+		t.Fatalf("GetCatalogsCacheDir: %v", err)
+	}
+
+	// Pre-populate:
+	// 1. Valid configured catalog cache for team/go-skills
+	// 2. Orphaned hashed cache for a catalog no longer in config.yaml
+	// 3. Legacy unhashed v0.8.x cache file (team-go-skills.json)
+	if err := catalog.SaveNamedCatalogCache(cacheDir, "team/go-skills", localCatDir, catalog.Manifest{
+		Items: []catalog.Item{{ID: "go", Name: "go", Description: "Go skill"}},
+	}, ""); err != nil {
+		t.Fatalf("save configured cache: %v", err)
+	}
+	if err := catalog.SaveNamedCatalogCache(cacheDir, "removed/orphan", "https://example.com/orphan", catalog.Manifest{
+		Items: []catalog.Item{{ID: "orphan-skill", Name: "orphan-skill", Description: "Removed catalog skill"}},
+	}, ""); err != nil {
+		t.Fatalf("save orphan cache: %v", err)
+	}
+	legacyPath := filepath.Join(catsDir, "team-go-skills.json")
+	if err := os.WriteFile(legacyPath, []byte(`{"fetched_at":"2026-01-01T00:00:00Z","manifest":{"items":[{"id":"go","name":"go","description":"Legacy duplicate"}]}}`), 0600); err != nil {
+		t.Fatalf("write legacy cache: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	app, err := NewApp(GlobalOptions{Config: cfgPath, CacheDir: cacheDir}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("NewApp failed: %v", err)
+	}
+
+	// 1. List must not show orphan-skill or legacy team-go-skills duplicate, and must not emit stale warning for legacy file.
+	if code := app.RunList(nil); code != ExitSuccess {
+		t.Fatalf("RunList = %d, want %d; stderr=%s", code, ExitSuccess, stderr.String())
+	}
+	listOut := stdout.String()
+	if strings.Contains(listOut, "orphan-skill") {
+		t.Errorf("RunList leaked skill from unconfigured orphan cache:\n%s", listOut)
+	}
+	if strings.Contains(listOut, "go@team-go-skills") {
+		t.Errorf("RunList leaked duplicate from legacy unhashed cache:\n%s", listOut)
+	}
+	if strings.Contains(stderr.String(), "team-go-skills") {
+		t.Errorf("RunList emitted stale warning for ignored legacy cache:\n%s", stderr.String())
+	}
+
+	// 2. RunUpdate must prune both legacyPath and the orphaned catalog cache file while keeping configured caches.
+	stdout.Reset()
+	stderr.Reset()
+	if code := app.RunUpdate(nil); code != ExitSuccess {
+		t.Fatalf("RunUpdate = %d, want %d; stdout=%s stderr=%s", code, ExitSuccess, stdout.String(), stderr.String())
+	}
+
+	orphanPath := filepath.Join(catsDir, catalog.SafeCatalogFileName("removed/orphan"))
+	for _, gone := range []string{legacyPath, orphanPath} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("expected RunUpdate to prune %s, stat err = %v", gone, err)
+		}
+	}
+	for _, keep := range []string{"default", "kungfu", "team/go-skills"} {
+		keepPath := filepath.Join(catsDir, catalog.SafeCatalogFileName(keep))
+		if _, err := os.Stat(keepPath); err != nil {
+			t.Errorf("expected RunUpdate to keep %s (%s), stat err = %v", keep, keepPath, err)
+		}
 	}
 }

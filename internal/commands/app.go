@@ -435,9 +435,19 @@ func NewApp(opts GlobalOptions, stdout, stderr io.Writer) (*App, error) {
 	}
 
 	httpClient := catalog.NewSafeHTTPClientWithLoopback(30*time.Second, allowLoopback)
+	configuredNames := []string{"default", "kungfu"}
+	if cfg.Catalogs != nil {
+		for k, v := range cfg.Catalogs {
+			if strings.TrimSpace(v) == "" || strings.EqualFold(k, "default") || strings.EqualFold(k, "kungfu") {
+				continue
+			}
+			configuredNames = append(configuredNames, k)
+		}
+	}
 	catOpts := []catalog.Option{
 		catalog.WithLocalDiscovery(true),
 		catalog.WithHTTPClient(httpClient),
+		catalog.WithNamedCatalogs(configuredNames),
 	}
 	if defURL := cfg.GetCatalogURL("default"); defURL != "" && defURL != config.DefaultCatalogURL && strings.TrimSpace(os.Getenv("KUNGFU_URL")) == "" {
 		catOpts = append(catOpts, catalog.WithRemoteURL(defURL))

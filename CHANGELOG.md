@@ -2,6 +2,13 @@
 
 All notable changes to `kungfu` are documented in this file.
 
+## v0.9.1 - 2026-11-26
+
+### Fixed
+
+- Restricted cached named-catalog loading (`catalog.WithNamedCatalogs`) and `kungfu catalog list` to catalogs registered in `config.yaml`, preventing duplicate ghost entries and false stale-cache warnings from leftover unhashed `v0.8.x` cache files or removed catalogs.
+- Added automatic pruning of legacy unhashed and orphaned catalog cache files (`catalog.PruneNamedCatalogCaches`) during `kungfu update`.
+
 ## v0.9.0 - 2026-11-26
 
 ### Breaking changes

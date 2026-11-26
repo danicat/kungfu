@@ -292,6 +292,41 @@ func DeleteNamedCatalogCache(cacheDir, name string) error {
 	return nil
 }
 
+// PruneNamedCatalogCaches removes any .json files in <cacheDir>/catalogs/ that do not
+// match the hashed cache filename of a configured catalog in keepNames.
+// This removes both legacy unhashed cache files and caches for removed catalogs.
+func PruneNamedCatalogCaches(cacheDir string, keepNames []string) error {
+	dir, err := GetCatalogsCacheDir(cacheDir)
+	if err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	keep := make(map[string]struct{}, len(keepNames))
+	for _, name := range keepNames {
+		if trimmed := strings.TrimSpace(name); trimmed != "" {
+			keep[SafeCatalogFileName(trimmed)] = struct{}{}
+		}
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		if _, ok := keep[entry.Name()]; ok {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 // LoadAllNamedCatalogCaches loads all cached catalogs from <cacheDir>/catalogs/.
 func LoadAllNamedCatalogCaches(cacheDir string) (map[string]*CachedCatalog, error) {
 	dir, err := GetCatalogsCacheDir(cacheDir)

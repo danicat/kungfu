@@ -28,7 +28,7 @@ var Version = ""
 
 // DefaultVersion is the fallback release version string when neither -ldflags
 // nor tagged module build info is available.
-var DefaultVersion = "0.9.0"
+var DefaultVersion = "0.9.1"
 
 var pseudoVersionRe = regexp.MustCompile(`(?:^v0\.0\.0-|-0\.|\.)\d{14}-([0-9a-f]{12})(\+dirty)?$`)
 
