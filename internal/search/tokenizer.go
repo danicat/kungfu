@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,13 +15,12 @@
 package search
 
 import (
-	"sync"
 	"unicode"
 	"unicode/utf8"
 )
 
-// DefaultStopwords contains standard common English stopwords.
-var DefaultStopwords = map[string]struct{}{
+// defaultStopwords contains immutable standard English stopwords.
+var defaultStopwords = map[string]struct{}{
 	"a": {}, "about": {}, "above": {}, "after": {}, "again": {}, "against": {}, "all": {},
 	"am": {}, "an": {}, "and": {}, "any": {}, "are": {}, "as": {}, "at": {},
 	"be": {}, "because": {}, "been": {}, "before": {}, "being": {}, "below": {}, "between": {},
@@ -49,17 +48,7 @@ var DefaultStopwords = map[string]struct{}{
 	"yours": {}, "yourself": {}, "yourselves": {},
 }
 
-var (
-	byteBufPool = sync.Pool{
-		New: func() any {
-			b := make([]byte, 0, 256)
-			return &b
-		},
-	}
-)
-
-// Tokenizer provides high-throughput ASCII fast-path and UTF-8 tokenization,
-// stopword elimination, and algorithmic Porter stemming.
+// Tokenizer provides ASCII fast-path and UTF-8 tokenization, stopword elimination, and Porter stemming.
 type Tokenizer struct {
 	stopwords map[string]struct{}
 }
@@ -67,7 +56,7 @@ type Tokenizer struct {
 // NewTokenizer creates a Tokenizer initialized with standard English stopwords.
 func NewTokenizer() *Tokenizer {
 	return &Tokenizer{
-		stopwords: DefaultStopwords,
+		stopwords: defaultStopwords,
 	}
 }
 
@@ -104,27 +93,19 @@ func (t *Tokenizer) TokenizeRaw(text string) []string {
 	return t.scan(text)
 }
 
-// scan performs high-throughput ASCII fast-path tokenization with UTF-8 fallback.
 func (t *Tokenizer) scan(text string) []string {
 	if len(text) == 0 {
 		return nil
 	}
 
 	tokens := make([]string, 0, 16)
+	buf := make([]byte, 0, 64)
 	n := len(text)
 	i := 0
-
-	bufPtr := byteBufPool.Get().(*[]byte)
-	buf := (*bufPtr)[:0]
-	defer func() {
-		*bufPtr = buf[:0]
-		byteBufPool.Put(bufPtr)
-	}()
 
 	for i < n {
 		b := text[i]
 
-		// Fast-path: ASCII alphanumeric
 		if b < 0x80 {
 			if (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') {
 				buf = append(buf, b)
@@ -147,7 +128,6 @@ func (t *Tokenizer) scan(text string) []string {
 				continue
 			}
 
-			// Boundary hit on ASCII non-alphanumeric
 			if len(buf) > 0 {
 				tokens = append(tokens, string(buf))
 				buf = buf[:0]
@@ -156,18 +136,15 @@ func (t *Tokenizer) scan(text string) []string {
 			continue
 		}
 
-		// Fallback: UTF-8 multibyte rune decoding
 		r, size := utf8.DecodeRuneInString(text[i:])
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			low := unicode.ToLower(r)
 			var rBuf [utf8.UTFMax]byte
 			rlen := utf8.EncodeRune(rBuf[:], low)
 			buf = append(buf, rBuf[:rlen]...)
-		} else {
-			if len(buf) > 0 {
-				tokens = append(tokens, string(buf))
-				buf = buf[:0]
-			}
+		} else if len(buf) > 0 {
+			tokens = append(tokens, string(buf))
+			buf = buf[:0]
 		}
 		i += size
 	}
@@ -186,7 +163,7 @@ func (t *Tokenizer) Stem(word string) string {
 	}
 
 	r := []rune(word)
-	stemmer := &porterStemmer{b: r, k: len(r) - 1, k0: 0}
+	stemmer := porterStemmer{b: r, k: len(r) - 1, k0: 0}
 	return string(stemmer.stem())
 }
 
@@ -279,15 +256,15 @@ func (s *porterStemmer) cvc(i int) bool {
 	return true
 }
 
+// ends checks an ASCII Porter suffix with zero heap allocations.
 func (s *porterStemmer) ends(suffix string) bool {
-	sufRunes := []rune(suffix)
-	l := len(sufRunes)
+	l := len(suffix)
 	o := s.k - l + 1
 	if o < s.k0 {
 		return false
 	}
 	for i := range l {
-		if s.b[o+i] != sufRunes[i] {
+		if s.b[o+i] != rune(suffix[i]) {
 			return false
 		}
 	}
@@ -295,15 +272,15 @@ func (s *porterStemmer) ends(suffix string) bool {
 	return true
 }
 
+// setto writes an ASCII Porter replacement suffix with zero heap allocations.
 func (s *porterStemmer) setto(suffix string) {
-	sufRunes := []rune(suffix)
-	l := len(sufRunes)
+	l := len(suffix)
 	o := s.j + 1
 	for i := range l {
 		if o+i < len(s.b) {
-			s.b[o+i] = sufRunes[i]
+			s.b[o+i] = rune(suffix[i])
 		} else {
-			s.b = append(s.b, sufRunes[i])
+			s.b = append(s.b, rune(suffix[i]))
 		}
 	}
 	s.k = s.j + l

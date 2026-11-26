@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,58 +17,64 @@ package catalog
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
+const maxFrontmatterYAMLBytes = 64 * 1024 // 64 KiB
+
 // ExtractFrontmatter extracts the raw YAML frontmatter and body from markdown content.
+// Requires an opening "---" followed immediately by a newline and a column-0 closing "---" or "...".
 func ExtractFrontmatter(data []byte) ([]byte, []byte, bool, error) {
 	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
 	trimmed := bytes.TrimLeft(data, " \t\r\n")
 	if !bytes.HasPrefix(trimmed, []byte("---")) {
 		return nil, data, false, nil
 	}
-	rest := bytes.TrimPrefix(trimmed, []byte("---"))
-	delims := [][]byte{
-		[]byte("\n---\n"),
-		[]byte("\r\n---\r\n"),
-		[]byte("\n---\r\n"),
-		[]byte("\r\n---\n"),
-		[]byte("\n...\n"),
-		[]byte("\r\n...\r\n"),
+
+	before, after, ok := bytes.Cut(trimmed, []byte{'\n'})
+	if !ok {
+		return nil, data, false, nil
 	}
-	bestIdx := -1
-	delimLen := 0
-	for _, delim := range delims {
-		idx := bytes.Index(rest, delim)
-		if idx != -1 && (bestIdx == -1 || idx < bestIdx) {
-			bestIdx = idx
-			delimLen = len(delim)
+	openLine := bytes.TrimRight(before, " \t\r")
+	if !bytes.Equal(openLine, []byte("---")) {
+		return nil, data, false, nil
+	}
+
+	rest := after
+	offset := 0
+	for offset <= len(rest) {
+		lineEnd := bytes.IndexByte(rest[offset:], '\n')
+		var line []byte
+		var nextOffset int
+		if lineEnd == -1 {
+			line = rest[offset:]
+			nextOffset = len(rest)
+		} else {
+			line = rest[offset : offset+lineEnd]
+			nextOffset = offset + lineEnd + 1
 		}
-	}
-	if bestIdx == -1 {
-		if bytes.HasSuffix(rest, []byte("\n---")) {
-			bestIdx = len(rest) - len([]byte("\n---"))
-			delimLen = len([]byte("\n---"))
-		} else if bytes.HasSuffix(rest, []byte("\r\n---")) {
-			bestIdx = len(rest) - len([]byte("\r\n---"))
-			delimLen = len([]byte("\r\n---"))
-		} else if bytes.HasSuffix(rest, []byte("\n...")) {
-			bestIdx = len(rest) - len([]byte("\n..."))
-			delimLen = len([]byte("\n..."))
-		} else if bytes.HasSuffix(rest, []byte("\r\n...")) {
-			bestIdx = len(rest) - len([]byte("\r\n..."))
-			delimLen = len([]byte("\r\n..."))
+
+		cleanLine := bytes.TrimRight(line, " \t\r")
+		if bytes.Equal(cleanLine, []byte("---")) || bytes.Equal(cleanLine, []byte("...")) {
+			rawYAML := rest[:offset]
+			if len(rawYAML) > maxFrontmatterYAMLBytes {
+				return nil, data, false, fmt.Errorf("%w: frontmatter exceeds %d bytes", ErrInvalidFrontmatter, maxFrontmatterYAMLBytes)
+			}
+			body := rest[nextOffset:]
+			return rawYAML, body, true, nil
 		}
+
+		if lineEnd == -1 {
+			break
+		}
+		offset = nextOffset
 	}
-	if bestIdx == -1 {
-		return nil, data, false, fmt.Errorf("%w: unclosed frontmatter delimiter", ErrInvalidFrontmatter)
-	}
-	rawYAML := rest[:bestIdx]
-	body := rest[bestIdx+delimLen:]
-	return rawYAML, body, true, nil
+
+	return nil, data, false, fmt.Errorf("%w: unclosed frontmatter delimiter", ErrInvalidFrontmatter)
 }
 
 // ComputeDigest returns the standard sha256:hex digest for byte content.
@@ -77,29 +83,81 @@ func ComputeDigest(data []byte) string {
 	return fmt.Sprintf("sha256:%x", sum)
 }
 
-// NormalizeDigest normalizes a digest string to the canonical sha256:<hex> format.
+// NormalizeDigest normalizes a sha256 digest string to canonical lowercase sha256:<hex>.
+// Unsupported algorithm prefixes (e.g. "sha512:...") are preserved unchanged so VerifyDigest rejects them.
 func NormalizeDigest(d string) string {
 	clean := strings.TrimSpace(d)
 	if clean == "" {
 		return ""
 	}
-	if !strings.HasPrefix(clean, "sha256:") {
-		return "sha256:" + clean
+	if algo, hexPart, hasColon := strings.Cut(clean, ":"); hasColon {
+		if strings.EqualFold(algo, "sha256") {
+			return "sha256:" + strings.ToLower(strings.TrimSpace(hexPart))
+		}
+		return strings.ToLower(algo) + ":" + strings.ToLower(strings.TrimSpace(hexPart))
 	}
-	return clean
+	return "sha256:" + strings.ToLower(clean)
 }
 
-// VerifyDigest verifies whether the content matches the expected sha256 digest.
+// VerifyDigest verifies whether data matches the expected sha256 digest when expected is non-empty.
+// Rejects unsupported digest algorithms explicitly.
 func VerifyDigest(data []byte, expected string) error {
-	if expected == "" {
+	cleanExpected := NormalizeDigest(expected)
+	if cleanExpected == "" {
 		return nil
 	}
+	if !strings.HasPrefix(cleanExpected, "sha256:") {
+		return fmt.Errorf("%w: unsupported digest algorithm in %q (only sha256 is supported)", ErrDigestMismatch, expected)
+	}
 	actual := ComputeDigest(data)
-	cleanExpected := NormalizeDigest(expected)
 	if actual != cleanExpected {
 		return fmt.Errorf("%w: expected %s, computed %s", ErrDigestMismatch, cleanExpected, actual)
 	}
 	return nil
+}
+
+// VerifyRequiredDigest verifies data against expected and fails closed with ErrMissingDigest if expected is empty.
+func VerifyRequiredDigest(data []byte, expected string) error {
+	if strings.TrimSpace(expected) == "" {
+		return fmt.Errorf("%w: archive requires a sha256 digest", ErrMissingDigest)
+	}
+	return VerifyDigest(data, expected)
+}
+
+// ApplyFrontmatter populates fields on item from fm.
+// When overwrite is false, only empty fields are filled.
+func ApplyFrontmatter(item *Item, fm *Frontmatter, overwrite bool) {
+	if item == nil || fm == nil {
+		return
+	}
+	if fm.Description != "" && (overwrite || item.Description == "") {
+		item.Description = fm.Description
+	}
+	if fm.License != "" && (overwrite || item.License == "") {
+		item.License = fm.License
+	}
+	if fm.AllowedTools != "" && (overwrite || item.AllowedTools == "") {
+		item.AllowedTools = fm.AllowedTools
+	}
+	if fm.Metadata != nil {
+		if item.Metadata == nil {
+			item.Metadata = make(map[string]string, len(fm.Metadata))
+		}
+		for k, v := range fm.Metadata {
+			if overwrite || item.Metadata[k] == "" {
+				item.Metadata[k] = v
+			}
+		}
+		if v := fm.Metadata["version"]; v != "" && (overwrite || item.Version == "") {
+			item.Version = v
+		}
+		if v := fm.Metadata["author"]; v != "" && (overwrite || item.Author == "") {
+			item.Author = v
+		}
+		if v := fm.Metadata["tags"]; v != "" && (overwrite || len(item.Tags) == 0) {
+			item.Tags = ParseTags(v)
+		}
+	}
 }
 
 // EnrichItemFromSkillMD populates missing metadata fields on item from a SKILL.md document's frontmatter.
@@ -111,31 +169,7 @@ func EnrichItemFromSkillMD(item *Item, data []byte) {
 	if err != nil || fm == nil {
 		return
 	}
-	if item.License == "" && fm.License != "" {
-		item.License = fm.License
-	}
-	if item.AllowedTools == "" && fm.AllowedTools != "" {
-		item.AllowedTools = fm.AllowedTools
-	}
-	if fm.Metadata != nil {
-		if item.Metadata == nil {
-			item.Metadata = make(map[string]string)
-		}
-		for k, v := range fm.Metadata {
-			if item.Metadata[k] == "" {
-				item.Metadata[k] = v
-			}
-		}
-		if item.Version == "" && fm.Metadata["version"] != "" {
-			item.Version = fm.Metadata["version"]
-		}
-		if item.Author == "" && fm.Metadata["author"] != "" {
-			item.Author = fm.Metadata["author"]
-		}
-		if len(item.Tags) == 0 && fm.Metadata["tags"] != "" {
-			item.Tags = ParseTags(fm.Metadata["tags"])
-		}
-	}
+	ApplyFrontmatter(item, fm, false)
 }
 
 type rawFrontmatter struct {
@@ -148,7 +182,32 @@ type rawFrontmatter struct {
 	Metadata      map[string]any `yaml:"metadata"`
 }
 
+func stringifyYAMLValue(v any) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case []any:
+		parts := make([]string, 0, len(val))
+		for _, elem := range val {
+			if elem != nil {
+				parts = append(parts, stringifyYAMLValue(elem))
+			}
+		}
+		return strings.Join(parts, ", ")
+	case map[string]any, map[any]any:
+		if b, err := json.Marshal(val); err == nil {
+			return string(b)
+		}
+		return fmt.Sprint(val)
+	default:
+		return fmt.Sprint(val)
+	}
+}
+
 func parseYAMLFrontmatter(data []byte) (*Frontmatter, error) {
+	if len(data) > maxFrontmatterYAMLBytes {
+		return nil, fmt.Errorf("frontmatter exceeds %d bytes", maxFrontmatterYAMLBytes)
+	}
 	var raw rawFrontmatter
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, err
@@ -162,44 +221,18 @@ func parseYAMLFrontmatter(data []byte) (*Frontmatter, error) {
 		Metadata:      make(map[string]string),
 	}
 
-	switch at := raw.AllowedTools.(type) {
-	case string:
-		fm.AllowedTools = strings.TrimSpace(at)
-	case []any:
-		var tools []string
-		for _, t := range at {
-			if t != nil {
-				tools = append(tools, strings.TrimSpace(fmt.Sprint(t)))
-			}
-		}
-		fm.AllowedTools = strings.Join(tools, ", ")
-	default:
-		if raw.AllowedTools != nil {
-			fm.AllowedTools = strings.TrimSpace(fmt.Sprint(raw.AllowedTools))
-		}
+	if raw.AllowedTools != nil {
+		fm.AllowedTools = strings.TrimSpace(stringifyYAMLValue(raw.AllowedTools))
 	}
 
 	for k, v := range raw.Metadata {
 		if v == nil {
 			continue
 		}
-		switch val := v.(type) {
-		case string:
-			fm.Metadata[k] = val
-		case []any:
-			var strParts []string
-			for _, item := range val {
-				if item != nil {
-					strParts = append(strParts, fmt.Sprint(item))
-				}
-			}
-			fm.Metadata[k] = strings.Join(strParts, ", ")
-		default:
-			fm.Metadata[k] = fmt.Sprint(val)
-		}
+		fm.Metadata[k] = stringifyYAMLValue(v)
 	}
 	if raw.Version != nil && fm.Metadata["version"] == "" {
-		if v := strings.TrimSpace(fmt.Sprint(raw.Version)); v != "" {
+		if v := strings.TrimSpace(stringifyYAMLValue(raw.Version)); v != "" {
 			fm.Metadata["version"] = v
 		}
 	}

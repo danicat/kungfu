@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -50,6 +51,8 @@ func createTestTarGz(t *testing.T, skillMDContent string) []byte {
 }
 
 func TestRFC3986_RelativeURLResolution(t *testing.T) {
+	t.Parallel()
+
 	manifestJSON := `{
 		"$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
 		"skills": [
@@ -95,7 +98,9 @@ func TestRFC3986_RelativeURLResolution(t *testing.T) {
 	}
 
 	endpoint := "https://example.com/.well-known/agent-skills/index.json"
-	catalog.ResolveManifestURLs(&m, endpoint)
+	if err := catalog.ResolveManifestURLs(&m, endpoint, false); err != nil {
+		t.Fatalf("ResolveManifestURLs failed: %v", err)
+	}
 
 	expectedURLs := map[string]string{
 		"relative-skill": "https://example.com/.well-known/agent-skills/code-review/SKILL.md",
@@ -116,6 +121,8 @@ func TestRFC3986_RelativeURLResolution(t *testing.T) {
 }
 
 func TestCatalog_LoadContent_Archive(t *testing.T) {
+	t.Parallel()
+
 	skillMD := "---\nname: archiveskill\ndescription: test\n---\n# Archive Loaded"
 	tarData := createTestTarGz(t, skillMD)
 	digest := catalog.ComputeDigest(tarData)
@@ -128,13 +135,16 @@ func TestCatalog_LoadContent_Archive(t *testing.T) {
 	defer server.Close()
 
 	cat, err := catalog.NewCatalog(
-		catalog.WithRemoteDisabled(),
+		catalog.WithRemoteSync(false),
+		catalog.WithLocalDiscovery(false),
+		catalog.WithCacheDir(t.TempDir()),
 		catalog.WithHTTPClient(server.Client()),
 	)
 	if err != nil {
 		t.Fatalf("NewCatalog failed: %v", err)
 	}
 
+	// 1. Valid archive with matching digest succeeds.
 	item := &catalog.Item{
 		Name:   "archiveskill",
 		Type:   catalog.ItemTypeArchive,
@@ -146,8 +156,17 @@ func TestCatalog_LoadContent_Archive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadContent archive failed: %v", err)
 	}
-
 	if !strings.Contains(content, "# Archive Loaded") {
 		t.Errorf("expected extracted content, got: %s", content)
+	}
+
+	// 2. Archive with missing digest must fail closed with ErrMissingDigest.
+	noDigestItem := &catalog.Item{
+		Name: "archiveskill-nodigest",
+		Type: catalog.ItemTypeArchive,
+		URL:  server.URL + "/archiveskill.tar.gz",
+	}
+	if _, err := cat.LoadContent(noDigestItem); !errors.Is(err, catalog.ErrMissingDigest) {
+		t.Errorf("expected ErrMissingDigest for archive without digest, got: %v", err)
 	}
 }

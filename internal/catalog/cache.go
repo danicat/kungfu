@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,51 +15,182 @@
 package catalog
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
 
-// DefaultCatalogTTL is the default cache duration for the catalog manifest (24 hours).
+// DefaultCatalogTTL is the default cache duration for catalog manifests (24 hours).
 const DefaultCatalogTTL = 24 * time.Hour
 
-// CachedCatalog represents the cached index.json discovery envelope.
+const maxCachedCatalogBytes = 10 << 20 // 10 MiB
+
+// CachedCatalog represents a cached catalog discovery envelope.
 type CachedCatalog struct {
+	Name      string    `json:"name,omitempty"`
 	URL       string    `json:"url,omitempty"`
 	ETag      string    `json:"etag,omitempty"`
 	FetchedAt time.Time `json:"fetched_at"`
 	Manifest  Manifest  `json:"manifest"`
 }
 
-// DefaultCacheDir returns ~/.cache/kungfu or KUNGFU_CACHE_DIR if set.
-func DefaultCacheDir() string {
-	if envDir := os.Getenv("KUNGFU_CACHE_DIR"); envDir != "" {
-		return envDir
+// ResolveCacheDir resolves the root cache directory.
+// Precedence: override -> KUNGFU_CACHE_DIR -> XDG_CACHE_HOME/kungfu -> OS default (~/.cache/kungfu on Unix, %LOCALAPPDATA%/kungfu on Windows).
+func ResolveCacheDir(override string) (string, error) {
+	if dir := strings.TrimSpace(override); dir != "" {
+		return dir, nil
+	}
+	if envDir := strings.TrimSpace(os.Getenv("KUNGFU_CACHE_DIR")); envDir != "" {
+		return envDir, nil
+	}
+	if xdg := strings.TrimSpace(os.Getenv("XDG_CACHE_HOME")); xdg != "" {
+		return filepath.Join(xdg, "kungfu"), nil
+	}
+	if runtime.GOOS == "windows" {
+		dir, err := os.UserCacheDir()
+		if err != nil || dir == "" {
+			return "", fmt.Errorf("catalog: unable to resolve user cache directory: %w", err)
+		}
+		return filepath.Join(dir, "kungfu"), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return filepath.Join(os.TempDir(), "kungfu-cache")
+		return "", fmt.Errorf("catalog: unable to resolve user home directory: %w", err)
 	}
-	return filepath.Join(home, ".cache", "kungfu")
+	return filepath.Join(home, ".cache", "kungfu"), nil
 }
 
-// GetCatalogCachePath returns ~/.cache/kungfu/index.json.
-func GetCatalogCachePath() string {
-	return filepath.Join(DefaultCacheDir(), "index.json")
+// GetCatalogsCacheDir returns <cacheDir>/catalogs (resolving default cache dir when cacheDir is empty).
+func GetCatalogsCacheDir(cacheDir string) (string, error) {
+	root, err := ResolveCacheDir(cacheDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "catalogs"), nil
 }
 
-// LoadCachedCatalog reads and parses the cached catalog from cachePath.
+// SafeCatalogFileName converts a catalog name into a collision-free, filesystem-safe JSON filename.
+func SafeCatalogFileName(name string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(name))
+	if trimmed == "" {
+		trimmed = "default"
+	}
+
+	var b strings.Builder
+	for _, r := range trimmed {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	slug := strings.Trim(b.String(), "-")
+	if slug == "" {
+		slug = "catalog"
+	}
+	if len(slug) > 48 {
+		slug = slug[:48]
+	}
+
+	sum := sha256.Sum256([]byte(trimmed))
+	return fmt.Sprintf("%s-%s.json", slug, hex.EncodeToString(sum[:4]))
+}
+
+// SkillCacheKey returns a collision-free, filesystem-safe cache directory name for a skill.
+// When source is non-empty, appends an 8-hex hash of source so identically named skills from
+// different catalogs do not overwrite each other.
+func SkillCacheKey(skillName, source string) (string, error) {
+	if err := ValidateSkillName(skillName); err != nil {
+		return "", err
+	}
+	cleanSrc := strings.ToLower(strings.TrimSpace(source))
+	if cleanSrc == "" || cleanSrc == "default" || cleanSrc == "local" {
+		return skillName, nil
+	}
+	sum := sha256.Sum256([]byte(cleanSrc))
+	return fmt.Sprintf("%s-%s", skillName, hex.EncodeToString(sum[:4])), nil
+}
+
+// SkillCacheDir returns the contained directory path <cacheRoot>/skills/<key>.
+func SkillCacheDir(cacheRoot, skillName, source string) (string, error) {
+	if cacheRoot == "" {
+		return "", fmt.Errorf("cacheRoot is empty")
+	}
+	key, err := SkillCacheKey(skillName, source)
+	if err != nil {
+		return "", err
+	}
+	skillsRoot := filepath.Join(cacheRoot, "skills")
+	dir := filepath.Join(skillsRoot, key)
+	if !IsPathContained(skillsRoot, dir) {
+		return "", fmt.Errorf("%w: %q escapes cache root", ErrInvalidName, skillName)
+	}
+	return dir, nil
+}
+
+// FindCachedSkillDir locates a cached skill directory for offline/local reads.
+// Checks the exact catalog-scoped dir first, then the unscoped dir, then any <skillName>-* dir.
+func FindCachedSkillDir(cacheRoot, skillName, source string) (string, error) {
+	if err := ValidateSkillName(skillName); err != nil {
+		return "", err
+	}
+	if cacheRoot == "" {
+		return "", os.ErrNotExist
+	}
+	skillsRoot := filepath.Join(cacheRoot, "skills")
+
+	var candidates []string
+	if source != "" {
+		if dir, err := SkillCacheDir(cacheRoot, skillName, source); err == nil {
+			candidates = append(candidates, dir)
+		}
+	}
+	if dir, err := SkillCacheDir(cacheRoot, skillName, ""); err == nil {
+		candidates = append(candidates, dir)
+	}
+
+	for _, c := range candidates {
+		if fi, err := os.Stat(filepath.Join(c, "SKILL.md")); err == nil && !fi.IsDir() {
+			return c, nil
+		}
+	}
+
+	entries, err := os.ReadDir(skillsRoot)
+	if err != nil {
+		return "", err
+	}
+	prefix := skillName + "-"
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), prefix) {
+			continue
+		}
+		dir := filepath.Join(skillsRoot, e.Name())
+		if !IsPathContained(skillsRoot, dir) {
+			continue
+		}
+		if fi, err := os.Stat(filepath.Join(dir, "SKILL.md")); err == nil && !fi.IsDir() {
+			return dir, nil
+		}
+	}
+	return "", os.ErrNotExist
+}
+
+// LoadCachedCatalog reads and parses a cached catalog JSON file with bounded reads.
 func LoadCachedCatalog(cachePath string) (*CachedCatalog, error) {
-	if cachePath == "" {
-		cachePath = GetCatalogCachePath()
-	}
-
-	data, err := os.ReadFile(cachePath)
+	f, err := os.Open(cachePath)
 	if err != nil {
 		return nil, err
+	}
+	data, readErr := ReadBounded(f, maxCachedCatalogBytes)
+	_ = f.Close()
+	if readErr != nil {
+		return nil, fmt.Errorf("catalog: reading cache %s: %w", cachePath, readErr)
 	}
 
 	var cached CachedCatalog
@@ -70,18 +201,15 @@ func LoadCachedCatalog(cachePath string) (*CachedCatalog, error) {
 	return &cached, nil
 }
 
-// SaveCachedCatalog writes the catalog manifest and optional ETag to cachePath.
-func SaveCachedCatalog(cachePath string, remoteURL string, manifest Manifest, etag string) error {
-	if cachePath == "" {
-		cachePath = GetCatalogCachePath()
-	}
-
+// SaveCachedCatalog atomically writes the catalog manifest and ETag to cachePath with 0700/0600 modes and fsync.
+func SaveCachedCatalog(cachePath, name, remoteURL string, manifest Manifest, etag string) error {
 	dir := filepath.Dir(cachePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("catalog: creating cache directory %s: %w", dir, err)
 	}
 
 	cached := CachedCatalog{
+		Name:      name,
 		URL:       remoteURL,
 		ETag:      etag,
 		FetchedAt: time.Now().UTC(),
@@ -93,95 +221,83 @@ func SaveCachedCatalog(cachePath string, remoteURL string, manifest Manifest, et
 		return fmt.Errorf("catalog: encoding cached catalog: %w", err)
 	}
 
-	tmpFile := cachePath + fmt.Sprintf(".tmp-%d", time.Now().UnixNano())
-	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
-		return fmt.Errorf("catalog: writing temp cache %s: %w", tmpFile, err)
+	tmpFile, err := os.CreateTemp(dir, ".index-*.tmp")
+	if err != nil {
+		return fmt.Errorf("catalog: creating temp cache file in %s: %w", dir, err)
+	}
+	tmpPath := tmpFile.Name()
+	cleanup := func() {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
 	}
 
-	if err := os.Rename(tmpFile, cachePath); err != nil {
-		_ = os.Remove(tmpFile)
-		return fmt.Errorf("catalog: renaming cache file %s -> %s: %w", tmpFile, cachePath, err)
+	if _, err := tmpFile.Write(data); err != nil {
+		cleanup()
+		return fmt.Errorf("catalog: writing temp cache %s: %w", tmpPath, err)
+	}
+	if err := tmpFile.Chmod(0600); err != nil {
+		cleanup()
+		return fmt.Errorf("catalog: setting cache permissions %s: %w", tmpPath, err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		cleanup()
+		return fmt.Errorf("catalog: syncing temp cache %s: %w", tmpPath, err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("catalog: closing temp cache %s: %w", tmpPath, err)
+	}
+
+	if err := os.Rename(tmpPath, cachePath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("catalog: renaming cache file %s -> %s: %w", tmpPath, cachePath, err)
 	}
 
 	return nil
 }
 
-// GetCatalogsCacheDir returns ~/.cache/kungfu/catalogs.
-func GetCatalogsCacheDir() string {
-	return GetCatalogsCacheDirIn("")
-}
-
-// GetCatalogsCacheDirIn returns <cacheDir>/catalogs (or DefaultCacheDir()/catalogs if cacheDir is empty).
-func GetCatalogsCacheDirIn(cacheDir string) string {
-	if cacheDir != "" {
-		return filepath.Join(cacheDir, "catalogs")
+// SaveNamedCatalogCache saves a catalog manifest to <cacheDir>/catalogs/<safe-name>.json.
+func SaveNamedCatalogCache(cacheDir, name, sourceURL string, manifest Manifest, etag string) error {
+	dir, err := GetCatalogsCacheDir(cacheDir)
+	if err != nil {
+		return err
 	}
-	return filepath.Join(DefaultCacheDir(), "catalogs")
-}
-
-// SafeCatalogFileName converts a catalog name/source into a safe filename.
-func SafeCatalogFileName(name string) string {
-	clean := strings.ToLower(name)
-	clean = strings.ReplaceAll(clean, "https://", "")
-	clean = strings.ReplaceAll(clean, "http://", "")
-	clean = strings.ReplaceAll(clean, "/", "-")
-	clean = strings.ReplaceAll(clean, ":", "-")
-	clean = strings.ReplaceAll(clean, "\\", "-")
-	clean = strings.Trim(clean, "-")
-	if clean == "" {
-		clean = "default"
-	}
-	return clean + ".json"
-}
-
-// SaveNamedCatalogCache saves a named catalog manifest to ~/.cache/kungfu/catalogs/<safe-name>.json.
-func SaveNamedCatalogCache(name string, sourceURL string, manifest Manifest, etag string) error {
-	return SaveNamedCatalogCacheIn("", name, sourceURL, manifest, etag)
-}
-
-// SaveNamedCatalogCacheIn saves a named catalog manifest to <cacheDir>/catalogs/<safe-name>.json.
-func SaveNamedCatalogCacheIn(cacheDir, name string, sourceURL string, manifest Manifest, etag string) error {
-	dir := GetCatalogsCacheDirIn(cacheDir)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("catalog: creating catalogs cache dir: %w", err)
 	}
 	cachePath := filepath.Join(dir, SafeCatalogFileName(name))
-	return SaveCachedCatalog(cachePath, sourceURL, manifest, etag)
+	return SaveCachedCatalog(cachePath, name, sourceURL, manifest, etag)
 }
 
-// LoadNamedCatalogCache loads a named catalog manifest from cache.
-func LoadNamedCatalogCache(name string) (*CachedCatalog, error) {
-	return LoadNamedCatalogCacheIn("", name)
-}
-
-// LoadNamedCatalogCacheIn loads a named catalog manifest from <cacheDir>/catalogs/<safe-name>.json.
-func LoadNamedCatalogCacheIn(cacheDir, name string) (*CachedCatalog, error) {
-	cachePath := filepath.Join(GetCatalogsCacheDirIn(cacheDir), SafeCatalogFileName(name))
+// LoadNamedCatalogCache loads a named catalog manifest from <cacheDir>/catalogs/<safe-name>.json.
+func LoadNamedCatalogCache(cacheDir, name string) (*CachedCatalog, error) {
+	dir, err := GetCatalogsCacheDir(cacheDir)
+	if err != nil {
+		return nil, err
+	}
+	cachePath := filepath.Join(dir, SafeCatalogFileName(name))
 	return LoadCachedCatalog(cachePath)
 }
 
-// DeleteNamedCatalogCache removes a named catalog cache file.
-func DeleteNamedCatalogCache(name string) error {
-	return DeleteNamedCatalogCacheIn("", name)
-}
-
-// DeleteNamedCatalogCacheIn removes a named catalog cache file in cacheDir.
-func DeleteNamedCatalogCacheIn(cacheDir, name string) error {
-	cachePath := filepath.Join(GetCatalogsCacheDirIn(cacheDir), SafeCatalogFileName(name))
+// DeleteNamedCatalogCache removes a named catalog cache file in cacheDir.
+func DeleteNamedCatalogCache(cacheDir, name string) error {
+	dir, err := GetCatalogsCacheDir(cacheDir)
+	if err != nil {
+		return err
+	}
+	cachePath := filepath.Join(dir, SafeCatalogFileName(name))
 	if err := os.Remove(cachePath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil
 }
 
-// LoadAllNamedCatalogCaches loads all cached external catalogs from ~/.cache/kungfu/catalogs/.
-func LoadAllNamedCatalogCaches() (map[string]*CachedCatalog, error) {
-	return LoadAllNamedCatalogCachesIn("")
-}
-
-// LoadAllNamedCatalogCachesIn loads all cached external catalogs from <cacheDir>/catalogs/.
-func LoadAllNamedCatalogCachesIn(cacheDir string) (map[string]*CachedCatalog, error) {
-	dir := GetCatalogsCacheDirIn(cacheDir)
+// LoadAllNamedCatalogCaches loads all cached catalogs from <cacheDir>/catalogs/.
+func LoadAllNamedCatalogCaches(cacheDir string) (map[string]*CachedCatalog, error) {
+	dir, err := GetCatalogsCacheDir(cacheDir)
+	if err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -197,10 +313,14 @@ func LoadAllNamedCatalogCachesIn(cacheDir string) (map[string]*CachedCatalog, er
 		}
 		path := filepath.Join(dir, entry.Name())
 		cached, err := LoadCachedCatalog(path)
-		if err == nil && cached != nil {
-			catName := strings.TrimSuffix(entry.Name(), ".json")
-			results[catName] = cached
+		if err != nil || cached == nil {
+			continue
 		}
+		catName := strings.TrimSpace(cached.Name)
+		if catName == "" {
+			catName = strings.TrimSuffix(entry.Name(), ".json")
+		}
+		results[catName] = cached
 	}
 	return results, nil
 }

@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"sort"
@@ -25,18 +24,21 @@ import (
 func (a *App) RunList(args []string) int {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
-	var jsonFlag, rawFlag bool
+	var jsonFlag bool
 
 	fs.BoolVar(&jsonFlag, "json", false, "Output in JSON format")
-	fs.BoolVar(&rawFlag, "raw", false, "Output in raw format")
 
-	_, err := parseFlagsWithArgs(fs, args)
+	posArgs, err := parseFlagsWithArgs(fs, args)
 	if err != nil {
 		return ExitUsage
 	}
+	if len(posArgs) > 0 {
+		_, _ = fmt.Fprintf(a.Stderr, "error: list does not accept positional arguments (got %q)\n", posArgs[0])
+		return ExitUsage
+	}
 
-	mode := a.resolveMode(jsonFlag, rawFlag)
-
+	mode := a.resolveMode(jsonFlag)
+	a.warnStaleCatalogs()
 	items := a.Store.All()
 
 	if len(items) == 0 {
@@ -44,19 +46,20 @@ func (a *App) RunList(args []string) int {
 			_, _ = fmt.Fprintln(a.Stdout, "[]")
 			return ExitSuccess
 		}
-		if mode == OutputModeRaw {
-			return ExitSuccess
-		}
-		_, _ = fmt.Fprintln(a.Stderr, "error: no skills found in catalog")
-		return ExitNotFound
+		_, _ = fmt.Fprintln(a.Stdout, "No skills available.")
+		return ExitSuccess
 	}
 
 	sort.Slice(items, func(i, j int) bool {
-		return items[i].Name < items[j].Name
+		if items[i].Name != items[j].Name {
+			return items[i].Name < items[j].Name
+		}
+		return items[i].Source < items[j].Source
 	})
 
 	type SkillListing struct {
 		Name         string   `json:"name"`
+		Source       string   `json:"source,omitempty"`
 		Description  string   `json:"description"`
 		Tags         []string `json:"tags,omitempty"`
 		Version      string   `json:"version,omitempty"`
@@ -64,40 +67,44 @@ func (a *App) RunList(args []string) int {
 		AllowedTools string   `json:"allowed_tools,omitempty"`
 	}
 
-	var listings []SkillListing
-	st := a.loadState()
+	nameCounts := make(map[string]int, len(items))
+	for _, it := range items {
+		nameCounts[strings.ToLower(it.Name)]++
+	}
+
+	listings := make([]SkillListing, 0, len(items))
+	lookup := a.newSkillStatusLookup(a.loadStateReadOnly())
 	for _, it := range items {
 		listings = append(listings, SkillListing{
 			Name:         it.Name,
+			Source:       it.Source,
 			Description:  it.Description,
 			Tags:         it.Tags,
-			Version:      it.Version,
-			Status:       a.getSkillStatusWithState(&it, st),
+			Version:      itemVersion(it),
+			Status:       lookup.status(&it),
 			AllowedTools: it.AllowedTools,
 		})
 	}
 
-	switch mode {
-	case OutputModeJSON:
-		enc := json.NewEncoder(a.Stdout)
-		enc.SetIndent("", "  ")
-		_ = enc.Encode(listings)
-		return ExitSuccess
-	case OutputModeRaw:
-		for _, l := range listings {
-			tagsStr := strings.Join(l.Tags, ",")
-			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\n", l.Name, l.Status, tagsStr, sanitizeTSVField(l.Description))
-		}
-		return ExitSuccess
-	default: // OutputModeHuman
-		_, _ = fmt.Fprintf(a.Stdout, "AVAILABLE SKILLS (%d total):\n\n", len(listings))
-		_, _ = fmt.Fprintf(a.Stdout, "%-24s %-12s %s\n", "NAME", "STATUS", "DESCRIPTION")
-		_, _ = fmt.Fprintf(a.Stdout, "%-24s %-12s %s\n", "------------------------", "------------", "--------------------------------------------------")
-		for _, l := range listings {
-			statusBadge := "[" + l.Status + "]"
-			desc := truncateRunes(l.Description, 65)
-			_, _ = fmt.Fprintf(a.Stdout, "%-24s %-12s %s\n", l.Name, statusBadge, desc)
+	if mode == OutputModeJSON {
+		if err := writeJSON(a.Stdout, listings); err != nil {
+			_, _ = fmt.Fprintf(a.Stderr, "error: writing JSON output: %v\n", err)
+			return ExitGeneral
 		}
 		return ExitSuccess
 	}
+
+	_, _ = fmt.Fprintf(a.Stdout, "AVAILABLE SKILLS (%d total):\n\n", len(listings))
+	_, _ = fmt.Fprintf(a.Stdout, "%-24s %-12s %s\n", "NAME", "STATUS", "DESCRIPTION")
+	_, _ = fmt.Fprintf(a.Stdout, "%-24s %-12s %s\n", "------------------------", "------------", "--------------------------------------------------")
+	for _, l := range listings {
+		displayName := l.Name
+		if nameCounts[strings.ToLower(l.Name)] > 1 && l.Source != "" {
+			displayName = l.Name + "@" + l.Source
+		}
+		statusBadge := "[" + l.Status + "]"
+		desc := truncateRunes(singleLineDesc(l.Description), 65)
+		_, _ = fmt.Fprintf(a.Stdout, "%-24s %-12s %s\n", displayName, statusBadge, desc)
+	}
+	return ExitSuccess
 }

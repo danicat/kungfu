@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,12 +18,16 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,18 +36,36 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	// Preserve Go's build cache before isolating HOME so helper binary builds stay fast.
+	if os.Getenv("GOCACHE") == "" {
+		if userCache, err := os.UserCacheDir(); err == nil && userCache != "" {
+			_ = os.Setenv("GOCACHE", filepath.Join(userCache, "go-build"))
+		}
+	}
 	tempHome, err := os.MkdirTemp("", "kungfu-runner-test-*")
-	if err == nil {
-		_ = os.Setenv("HOME", tempHome)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create temp test home: %v\n", err)
+		os.Exit(1)
 	}
+	_ = os.Setenv("HOME", tempHome)
+	_ = os.Setenv("USERPROFILE", tempHome)
+	_ = os.Setenv("APPDATA", filepath.Join(tempHome, "AppData", "Roaming"))
+	_ = os.Setenv("LOCALAPPDATA", filepath.Join(tempHome, "AppData", "Local"))
+	_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(tempHome, ".config"))
+	_ = os.Setenv("XDG_CACHE_HOME", filepath.Join(tempHome, ".cache"))
+	_ = os.Setenv("KUNGFU_CACHE_DIR", filepath.Join(tempHome, ".cache", "kungfu"))
+
 	code := m.Run()
-	if tempHome != "" {
-		_ = os.RemoveAll(tempHome)
-	}
+	_ = os.RemoveAll(tempHome)
 	os.Exit(code)
 }
 
 func TestRunScript_ShellScript(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell script test")
+	}
+	t.Parallel()
+
 	tmpDir := t.TempDir()
 	scriptsDir := filepath.Join(tmpDir, "scripts")
 	if err := os.MkdirAll(scriptsDir, 0755); err != nil {
@@ -58,13 +80,15 @@ func TestRunScript_ShellScript(t *testing.T) {
 
 	item := catalog.Item{
 		ID:   "test-skill",
+		Name: "test-skill",
 		Path: tmpDir,
 	}
 
+	r := runner.New(t.TempDir(), nil)
 	var stdout, stderr bytes.Buffer
-	err := runner.RunScript(item, "hello.sh", []string{"World"}, &stdout, &stderr)
+	err := r.RunScriptContext(context.Background(), item, "hello.sh", []string{"World"}, nil, &stdout, &stderr)
 	if err != nil {
-		t.Fatalf("RunScript failed: %v", err)
+		t.Fatalf("RunScriptContext failed: %v (stderr: %s)", err, stderr.String())
 	}
 
 	if !strings.Contains(stdout.String(), "Hello World") {
@@ -72,7 +96,53 @@ func TestRunScript_ShellScript(t *testing.T) {
 	}
 }
 
+func TestRunScript_CompiledBinaryDirectExecution(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX executable test")
+	}
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	scriptsDir := filepath.Join(tmpDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0755); err != nil {
+		t.Fatalf("mkdir scripts: %v", err)
+	}
+
+	// Build a minimal extensionless native binary into scripts/mytool.
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("go toolchain not found in PATH")
+	}
+	srcFile := filepath.Join(t.TempDir(), "main.go")
+	_ = os.WriteFile(srcFile, []byte("package main\nimport \"os\"\nfunc main() { _, _ = os.Stdout.WriteString(\"BIN_OK \" + os.Args[1] + \"\\n\") }\n"), 0644)
+	binPath := filepath.Join(scriptsDir, "mytool")
+	buildCmd := exec.Command(goBin, "build", "-o", binPath, srcFile)
+	if out, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("go build helper binary: %v\n%s", err, out)
+	}
+
+	item := catalog.Item{ID: "bin-skill", Name: "bin-skill", Path: tmpDir}
+	r := runner.New(t.TempDir(), nil)
+	var stdout, stderr bytes.Buffer
+	if err := r.RunScriptContext(context.Background(), item, "mytool", []string{"42"}, nil, &stdout, &stderr); err != nil {
+		t.Fatalf("RunScriptContext(binary) failed: %v (stderr: %s)", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "BIN_OK 42") {
+		t.Errorf("expected BIN_OK 42, got %q", stdout.String())
+	}
+}
+
 func TestRunScript_PythonScript(t *testing.T) {
+	t.Parallel()
+
+	if _, err := exec.LookPath("uv"); err != nil {
+		if _, err := exec.LookPath("python3"); err != nil {
+			if _, err := exec.LookPath("python"); err != nil {
+				t.Skip("no python runtime (uv/python3/python) found in PATH")
+			}
+		}
+	}
+
 	tmpDir := t.TempDir()
 	scriptsDir := filepath.Join(tmpDir, "scripts")
 	if err := os.MkdirAll(scriptsDir, 0755); err != nil {
@@ -87,14 +157,15 @@ func TestRunScript_PythonScript(t *testing.T) {
 
 	item := catalog.Item{
 		ID:   "python-skill",
+		Name: "python-skill",
 		Path: tmpDir,
 	}
 
+	r := runner.New(t.TempDir(), nil)
 	var stdout, stderr bytes.Buffer
-	err := runner.RunScript(item, "test_script.py", []string{"kungfu"}, &stdout, &stderr)
+	err := r.RunScriptContext(context.Background(), item, "test_script.py", []string{"kungfu"}, nil, &stdout, &stderr)
 	if err != nil {
-		t.Skipf("Skipping Python test in environment without python: %v", err)
-		return
+		t.Fatalf("RunScriptContext(python) failed: %v (stderr: %s)", err, stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "PyArg:kungfu") {
 		t.Errorf("expected PyArg:kungfu in output, got: %q", stdout.String())
@@ -102,6 +173,11 @@ func TestRunScript_PythonScript(t *testing.T) {
 }
 
 func TestRunScript_Timeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell sleep test")
+	}
+	t.Parallel()
+
 	tmpDir := t.TempDir()
 	scriptsDir := filepath.Join(tmpDir, "scripts")
 	if err := os.MkdirAll(scriptsDir, 0755); err != nil {
@@ -116,57 +192,52 @@ func TestRunScript_Timeout(t *testing.T) {
 
 	item := catalog.Item{
 		ID:   "slow-skill",
+		Name: "slow-skill",
 		Path: tmpDir,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
+	r := runner.New(t.TempDir(), nil)
 	var stdout, stderr bytes.Buffer
-	err := runner.RunScriptContext(ctx, item, "slow.sh", nil, nil, &stdout, &stderr)
+	err := r.RunScriptContext(ctx, item, "slow.sh", nil, nil, &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")
 	}
 	if !errors.Is(err, runner.ErrExecutionTimeout) {
-		t.Logf("got error on timeout: %v", err)
+		t.Errorf("expected ErrExecutionTimeout, got: %v", err)
 	}
 }
 
-func TestRunScript_PathTraversal(t *testing.T) {
+func TestRunScript_PathTraversalAndNotFound(t *testing.T) {
+	t.Parallel()
+
 	tmpDir := t.TempDir()
 	item := catalog.Item{
 		ID:   "test-skill",
+		Name: "test-skill",
 		Path: tmpDir,
 	}
-
+	r := runner.New(t.TempDir(), nil)
 	var stdout, stderr bytes.Buffer
-	err := runner.RunScript(item, "../../bin/sh", nil, &stdout, &stderr)
-	if err == nil {
-		t.Fatal("expected error on path traversal, got nil")
-	}
-	if !errors.Is(err, runner.ErrInvalidPath) {
-		t.Errorf("expected ErrInvalidPath, got: %v", err)
-	}
-}
 
-func TestRunScript_NotFound(t *testing.T) {
-	tmpDir := t.TempDir()
-	item := catalog.Item{
-		ID:   "test-skill",
-		Path: tmpDir,
+	for _, bad := range []string{"../../bin/sh", "/bin/sh", `C:\cmd.exe`, "scripts/../../evil.sh"} {
+		err := r.RunScriptContext(context.Background(), item, bad, nil, nil, &stdout, &stderr)
+		if !errors.Is(err, runner.ErrInvalidPath) {
+			t.Errorf("RunScriptContext(%q) = %v, want ErrInvalidPath", bad, err)
+		}
 	}
 
-	var stdout, stderr bytes.Buffer
-	err := runner.RunScript(item, "nonexistent.sh", nil, &stdout, &stderr)
-	if err == nil {
-		t.Fatal("expected error for nonexistent script, got nil")
-	}
+	err := r.RunScriptContext(context.Background(), item, "nonexistent.sh", nil, nil, &stdout, &stderr)
 	if !errors.Is(err, runner.ErrScriptNotFound) {
 		t.Errorf("expected ErrScriptNotFound, got: %v", err)
 	}
 }
 
 func TestReadFile(t *testing.T) {
+	t.Parallel()
+
 	tmpDir := t.TempDir()
 	refsDir := filepath.Join(tmpDir, "references")
 	_ = os.MkdirAll(refsDir, 0755)
@@ -179,56 +250,58 @@ func TestReadFile(t *testing.T) {
 
 	item := catalog.Item{
 		ID:   "test-skill",
+		Name: "test-skill",
 		Path: tmpDir,
 	}
+	r := runner.New(t.TempDir(), nil)
+	ctx := context.Background()
 
 	// 1. Exact file path in root
-	c1, err := runner.ReadFile(item, "CANONICAL.md")
+	c1, err := r.ReadFileContext(ctx, item, "CANONICAL.md", nil)
 	if err != nil || c1 != "# Canonical Spec" {
-		t.Fatalf("ReadFile CANONICAL.md failed: %v, got: %q", err, c1)
+		t.Fatalf("ReadFileContext CANONICAL.md failed: %v, got: %q", err, c1)
 	}
 
 	// 2. Exact file path in subdirectory
-	c2, err := runner.ReadFile(item, "references/guide.md")
+	c2, err := r.ReadFileContext(ctx, item, "references/guide.md", nil)
 	if err != nil || c2 != "# Guide Content" {
-		t.Fatalf("ReadFile references/guide.md failed: %v, got: %q", err, c2)
+		t.Fatalf("ReadFileContext references/guide.md failed: %v, got: %q", err, c2)
 	}
 
 	// 3. Exact script file
-	c3, err := runner.ReadFile(item, "scripts/deploy.sh")
+	c3, err := r.ReadFileContext(ctx, item, "scripts/deploy.sh", nil)
 	if err != nil || !strings.Contains(c3, "deployed") {
-		t.Fatalf("ReadFile scripts/deploy.sh failed: %v, got: %q", err, c3)
+		t.Fatalf("ReadFileContext scripts/deploy.sh failed: %v, got: %q", err, c3)
 	}
 
 	// 4. Non-existent file
-	_, err = runner.ReadFile(item, "missing.md")
-	if err == nil || !errors.Is(err, runner.ErrFileNotFound) {
+	_, err = r.ReadFileContext(ctx, item, "missing.md", nil)
+	if !errors.Is(err, runner.ErrFileNotFound) {
 		t.Fatalf("expected ErrFileNotFound, got: %v", err)
 	}
 
 	// 5. Path traversal rejection
-	_, err = runner.ReadFile(item, "../../../../etc/passwd")
-	if err == nil || !errors.Is(err, runner.ErrInvalidPath) {
+	_, err = r.ReadFileContext(ctx, item, "../../../../etc/passwd", nil)
+	if !errors.Is(err, runner.ErrInvalidPath) {
 		t.Fatalf("expected ErrInvalidPath, got: %v", err)
 	}
 
 	// 6. Binary file rejection
 	_ = os.WriteFile(filepath.Join(tmpDir, "image.png"), []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00}, 0644)
-	_, err = runner.ReadFile(item, "image.png")
-	if err == nil || !errors.Is(err, runner.ErrBinaryFile) {
+	_, err = r.ReadFileContext(ctx, item, "image.png", nil)
+	if !errors.Is(err, runner.ErrBinaryFile) {
 		t.Fatalf("expected ErrBinaryFile, got: %v", err)
 	}
 }
 
 func TestReadFile_Remote(t *testing.T) {
+	t.Parallel()
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/writing/mock-skill/references/linkedin_playbook.md":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("# LinkedIn Playbook Remote Content"))
-		case "/writing/mock-skill/references/twitter_playbook.md":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("# Twitter Playbook Remote Content"))
 		case "/writing/mock-skill/CANONICAL.md":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("# Remote Canonical"))
@@ -243,62 +316,74 @@ func TestReadFile_Remote(t *testing.T) {
 		Name: "mock-skill-unique",
 		URL:  server.URL + "/writing/mock-skill/SKILL.md",
 	}
+	r := runner.New(t.TempDir(), server.Client())
+	ctx := context.Background()
 
-	// 1. Read remote file in references
-	c1, err := runner.ReadFile(item, "references/linkedin_playbook.md")
+	c1, err := r.ReadFileContext(ctx, item, "references/linkedin_playbook.md", server.Client())
 	if err != nil || c1 != "# LinkedIn Playbook Remote Content" {
 		t.Fatalf("expected remote file success, got content %q, err: %v", c1, err)
 	}
 
-	// 2. Read remote file in root
-	c2, err := runner.ReadFile(item, "CANONICAL.md")
+	c2, err := r.ReadFileContext(ctx, item, "CANONICAL.md", server.Client())
 	if err != nil || c2 != "# Remote Canonical" {
-		t.Fatalf("expected remote ReadFile success, got content %q, err: %v", c2, err)
+		t.Fatalf("expected remote ReadFileContext success, got content %q, err: %v", c2, err)
 	}
 
-	// 3. Missing remote file
-	_, err = runner.ReadFile(item, "missing.md")
-	if err == nil || !errors.Is(err, runner.ErrFileNotFound) {
+	_, err = r.ReadFileContext(ctx, item, "missing.md", server.Client())
+	if !errors.Is(err, runner.ErrFileNotFound) {
 		t.Errorf("expected ErrFileNotFound, got: %v", err)
 	}
 }
 
-func TestDetectInterpreter(t *testing.T) {
+func TestDetectInterpreter_ShebangsAndAbsolutePathSafety(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shebang test")
+	}
+
 	tmpDir := t.TempDir()
+	scriptsDir := filepath.Join(tmpDir, "scripts")
+	_ = os.MkdirAll(scriptsDir, 0755)
 
-	// 1. Script with env shebang
-	sh1 := filepath.Join(tmpDir, "shebang1.sh")
-	_ = os.WriteFile(sh1, []byte("#!/usr/bin/env bash\necho 1\n"), 0755)
+	// 1. env shebang
+	_ = os.WriteFile(filepath.Join(scriptsDir, "shebang1.sh"), []byte("#!/usr/bin/env sh\necho ENV_OK\n"), 0755)
 
-	// 2. Script with direct path shebang
-	sh2 := filepath.Join(tmpDir, "shebang2.sh")
-	_ = os.WriteFile(sh2, []byte("#!/bin/sh\necho 2\n"), 0755)
+	// 2. Absolute shebang must NOT be hijacked by a fake "sh" placed earlier in PATH
+	_ = os.WriteFile(filepath.Join(scriptsDir, "shebang2.sh"), []byte("#!/bin/sh\necho ABS_OK\n"), 0755)
 
-	// 3. Node script
-	js1 := filepath.Join(tmpDir, "script.js")
-	_ = os.WriteFile(js1, []byte("console.log(1)"), 0644)
+	fakeBinDir := t.TempDir()
+	fakeSh := filepath.Join(fakeBinDir, "sh")
+	_ = os.WriteFile(fakeSh, []byte("#!/bin/sh\necho HIJACKED\n"), 0755)
+	t.Setenv("PATH", fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	// 4. TypeScript script
-	ts1 := filepath.Join(tmpDir, "script.ts")
-	_ = os.WriteFile(ts1, []byte("console.log(1)"), 0644)
+	item := catalog.Item{ID: "dummy", Name: "dummy", Path: tmpDir}
+	r := runner.New(t.TempDir(), nil)
 
-	// 5. Python script with shebang flags
-	py1 := filepath.Join(tmpDir, "script.py")
-	_ = os.WriteFile(py1, []byte("#!/usr/bin/env python3\nprint(1)"), 0755)
-
-	item := catalog.Item{ID: "dummy", Path: tmpDir}
 	var out, errBuf bytes.Buffer
+	if err := r.RunScriptContext(context.Background(), item, "shebang2.sh", nil, nil, &out, &errBuf); err != nil {
+		t.Fatalf("RunScriptContext(shebang2.sh) failed: %v (stderr: %s)", err, errBuf.String())
+	}
+	if strings.Contains(out.String(), "HIJACKED") || !strings.Contains(out.String(), "ABS_OK") {
+		t.Errorf("absolute shebang was hijacked or failed: stdout=%q", out.String())
+	}
 
-	_ = runner.RunScript(item, "shebang1.sh", nil, &out, &errBuf)
-	_ = runner.RunScript(item, "shebang2.sh", nil, &out, &errBuf)
-	_ = runner.RunScript(item, "script.py", nil, &out, &errBuf)
+	// Restore clean PATH for env shebang test
+	t.Setenv("PATH", "/usr/bin:/bin")
+	out.Reset()
+	errBuf.Reset()
+	if err := r.RunScriptContext(context.Background(), item, "shebang1.sh", nil, nil, &out, &errBuf); err != nil {
+		t.Fatalf("RunScriptContext(shebang1.sh) failed: %v (stderr: %s)", err, errBuf.String())
+	}
+	if !strings.Contains(out.String(), "ENV_OK") {
+		t.Errorf("expected ENV_OK from env shebang, got %q", out.String())
+	}
 }
 
 func TestInstallSkill_Local(t *testing.T) {
+	t.Parallel()
+
 	srcDir := t.TempDir()
 	destDir := filepath.Join(t.TempDir(), "installed_skill")
 
-	// Create source skill structure
 	_ = os.WriteFile(filepath.Join(srcDir, "SKILL.md"), []byte("# Skill Title\nRead [references/playbook.md](references/playbook.md), run `scripts/deploy.sh`, and see [CANONICAL.md](CANONICAL.md)"), 0644)
 	refsDir := filepath.Join(srcDir, "references")
 	_ = os.MkdirAll(refsDir, 0755)
@@ -314,16 +399,16 @@ func TestInstallSkill_Local(t *testing.T) {
 		Path: srcDir,
 	}
 
-	files, err := runner.InstallSkill(item, destDir, "", nil)
+	r := runner.New(t.TempDir(), nil)
+	files, err := r.InstallSkillContext(context.Background(), item, destDir, "", nil, nil)
 	if err != nil {
-		t.Fatalf("InstallSkill failed: %v", err)
+		t.Fatalf("InstallSkillContext failed: %v", err)
 	}
 
 	if len(files) < 4 {
 		t.Errorf("expected at least 4 files installed, got %d: %v", len(files), files)
 	}
 
-	// Verify all files exist in destDir
 	for _, f := range []string{"SKILL.md", "references/playbook.md", "scripts/deploy.sh", "CANONICAL.md"} {
 		path := filepath.Join(destDir, filepath.FromSlash(f))
 		if _, err := os.Stat(path); err != nil {
@@ -333,6 +418,8 @@ func TestInstallSkill_Local(t *testing.T) {
 }
 
 func TestInstallSkill_Remote(t *testing.T) {
+	t.Parallel()
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/skills/writer/SKILL.md":
@@ -360,8 +447,8 @@ func TestInstallSkill_Remote(t *testing.T) {
 		URL:  server.URL + "/skills/writer/SKILL.md",
 	}
 
-	ctx := context.Background()
-	files, err := runner.InstallSkillContext(ctx, item, destDir, "", []string{"references/guide.md"}, server.Client())
+	r := runner.New(t.TempDir(), server.Client())
+	files, err := r.InstallSkillContext(context.Background(), item, destDir, "", []string{"references/guide.md"}, server.Client())
 	if err != nil {
 		t.Fatalf("InstallSkillContext failed: %v", err)
 	}
@@ -369,7 +456,6 @@ func TestInstallSkill_Remote(t *testing.T) {
 		t.Errorf("expected at least 4 files installed, got %d: %v", len(files), files)
 	}
 
-	// Verify SKILL.md, guide.md, nested subguide.md, and run.py were installed
 	expected := []string{"SKILL.md", "references/guide.md", "references/subguide.md", "scripts/run.py"}
 	for _, f := range expected {
 		path := filepath.Join(destDir, filepath.FromSlash(f))
@@ -378,17 +464,20 @@ func TestInstallSkill_Remote(t *testing.T) {
 		}
 	}
 
-	// Verify script executable bit
-	scriptInfo, err := os.Stat(filepath.Join(destDir, "scripts", "run.py"))
-	if err != nil {
-		t.Fatalf("failed to stat script: %v", err)
-	}
-	if scriptInfo.Mode()&0111 == 0 {
-		t.Errorf("expected script to be executable, mode: %v", scriptInfo.Mode())
+	if runtime.GOOS != "windows" {
+		scriptInfo, err := os.Stat(filepath.Join(destDir, "scripts", "run.py"))
+		if err != nil {
+			t.Fatalf("failed to stat script: %v", err)
+		}
+		if scriptInfo.Mode()&0111 == 0 {
+			t.Errorf("expected script to be executable, mode: %v", scriptInfo.Mode())
+		}
 	}
 }
 
 func TestExtractCandidates(t *testing.T) {
+	t.Parallel()
+
 	md := `# Sample Skill
 Use the companion script ` + "`" + `scripts/analytics.py` + "`" + ` or ` + "`" + `references/schema.md` + "`" + `.
 Run it using:
@@ -411,14 +500,18 @@ See [Extra Docs](references/extra.md) and ![Diagram](assets/arch.png).
 	}
 
 	for _, exp := range expected {
-		found := slices.Contains(candidates, exp)
-		if !found {
+		if !slices.Contains(candidates, exp) {
 			t.Errorf("expected candidate %q to be extracted, got candidates: %v", exp, candidates)
 		}
 	}
 }
 
 func TestRunScript_JITRemoteFetch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell script test")
+	}
+	t.Parallel()
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/skills/cloud/scripts/jit_task.sh":
@@ -436,13 +529,14 @@ func TestRunScript_JITRemoteFetch(t *testing.T) {
 		URL:  server.URL + "/skills/cloud/SKILL.md",
 	}
 
+	r := runner.New(t.TempDir(), server.Client())
 	var stdout, stderr bytes.Buffer
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := runner.RunScriptContext(ctx, item, "jit_task.sh", []string{"alpha"}, nil, &stdout, &stderr)
+	err := r.RunScriptContext(ctx, item, "jit_task.sh", []string{"alpha"}, nil, &stdout, &stderr)
 	if err != nil {
-		t.Fatalf("RunScriptContext failed with JIT fetch: %v", err)
+		t.Fatalf("RunScriptContext failed with JIT fetch: %v (stderr: %s)", err, stderr.String())
 	}
 
 	if !strings.Contains(stdout.String(), "JIT_SUCCESS alpha") {
@@ -451,25 +545,29 @@ func TestRunScript_JITRemoteFetch(t *testing.T) {
 }
 
 func TestInstallSkillContext_UpgradesAndPrunesStaleFiles(t *testing.T) {
-	version := 1
+	t.Parallel()
+
+	var version atomic.Int32
+	version.Store(1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		v := version.Load()
 		switch r.URL.Path {
 		case "/skills/upgrader/SKILL.md":
 			w.WriteHeader(http.StatusOK)
-			if version == 1 {
+			if v == 1 {
 				_, _ = w.Write([]byte("# Upgrader v1\nSee [Guide](references/guide.md) and [Old](references/old.md).\n"))
 			} else {
 				_, _ = w.Write([]byte("# Upgrader v2\nSee [Guide](references/guide.md).\n"))
 			}
 		case "/skills/upgrader/references/guide.md":
 			w.WriteHeader(http.StatusOK)
-			if version == 1 {
+			if v == 1 {
 				_, _ = w.Write([]byte("guide v1"))
 			} else {
 				_, _ = w.Write([]byte("guide v2"))
 			}
 		case "/skills/upgrader/references/old.md":
-			if version == 1 {
+			if v == 1 {
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write([]byte("old v1"))
 			} else {
@@ -481,9 +579,7 @@ func TestInstallSkillContext_UpgradesAndPrunesStaleFiles(t *testing.T) {
 	}))
 	defer server.Close()
 
-	runner.SetCacheDir(t.TempDir())
-	defer runner.SetCacheDir("")
-
+	r := runner.New(t.TempDir(), server.Client())
 	destDir := filepath.Join(t.TempDir(), "upgrader")
 	item := catalog.Item{
 		ID:   "upgrader",
@@ -492,7 +588,7 @@ func TestInstallSkillContext_UpgradesAndPrunesStaleFiles(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	filesV1, err := runner.InstallSkillContext(ctx, item, destDir, "", nil, server.Client())
+	filesV1, err := r.InstallSkillContext(ctx, item, destDir, "", nil, server.Client())
 	if err != nil {
 		t.Fatalf("v1 InstallSkillContext failed: %v", err)
 	}
@@ -500,9 +596,8 @@ func TestInstallSkillContext_UpgradesAndPrunesStaleFiles(t *testing.T) {
 		t.Fatalf("expected 3 files in v1, got %v", filesV1)
 	}
 
-	// Upgrade to v2: references/guide.md content changed on server, and references/old.md was removed
-	version = 2
-	filesV2, err := runner.InstallSkillContext(ctx, item, destDir, "", nil, server.Client())
+	version.Store(2)
+	filesV2, err := r.InstallSkillContext(ctx, item, destDir, "", nil, server.Client())
 	if err != nil {
 		t.Fatalf("v2 InstallSkillContext failed: %v", err)
 	}
@@ -520,5 +615,47 @@ func TestInstallSkillContext_UpgradesAndPrunesStaleFiles(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(destDir, "references", "old.md")); !os.IsNotExist(err) {
 		t.Errorf("expected stale file references/old.md to be pruned on upgrade, stat err: %v", err)
+	}
+}
+
+func TestReadFile_StaleCacheDoesNotShadowRemote(t *testing.T) {
+	t.Parallel()
+
+	cacheRoot := t.TempDir()
+	// Seed a stale cached skill with old SKILL.md and old reference.
+	staleSkillDir, err := catalog.SkillCacheDir(cacheRoot, "drift-skill", "spf13/go-skills")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = os.MkdirAll(filepath.Join(staleSkillDir, "references"), 0755)
+	_ = os.WriteFile(filepath.Join(staleSkillDir, "SKILL.md"), []byte("---\nname: drift-skill\n---\n# Old v1\n"), 0644)
+	_ = os.WriteFile(filepath.Join(staleSkillDir, "references", "guide.md"), []byte("# Stale Cached Guide\n"), 0644)
+
+	newSkillMD := "---\nname: drift-skill\n---\n# Fresh v2\n"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/drift-skill/references/guide.md" {
+			_, _ = w.Write([]byte("# Fresh Remote Guide v2\n"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	item := catalog.Item{
+		ID:     "drift-skill",
+		Name:   "drift-skill",
+		Type:   catalog.ItemTypeSkill,
+		Source: "spf13/go-skills",
+		URL:    server.URL + "/drift-skill/SKILL.md",
+		Digest: catalog.ComputeDigest([]byte(newSkillMD)),
+	}
+
+	r := runner.New(cacheRoot, server.Client())
+	got, err := r.ReadFileContext(context.Background(), item, "references/guide.md", server.Client())
+	if err != nil {
+		t.Fatalf("ReadFileContext failed: %v", err)
+	}
+	if !strings.Contains(got, "# Fresh Remote Guide v2") {
+		t.Errorf("stale cache shadowed fresh remote file! got: %q", got)
 	}
 }

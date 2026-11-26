@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -26,32 +27,40 @@ import (
 
 func TestMain(m *testing.M) {
 	tempHome, err := os.MkdirTemp("", "kungfu-main-test-home-*")
-	if err == nil {
-		_ = os.Setenv("HOME", tempHome)
-		_ = os.Setenv("KUNGFU_CONFIG_DIR", filepath.Join(tempHome, ".config", "kungfu"))
-		_ = os.Setenv("KUNGFU_STATE_PATH", filepath.Join(tempHome, ".config", "kungfu", "state.json"))
-		_ = os.Setenv("KUNGFU_CONFIG", "")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create temp test home: %v\n", err)
+		os.Exit(1)
 	}
+	_ = os.Setenv("HOME", tempHome)
+	_ = os.Setenv("USERPROFILE", tempHome)
+	_ = os.Setenv("APPDATA", filepath.Join(tempHome, "AppData", "Roaming"))
+	_ = os.Setenv("LOCALAPPDATA", filepath.Join(tempHome, "AppData", "Local"))
+	_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(tempHome, ".config"))
+	_ = os.Setenv("XDG_CACHE_HOME", filepath.Join(tempHome, ".cache"))
+	_ = os.Setenv("KUNGFU_CONFIG_DIR", filepath.Join(tempHome, ".config", "kungfu"))
+	_ = os.Setenv("KUNGFU_CACHE_DIR", filepath.Join(tempHome, ".cache", "kungfu"))
+	_ = os.Setenv("KUNGFU_STATE_PATH", filepath.Join(tempHome, ".config", "kungfu", "state.json"))
+	_ = os.Setenv("KUNGFU_CONFIG", "")
+
 	code := m.Run()
-	if tempHome != "" {
-		_ = os.RemoveAll(tempHome)
-	}
+	_ = os.RemoveAll(tempHome)
 	os.Exit(code)
 }
 
 func TestRun_CLI_Basics(t *testing.T) {
 	tests := []struct {
-		name     string
-		args     []string
-		wantCode int
-		wantSub  string
+		name       string
+		args       []string
+		wantCode   int
+		wantStdout string
+		wantStderr string
 	}{
-		{"version long", []string{"--version"}, ExitSuccess, "kungfu version"},
-		{"version short", []string{"-V"}, ExitSuccess, "kungfu version"},
-		{"help long", []string{"--help"}, ExitSuccess, "USAGE:"},
-		{"help short", []string{"-h"}, ExitSuccess, "USAGE:"},
-		{"help command", []string{"help"}, ExitSuccess, "USAGE:"},
-		{"no args", []string{}, ExitUsage, "USAGE:"},
+		{"version long", []string{"--version"}, ExitSuccess, "kungfu version", ""},
+		{"version short", []string{"-V"}, ExitSuccess, "kungfu version", ""},
+		{"help long", []string{"--help"}, ExitSuccess, "USAGE:", ""},
+		{"help short", []string{"-h"}, ExitSuccess, "USAGE:", ""},
+		{"help command", []string{"help"}, ExitSuccess, "USAGE:", ""},
+		{"no args", []string{}, ExitUsage, "", "USAGE:"},
 	}
 
 	for _, tt := range tests {
@@ -61,9 +70,11 @@ func TestRun_CLI_Basics(t *testing.T) {
 			if code != tt.wantCode {
 				t.Fatalf("Run(%v) = %d, want %d; stderr: %s", tt.args, code, tt.wantCode, stderr.String())
 			}
-			out := stdout.String()
-			if !strings.Contains(out, tt.wantSub) {
-				t.Errorf("Run(%v) output %q does not contain %q", tt.args, out, tt.wantSub)
+			if tt.wantStdout != "" && !strings.Contains(stdout.String(), tt.wantStdout) {
+				t.Errorf("Run(%v) stdout %q does not contain %q", tt.args, stdout.String(), tt.wantStdout)
+			}
+			if tt.wantStderr != "" && !strings.Contains(stderr.String(), tt.wantStderr) {
+				t.Errorf("Run(%v) stderr %q does not contain %q", tt.args, stderr.String(), tt.wantStderr)
 			}
 		})
 	}

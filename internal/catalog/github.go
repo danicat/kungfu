@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,25 +16,31 @@ package catalog
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"maps"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/danicat/kungfu/internal/version"
 )
+
+const maxTreeCrawlSkills = 200
+
+var githubIdentRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // GitHubTarget captures parsed repository and subpath components.
 type GitHubTarget struct {
 	Owner       string // e.g. "anthropics"
 	Repo        string // e.g. "anthropic-quickstarts"
-	Ref         string // e.g. "main", "v1.0.0", "master"
+	Ref         string // e.g. "HEAD", "main", "v1.0.0"
 	Subpath     string // e.g. "skills/evals", "evals", ""
 	OriginalURL string // e.g. "https://github.com/anthropics/anthropic-quickstarts"
 }
@@ -49,37 +55,125 @@ func (t *GitHubTarget) FullRepoURL() string {
 	return fmt.Sprintf("https://github.com/%s/%s", t.Owner, t.Repo)
 }
 
-// ParseGitHubTarget parses raw GitHub URLs or shorthand owner/repo notation.
+// CanonicalSource returns a round-trippable catalog source string for config.yaml.
+func (t *GitHubTarget) CanonicalSource() string {
+	base := t.RepoString()
+	if t.Subpath != "" {
+		base += "/" + strings.Trim(t.Subpath, "/")
+	}
+	if t.Ref != "" && t.Ref != "HEAD" {
+		base += "@" + t.Ref
+	}
+	return base
+}
+
+func isValidGitHubIdent(s string) bool {
+	if s == "" || s == "." || s == ".." || strings.HasPrefix(s, "-") {
+		return false
+	}
+	return githubIdentRe.MatchString(s)
+}
+
+func isValidGitHubPathOrRef(s string) bool {
+	if s == "" {
+		return true
+	}
+	for _, r := range s {
+		if r == '?' || r == '#' || r == '\\' || r == 0 || unicode.IsSpace(r) || unicode.IsControl(r) {
+			return false
+		}
+	}
+	for seg := range strings.SplitSeq(s, "/") {
+		if seg == ".." || seg == "." {
+			return false
+		}
+	}
+	return true
+}
+
+func escapePathSegments(p string) string {
+	parts := strings.Split(strings.Trim(p, "/"), "/")
+	for i, seg := range parts {
+		parts[i] = url.PathEscape(seg)
+	}
+	return strings.Join(parts, "/")
+}
+
+func buildGitHubRawURL(owner, repo, ref, relPath string) string {
+	return fmt.Sprintf(
+		"https://raw.githubusercontent.com/%s/%s/%s/%s",
+		url.PathEscape(owner),
+		url.PathEscape(repo),
+		escapePathSegments(ref),
+		escapePathSegments(relPath),
+	)
+}
+
+func trimSkillMDSubpath(subpath string) string {
+	if strings.HasSuffix(strings.ToLower(subpath), "/skill.md") {
+		return subpath[:len(subpath)-len("/skill.md")]
+	}
+	if strings.EqualFold(subpath, "skill.md") {
+		return ""
+	}
+	return subpath
+}
+
+// ParseGitHubTarget parses GitHub URLs or shorthand owner/repo[/subpath][@ref] notation with strict validation.
 func ParseGitHubTarget(input string) (*GitHubTarget, bool) {
 	raw := strings.TrimSpace(input)
 	if raw == "" {
 		return nil, false
 	}
 
-	// Remove protocols
-	raw = strings.TrimPrefix(raw, "https://")
-	raw = strings.TrimPrefix(raw, "http://")
-	raw = strings.TrimPrefix(raw, "git@github.com:")
+	var pathStr string
+	var isRawHost bool
+	ref := "HEAD"
 
-	// Handle raw.githubusercontent.com URLs
-	if after, ok := strings.CutPrefix(raw, "raw.githubusercontent.com/"); ok {
-		raw = after
-		raw = strings.Trim(raw, "/")
-		parts := strings.Split(raw, "/")
+	if strings.HasPrefix(raw, "https://") || strings.HasPrefix(raw, "http://") {
+		u, err := url.Parse(raw)
+		if err != nil || u.User != nil || u.RawQuery != "" {
+			return nil, false
+		}
+		host := strings.ToLower(u.Hostname())
+		switch host {
+		case "github.com":
+			pathStr = strings.Trim(u.Path, "/")
+			if u.Fragment != "" {
+				ref = strings.Trim(u.Fragment, "/")
+			}
+		case "raw.githubusercontent.com":
+			isRawHost = true
+			pathStr = strings.Trim(u.Path, "/")
+		default:
+			return nil, false
+		}
+	} else if after, ok := strings.CutPrefix(raw, "git@github.com:"); ok {
+		pathStr = strings.Trim(after, "/")
+	} else if after, ok := strings.CutPrefix(raw, "raw.githubusercontent.com/"); ok {
+		isRawHost = true
+		pathStr = strings.Trim(after, "/")
+	} else if after, ok := strings.CutPrefix(raw, "github.com/"); ok {
+		pathStr = strings.Trim(after, "/")
+	} else {
+		pathStr = raw
+	}
+
+	if isRawHost {
+		parts := strings.Split(pathStr, "/")
 		if len(parts) < 3 {
 			return nil, false
 		}
 		owner := parts[0]
 		repo := strings.TrimSuffix(parts[1], ".git")
-		ref := parts[2]
+		ref = parts[2]
 		subpath := ""
 		if len(parts) > 3 {
 			subpath = strings.Join(parts[3:], "/")
 		}
-		if strings.HasSuffix(strings.ToLower(subpath), "/skill.md") {
-			subpath = subpath[:len(subpath)-len("/skill.md")]
-		} else if strings.EqualFold(subpath, "skill.md") {
-			subpath = ""
+		subpath = trimSkillMDSubpath(subpath)
+		if !isValidGitHubIdent(owner) || !isValidGitHubIdent(repo) || ref == "" || !isValidGitHubPathOrRef(ref) || !isValidGitHubPathOrRef(subpath) {
+			return nil, false
 		}
 		return &GitHubTarget{
 			Owner:       owner,
@@ -90,33 +184,31 @@ func ParseGitHubTarget(input string) (*GitHubTarget, bool) {
 		}, true
 	}
 
-	raw = strings.TrimPrefix(raw, "github.com/")
-
-	// Extract ref if passed via @ref or #ref
-	ref := "main"
-	if idx := strings.IndexAny(raw, "@#"); idx != -1 {
-		ref = strings.Trim(raw[idx+1:], "/")
-		raw = raw[:idx]
+	// Extract @ref or #ref shorthand if present.
+	if idx := strings.IndexAny(pathStr, "@#"); idx != -1 {
+		refPart := strings.Trim(pathStr[idx+1:], "/")
+		if refPart == "" {
+			return nil, false
+		}
+		ref = refPart
+		pathStr = pathStr[:idx]
 	}
 
-	raw = strings.Trim(raw, "/")
-	parts := strings.Split(raw, "/")
+	pathStr = strings.Trim(pathStr, "/")
+	parts := strings.Split(pathStr, "/")
 	if len(parts) < 2 {
 		return nil, false
 	}
 
 	owner := parts[0]
 	repo := strings.TrimSuffix(parts[1], ".git")
-
-	// Validate owner/repo naming (basic sanity check)
-	if owner == "" || repo == "" || strings.HasPrefix(owner, "-") || strings.HasPrefix(repo, "-") {
+	if !isValidGitHubIdent(owner) || !isValidGitHubIdent(repo) {
 		return nil, false
 	}
 
 	subpath := ""
 	if len(parts) > 2 {
 		remainder := parts[2:]
-		// Check for /tree/{ref}/subpath or /blob/{ref}/subpath
 		if len(remainder) >= 2 && (remainder[0] == "tree" || remainder[0] == "blob") {
 			ref = remainder[1]
 			if len(remainder) > 2 {
@@ -127,11 +219,9 @@ func ParseGitHubTarget(input string) (*GitHubTarget, bool) {
 		}
 	}
 
-	// If subpath points directly to SKILL.md, trim it to directory
-	if strings.HasSuffix(strings.ToLower(subpath), "/skill.md") {
-		subpath = subpath[:len(subpath)-len("/skill.md")]
-	} else if strings.EqualFold(subpath, "skill.md") {
-		subpath = ""
+	subpath = trimSkillMDSubpath(subpath)
+	if ref == "" || !isValidGitHubPathOrRef(ref) || !isValidGitHubPathOrRef(subpath) {
+		return nil, false
 	}
 
 	return &GitHubTarget{
@@ -143,25 +233,49 @@ func ParseGitHubTarget(input string) (*GitHubTarget, bool) {
 	}, true
 }
 
-// FetchGitHubSkill attempts to fetch and parse SKILL.md from a GitHub repository via raw HTTP.
+func githubAPIToken() string {
+	if tok := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); tok != "" {
+		return tok
+	}
+	return strings.TrimSpace(os.Getenv("GH_TOKEN"))
+}
+
+func githubRateLimitError(resp *http.Response, targetURL string) error {
+	rem := resp.Header.Get("X-RateLimit-Remaining")
+	reset := resp.Header.Get("X-RateLimit-Reset")
+	detail := ""
+	if rem == "0" || resp.StatusCode == http.StatusTooManyRequests {
+		if ts, err := strconv.ParseInt(reset, 10, 64); err == nil {
+			detail = fmt.Sprintf("GitHub API rate limit exceeded (resets at %s; set GITHUB_TOKEN to raise limit)", time.Unix(ts, 0).UTC().Format(time.RFC3339))
+		} else {
+			detail = "GitHub API rate limit exceeded (set GITHUB_TOKEN to raise limit)"
+		}
+	}
+	return &HTTPStatusError{StatusCode: resp.StatusCode, URL: targetURL, Detail: detail}
+}
+
+// FetchGitHubSkill fetches and parses a single SKILL.md from a GitHub repository.
 func FetchGitHubSkill(ctx context.Context, target *GitHubTarget, client *http.Client) (*Item, error) {
 	if client == nil {
-		client = &http.Client{Timeout: 15 * time.Second}
+		client = NewSafeHTTPClient(15 * time.Second)
+	}
+	ref := target.Ref
+	if ref == "" {
+		ref = "HEAD"
 	}
 
-	item, err := probeGitHubRef(ctx, target, target.Ref, client)
+	item, err := probeGitHubRef(ctx, target, ref, client)
 	if err != nil {
 		return nil, err
 	}
 	if item == nil {
-		return nil, fmt.Errorf("no valid SKILL.md found in github repository %s/%s (ref: %s)", target.Owner, target.Repo, target.Ref)
+		return nil, fmt.Errorf("%w: no valid SKILL.md found in github repository %s/%s (ref: %s)", ErrItemNotFound, target.Owner, target.Repo, ref)
 	}
 	return item, nil
 }
 
 func probeGitHubRef(ctx context.Context, target *GitHubTarget, ref string, client *http.Client) (*Item, error) {
 	var candidatePaths []string
-
 	if target.Subpath != "" {
 		candidatePaths = append(candidatePaths,
 			target.Subpath+"/SKILL.md",
@@ -183,32 +297,35 @@ func probeGitHubRef(ctx context.Context, target *GitHubTarget, ref string, clien
 		)
 	}
 
-	var lastNetErr error
-	gotHTTPResponse := false
 	for _, relPath := range candidatePaths {
-		rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", target.Owner, target.Repo, ref, relPath)
+		rawURL := buildGitHubRawURL(target.Owner, target.Repo, ref, relPath)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 		if err != nil {
-			continue
+			return nil, err
 		}
 		req.Header.Set("User-Agent", version.UserAgent())
 
 		resp, err := client.Do(req)
 		if err != nil {
-			lastNetErr = err
-			continue
+			return nil, fmt.Errorf("fetching skill from github %s/%s: %w", target.Owner, target.Repo, err)
 		}
-		gotHTTPResponse = true
-
-		if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusNotFound {
 			_ = resp.Body.Close()
 			continue
 		}
+		if resp.StatusCode != http.StatusOK {
+			err := githubRateLimitError(resp, rawURL)
+			_ = resp.Body.Close()
+			return nil, err
+		}
 
-		bodyBytes, err := ReadBounded(resp.Body, 2<<20) // 2MB limit
+		bodyBytes, err := ReadBounded(resp.Body, DefaultMaxSkillMDBytes)
 		_ = resp.Body.Close()
-		if err != nil || len(bodyBytes) == 0 {
-			continue
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", rawURL, err)
+		}
+		if len(bodyBytes) == 0 {
+			return nil, fmt.Errorf("empty SKILL.md at %s", rawURL)
 		}
 
 		fm, _, err := ParseFrontmatter(bodyBytes)
@@ -229,12 +346,10 @@ func probeGitHubRef(ctx context.Context, target *GitHubTarget, ref string, clien
 			ID:           skillName,
 			Name:         skillName,
 			Type:         ItemTypeSkill,
-			Description:  fm.Description,
-			AllowedTools: fm.AllowedTools,
-			License:      fm.License,
 			Body:         string(bodyBytes),
 			URL:          rawURL,
 			RelativePath: relPath,
+			Digest:       ComputeDigest(bodyBytes),
 			Source:       "github",
 			Metadata: map[string]string{
 				"origin":    target.FullRepoURL(),
@@ -243,26 +358,9 @@ func probeGitHubRef(ctx context.Context, target *GitHubTarget, ref string, clien
 				"canonical": rawURL,
 			},
 		}
-
-		if fm.Metadata != nil {
-			maps.Copy(item.Metadata, fm.Metadata)
-		}
-		if item.Metadata["version"] != "" {
-			item.Version = item.Metadata["version"]
-		}
-		if item.Metadata["tags"] != "" {
-			item.Tags = ParseTags(item.Metadata["tags"])
-		}
-		if item.License == "" && fm.License != "" {
-			item.License = fm.License
-		}
-
+		ApplyFrontmatter(&item, fm, true)
 		item.Normalize()
 		return &item, nil
-	}
-
-	if !gotHTTPResponse && lastNetErr != nil {
-		return nil, fmt.Errorf("fetching skill from github %s/%s: %w", target.Owner, target.Repo, lastNetErr)
 	}
 
 	return nil, nil
@@ -274,7 +372,7 @@ type githubTreeResponse struct {
 	Tree      []struct {
 		Path string `json:"path"`
 		Mode string `json:"mode"`
-		Type string `json:"type"` // "blob", "tree"
+		Type string `json:"type"`
 		Sha  string `json:"sha"`
 		Size int    `json:"size"`
 		URL  string `json:"url"`
@@ -282,17 +380,20 @@ type githubTreeResponse struct {
 }
 
 // FetchGitHubCatalog discovers skills across a GitHub repository and returns a Manifest.
-// The discovery order is:
+// Discovery order:
 // 1. .well-known/agent-skills/index.json (Cloudflare Agent Skills Discovery RFC v0.2.0)
 // 2. index.json (google/skills standard)
-// 3. catalog.json (legacy backwards-compatibility fallback)
-// 4. Directory crawl / Git Tree API (agentskills.io standard)
+// 3. Git Tree API directory crawl (agentskills.io standard)
 func FetchGitHubCatalog(ctx context.Context, target *GitHubTarget, client *http.Client) (*Manifest, error) {
 	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
+		client = NewSafeHTTPClient(30 * time.Second)
+	}
+	ref := target.Ref
+	if ref == "" {
+		ref = "HEAD"
 	}
 
-	manifest, err := probeGitHubCatalogRef(ctx, target, target.Ref, client)
+	manifest, err := probeGitHubCatalogRef(ctx, target, ref, client)
 	if err != nil {
 		return nil, err
 	}
@@ -302,8 +403,10 @@ func FetchGitHubCatalog(ctx context.Context, target *GitHubTarget, client *http.
 	return manifest, nil
 }
 
+var errManifestNotFound = errors.New("manifest not found")
+
 func tryFetchManifest(ctx context.Context, target *GitHubTarget, ref, catPath string, client *http.Client) (*Manifest, error) {
-	rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", target.Owner, target.Repo, ref, catPath)
+	rawURL := buildGitHubRawURL(target.Owner, target.Repo, ref, catPath)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
@@ -316,24 +419,41 @@ func tryFetchManifest(ctx context.Context, target *GitHubTarget, ref, catPath st
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, errManifestNotFound
+	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, githubRateLimitError(resp, rawURL)
 	}
 
-	data, err := ReadBounded(resp.Body, 5<<20) // 5MB limit
-	if err != nil || len(data) == 0 {
-		return nil, fmt.Errorf("empty or unreadable body: %w", err)
+	data, err := ReadBounded(resp.Body, 5<<20)
+	if err != nil {
+		return nil, fmt.Errorf("reading manifest %s: %w", rawURL, err)
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("empty manifest body at %s", rawURL)
 	}
 
 	var m Manifest
-	if err := json.Unmarshal(data, &m); err != nil || len(m.Items) == 0 {
-		return nil, fmt.Errorf("invalid manifest JSON: %w", err)
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("invalid manifest JSON at %s: %w", rawURL, err)
+	}
+	if len(m.Items) == 0 {
+		return nil, fmt.Errorf("manifest at %s contains no skills", rawURL)
 	}
 
+	allowLoopback := AllowLoopbackHTTP(client)
 	for i := range m.Items {
 		if m.Items[i].URL != "" && !strings.HasPrefix(m.Items[i].URL, "http://") && !strings.HasPrefix(m.Items[i].URL, "https://") {
 			rel := strings.TrimPrefix(strings.TrimPrefix(m.Items[i].URL, "./"), "/")
-			m.Items[i].URL = fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", target.Owner, target.Repo, ref, rel)
+			if !isValidGitHubPathOrRef(rel) {
+				return nil, fmt.Errorf("invalid relative skill URL %q in %s", m.Items[i].URL, rawURL)
+			}
+			m.Items[i].URL = buildGitHubRawURL(target.Owner, target.Repo, ref, rel)
+		} else if m.Items[i].URL != "" {
+			if _, err := ValidateRemoteURL(m.Items[i].URL, allowLoopback); err != nil {
+				return nil, fmt.Errorf("skill %q URL in %s rejected: %w", m.Items[i].Name, rawURL, err)
+			}
 		}
 		m.Items[i].Normalize()
 		if m.Items[i].Source == "" {
@@ -344,58 +464,51 @@ func tryFetchManifest(ctx context.Context, target *GitHubTarget, ref, catPath st
 }
 
 func probeGitHubCatalogRef(ctx context.Context, target *GitHubTarget, ref string, client *http.Client) (*Manifest, error) {
-	// 1. Try .well-known/agent-skills/index.json endpoints first (Agent Skills Discovery RFC v0.2.0)
-	candidateWellKnownPaths := []string{
-		".well-known/agent-skills/index.json",
-	}
+	var manifestPaths []string
 	if target.Subpath != "" {
-		candidateWellKnownPaths = append([]string{target.Subpath + "/.well-known/agent-skills/index.json"}, candidateWellKnownPaths...)
-	}
-
-	for _, wkPath := range candidateWellKnownPaths {
-		if m, err := tryFetchManifest(ctx, target, ref, wkPath, client); err == nil && m != nil && len(m.Items) > 0 {
-			return m, nil
+		manifestPaths = append(manifestPaths,
+			target.Subpath+"/.well-known/agent-skills/index.json",
+			".well-known/agent-skills/index.json",
+			target.Subpath+"/index.json",
+			"index.json",
+			"skills/index.json",
+		)
+	} else {
+		manifestPaths = []string{
+			".well-known/agent-skills/index.json",
+			"index.json",
+			"skills/index.json",
 		}
 	}
 
-	// 2. Try index.json endpoints next (google/skills standard)
-	candidateIndexPaths := []string{
-		"index.json",
-		"skills/index.json",
-	}
-	if target.Subpath != "" {
-		candidateIndexPaths = append([]string{target.Subpath + "/index.json"}, candidateIndexPaths...)
-	}
-
-	for _, indexPath := range candidateIndexPaths {
-		if m, err := tryFetchManifest(ctx, target, ref, indexPath, client); err == nil && m != nil && len(m.Items) > 0 {
+	for _, p := range manifestPaths {
+		m, err := tryFetchManifest(ctx, target, ref, p, client)
+		if err == nil && m != nil {
 			return m, nil
 		}
-	}
-
-	// 3. Try catalog.json endpoints (legacy backwards-compatibility fallback for 2 versions)
-	candidateCatalogPaths := []string{
-		"catalog.json",
-		"skills/catalog.json",
-	}
-	if target.Subpath != "" {
-		candidateCatalogPaths = append([]string{target.Subpath + "/catalog.json"}, candidateCatalogPaths...)
-	}
-
-	for _, catPath := range candidateCatalogPaths {
-		if m, err := tryFetchManifest(ctx, target, ref, catPath, client); err == nil && m != nil && len(m.Items) > 0 {
-			return m, nil
+		if errors.Is(err, errManifestNotFound) {
+			continue
 		}
+		// Fail fast on non-404 errors (network failure, 403/429/5xx, malformed manifest JSON).
+		return nil, err
 	}
 
-	// 4. Discover SKILL.md files via GitHub Git Tree API (agentskills.io standard directory crawl)
-	treeURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/%s?recursive=1", target.Owner, target.Repo, ref)
+	// Discover SKILL.md files via GitHub Git Tree API (agentskills.io standard directory crawl).
+	treeURL := fmt.Sprintf(
+		"https://api.github.com/repos/%s/%s/git/trees/%s?recursive=1",
+		url.PathEscape(target.Owner),
+		url.PathEscape(target.Repo),
+		escapePathSegments(ref),
+	)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, treeURL, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", version.UserAgent())
 	req.Header.Set("Accept", "application/vnd.github+json")
+	if tok := githubAPIToken(); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -404,10 +517,10 @@ func probeGitHubCatalogRef(ctx context.Context, target *GitHubTarget, ref string
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("github api returned status %d for tree of %s/%s", resp.StatusCode, target.Owner, target.Repo)
+		return nil, githubRateLimitError(resp, treeURL)
 	}
 
-	bodyBytes, err := ReadBounded(resp.Body, 10<<20) // 10MB limit
+	bodyBytes, err := ReadBounded(resp.Body, 10<<20)
 	if err != nil {
 		return nil, fmt.Errorf("reading tree response: %w", err)
 	}
@@ -415,6 +528,9 @@ func probeGitHubCatalogRef(ctx context.Context, target *GitHubTarget, ref string
 	var treeResp githubTreeResponse
 	if err := json.Unmarshal(bodyBytes, &treeResp); err != nil {
 		return nil, fmt.Errorf("parsing git tree: %w", err)
+	}
+	if treeResp.Truncated {
+		return nil, fmt.Errorf("github git tree for %s/%s was truncated; publish .well-known/agent-skills/index.json or narrow with --subpath", target.Owner, target.Repo)
 	}
 
 	var skillPaths []string
@@ -431,6 +547,9 @@ func probeGitHubCatalogRef(ctx context.Context, target *GitHubTarget, ref string
 		if strings.HasSuffix(lower, "/skill.md") || lower == "skill.md" {
 			if prefix == "" || strings.HasPrefix(node.Path, prefix) {
 				skillPaths = append(skillPaths, node.Path)
+				if len(skillPaths) > maxTreeCrawlSkills {
+					return nil, fmt.Errorf("repository %s/%s exceeds %d skills during tree crawl; publish .well-known/agent-skills/index.json", target.Owner, target.Repo, maxTreeCrawlSkills)
+				}
 			}
 		}
 	}
@@ -445,23 +564,20 @@ func probeGitHubCatalogRef(ctx context.Context, target *GitHubTarget, ref string
 	}
 
 	for _, relPath := range skillPaths {
-		rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", target.Owner, target.Repo, ref, relPath)
-		skillReq, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-		if err != nil {
+		if !isValidGitHubPathOrRef(relPath) {
 			continue
 		}
-		skillReq.Header.Set("User-Agent", version.UserAgent())
-
-		skillResp, err := client.Do(skillReq)
+		rawURL := buildGitHubRawURL(target.Owner, target.Repo, ref, relPath)
+		skillResp, err := FetchWithRetryAndHeaders(ctx, client, rawURL, version.UserAgent(), nil, 2, defaultInitialBackoff)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("fetching %s: %w", rawURL, err)
 		}
 		if skillResp.StatusCode != http.StatusOK {
 			_ = skillResp.Body.Close()
-			continue
+			return nil, &HTTPStatusError{StatusCode: skillResp.StatusCode, URL: rawURL}
 		}
 
-		skillData, err := ReadBounded(skillResp.Body, 2<<20)
+		skillData, err := ReadBounded(skillResp.Body, DefaultMaxSkillMDBytes)
 		_ = skillResp.Body.Close()
 		if err != nil || len(skillData) == 0 {
 			continue
@@ -472,7 +588,7 @@ func probeGitHubCatalogRef(ctx context.Context, target *GitHubTarget, ref string
 			fm = &Frontmatter{}
 		}
 
-		dirPath := filepath.Dir(relPath)
+		dirPath := filepath.ToSlash(filepath.Dir(relPath))
 		if dirPath == "." {
 			dirPath = ""
 		}
@@ -486,46 +602,29 @@ func probeGitHubCatalogRef(ctx context.Context, target *GitHubTarget, ref string
 			}
 		}
 
-		sum := sha256.Sum256(skillData)
-		digest := hex.EncodeToString(sum[:])
-
-		githubTreeURL := fmt.Sprintf("https://github.com/%s/%s/tree/%s", target.Owner, target.Repo, ref)
+		webURL := fmt.Sprintf("https://github.com/%s/%s/tree/%s", url.PathEscape(target.Owner), url.PathEscape(target.Repo), escapePathSegments(ref))
 		if dirPath != "" {
-			githubTreeURL += "/" + dirPath
+			webURL += "/" + escapePathSegments(dirPath)
 		}
 
 		item := Item{
 			ID:           skillName,
 			Name:         skillName,
 			Type:         ItemTypeSkill,
-			Description:  fm.Description,
-			License:      fm.License,
-			AllowedTools: fm.AllowedTools,
 			Body:         string(skillData),
-			URL:          githubTreeURL,
+			URL:          rawURL,
 			RelativePath: relPath,
-			Digest:       digest,
-			Sha256:       digest,
+			Digest:       ComputeDigest(skillData),
 			Source:       fmt.Sprintf("github:%s/%s", target.Owner, target.Repo),
 			Metadata: map[string]string{
 				"origin":    target.FullRepoURL(),
 				"repo":      target.RepoString(),
 				"ref":       ref,
 				"canonical": rawURL,
+				"web_url":   webURL,
 			},
 		}
-		if fm.Metadata != nil {
-			maps.Copy(item.Metadata, fm.Metadata)
-			if item.Metadata["version"] != "" {
-				item.Version = item.Metadata["version"]
-			}
-			if item.Metadata["author"] != "" {
-				item.Author = item.Metadata["author"]
-			}
-			if item.Metadata["tags"] != "" {
-				item.Tags = ParseTags(item.Metadata["tags"])
-			}
-		}
+		ApplyFrontmatter(&item, fm, true)
 		item.Normalize()
 		manifest.Items = append(manifest.Items, item)
 	}
@@ -533,67 +632,69 @@ func probeGitHubCatalogRef(ctx context.Context, target *GitHubTarget, ref string
 	return manifest, nil
 }
 
-// FetchHTTPCatalog fetches a remote catalog manifest via HTTP GET.
+// FetchHTTPCatalog fetches a remote catalog manifest via HTTPS GET.
 // Discovery order:
 // 1. /.well-known/agent-skills/index.json (Cloudflare Agent Skills Discovery RFC v0.2.0)
 // 2. /index.json (google/skills standard)
-// 3. /catalog.json (legacy backwards-compatibility fallback)
 func FetchHTTPCatalog(ctx context.Context, rawURL string, client *http.Client) (*Manifest, string, error) {
+	allowLoopback := AllowLoopbackHTTP(client)
 	if client == nil {
-		client = &http.Client{Timeout: 15 * time.Second}
+		client = NewSafeHTTPClient(15 * time.Second)
 	}
+
+	trimmed := strings.TrimSpace(rawURL)
+	if !strings.Contains(trimmed, "://") {
+		trimmed = "https://" + trimmed
+	}
+	if _, err := ValidateRemoteURL(trimmed, allowLoopback); err != nil {
+		return nil, "", err
+	}
+
 	var endpointsToTry []string
-	if strings.HasSuffix(strings.ToLower(rawURL), ".json") {
-		endpointsToTry = []string{rawURL}
+	if strings.HasSuffix(strings.ToLower(trimmed), ".json") {
+		endpointsToTry = []string{trimmed}
 	} else {
-		base := strings.TrimRight(strings.TrimSpace(rawURL), "/")
-		if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
-			base = "https://" + base
-		}
+		base := strings.TrimRight(trimmed, "/")
 		endpointsToTry = []string{
-			ResolveCatalogURL(base),
+			base + "/.well-known/agent-skills/index.json",
 			base + "/index.json",
-			base + "/catalog.json",
 		}
 	}
 
 	var lastErr error
 	for _, endpoint := range endpointsToTry {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		headers := map[string]string{"Accept": "application/json"}
+		resp, err := FetchWithRetryAndHeaders(ctx, client, endpoint, version.UserAgent(), headers, defaultMaxRetries, defaultInitialBackoff)
 		if err != nil {
-			lastErr = err
-			continue
-		}
-		req.Header.Set("User-Agent", version.UserAgent())
-		req.Header.Set("Accept", "application/json")
-
-		resp, err := client.Do(req)
-		if err != nil {
-			lastErr = fmt.Errorf("fetching catalog from %s: %w", endpoint, err)
-			continue
+			return nil, "", fmt.Errorf("fetching catalog from %s: %w", endpoint, err)
 		}
 
-		if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusNotFound {
 			_ = resp.Body.Close()
-			lastErr = fmt.Errorf("HTTP %d fetching catalog from %s", resp.StatusCode, endpoint)
+			lastErr = &HTTPStatusError{StatusCode: resp.StatusCode, URL: endpoint}
 			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			statusErr := &HTTPStatusError{StatusCode: resp.StatusCode, URL: endpoint}
+			_ = resp.Body.Close()
+			return nil, "", statusErr
 		}
 
 		etag := resp.Header.Get("ETag")
 		data, err := ReadBounded(resp.Body, 10<<20)
 		_ = resp.Body.Close()
 		if err != nil {
-			lastErr = fmt.Errorf("reading catalog response: %w", err)
-			continue
+			return nil, "", fmt.Errorf("reading catalog response from %s: %w", endpoint, err)
 		}
 
 		var manifest Manifest
 		if err := json.Unmarshal(data, &manifest); err != nil {
-			lastErr = fmt.Errorf("parsing catalog manifest from %s: %w", endpoint, err)
-			continue
+			return nil, "", fmt.Errorf("parsing catalog manifest from %s: %w", endpoint, err)
 		}
 
-		ResolveManifestURLs(&manifest, endpoint)
+		if err := ResolveManifestURLs(&manifest, endpoint, allowLoopback); err != nil {
+			return nil, "", err
+		}
 
 		return &manifest, etag, nil
 	}
@@ -603,10 +704,9 @@ func FetchHTTPCatalog(ctx context.Context, rawURL string, client *http.Client) (
 
 // DiscoverLocalCatalog discovers skills inside a local filesystem directory.
 // Discovery order:
-// 1. .well-known/agent-skills/index.json (Cloudflare Agent Skills Discovery RFC v0.2.0)
-// 2. index.json (google/skills standard)
-// 3. catalog.json (legacy backwards-compatibility fallback)
-// 4. Directory crawl (agentskills.io standard)
+// 1. .well-known/agent-skills/index.json
+// 2. index.json
+// 3. Directory crawl for SKILL.md files
 func DiscoverLocalCatalog(dirPath string) (*Manifest, error) {
 	absDir, err := filepath.Abs(dirPath)
 	if err != nil {
@@ -620,119 +720,98 @@ func DiscoverLocalCatalog(dirPath string) (*Manifest, error) {
 		return nil, fmt.Errorf("%s is not a directory", absDir)
 	}
 
-	// 1. .well-known/agent-skills/index.json (Agent Skills Discovery RFC v0.2.0)
-	wkPath := filepath.Join(absDir, ".well-known", "agent-skills", "index.json")
-	if data, err := os.ReadFile(wkPath); err == nil {
-		var m Manifest
-		if err := json.Unmarshal(data, &m); err == nil && len(m.Items) > 0 {
-			for i := range m.Items {
-				m.Items[i].Normalize()
-				if m.Items[i].Source == "" {
-					m.Items[i].Source = absDir
-				}
-			}
-			return &m, nil
-		}
+	manifestCandidates := []string{
+		filepath.Join(absDir, ".well-known", "agent-skills", "index.json"),
+		filepath.Join(absDir, "index.json"),
 	}
-
-	// 2. index.json (google/skills standard)
-	indexPath := filepath.Join(absDir, "index.json")
-	if data, err := os.ReadFile(indexPath); err == nil {
-		var m Manifest
-		if err := json.Unmarshal(data, &m); err == nil && len(m.Items) > 0 {
-			for i := range m.Items {
-				m.Items[i].Normalize()
-				if m.Items[i].Source == "" {
-					m.Items[i].Source = absDir
-				}
-			}
-			return &m, nil
-		}
-	}
-
-	// 3. catalog.json (legacy backwards-compatibility fallback for 2 versions)
-	catPath := filepath.Join(absDir, "catalog.json")
-	if data, err := os.ReadFile(catPath); err == nil {
-		var m Manifest
-		if err := json.Unmarshal(data, &m); err == nil && len(m.Items) > 0 {
-			for i := range m.Items {
-				m.Items[i].Normalize()
-				if m.Items[i].Source == "" {
-					m.Items[i].Source = absDir
-				}
-			}
-			return &m, nil
-		}
-	}
-
-	// 4. Directory crawl (agentskills.io standard)
-	var items []Item
-	err = filepath.Walk(absDir, func(path string, info os.FileInfo, err error) error {
+	for _, cand := range manifestCandidates {
+		f, err := os.Open(cand)
 		if err != nil {
-			return nil
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("reading %s: %w", cand, err)
 		}
-		if info.IsDir() {
-			return nil
+		data, readErr := ReadBounded(f, 10<<20)
+		_ = f.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("reading %s: %w", cand, readErr)
 		}
-		if strings.EqualFold(info.Name(), "skill.md") {
-			content, err := os.ReadFile(path)
-			if err != nil {
+		var m Manifest
+		if err := json.Unmarshal(data, &m); err != nil {
+			return nil, fmt.Errorf("parsing %s: %w", cand, err)
+		}
+		if len(m.Items) == 0 {
+			return nil, fmt.Errorf("manifest %s contains no skills", cand)
+		}
+		for i := range m.Items {
+			m.Items[i].Normalize()
+			if m.Items[i].Source == "" {
+				m.Items[i].Source = absDir
+			}
+		}
+		return &m, nil
+	}
+
+	var items []Item
+	err = filepath.Walk(absDir, func(path string, fi os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			if !IsPathContained(absDir, path) {
 				return nil
 			}
-			fm, _, _ := ParseFrontmatter(content)
-			if fm == nil {
-				fm = &Frontmatter{}
-			}
-
-			skillDir := filepath.Dir(path)
-			relDir, _ := filepath.Rel(absDir, skillDir)
-			skillName := strings.TrimSpace(fm.Name)
-			if skillName == "" {
-				skillName = filepath.Base(skillDir)
-			}
-
-			sum := sha256.Sum256(content)
-			digest := hex.EncodeToString(sum[:])
-
-			item := Item{
-				ID:           skillName,
-				Name:         skillName,
-				Type:         ItemTypeSkill,
-				Description:  fm.Description,
-				License:      fm.License,
-				AllowedTools: fm.AllowedTools,
-				Body:         string(content),
-				Path:         skillDir,
-				RelativePath: relDir,
-				Digest:       digest,
-				Sha256:       digest,
-				Source:       absDir,
-			}
-			if fm.Metadata != nil {
-				if item.Metadata == nil {
-					item.Metadata = make(map[string]string)
-				}
-				maps.Copy(item.Metadata, fm.Metadata)
-				if item.Metadata["version"] != "" {
-					item.Version = item.Metadata["version"]
-				}
-				if item.Metadata["author"] != "" {
-					item.Author = item.Metadata["author"]
-				}
-				if item.Metadata["tags"] != "" {
-					item.Tags = ParseTags(item.Metadata["tags"])
-				}
-			}
-			item.Normalize()
-			items = append(items, item)
 		}
+		if fi.IsDir() {
+			return nil
+		}
+		if !strings.EqualFold(fi.Name(), "skill.md") {
+			return nil
+		}
+		if !IsPathContained(absDir, path) {
+			return nil
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		content, readErr := ReadBounded(f, DefaultMaxSkillMDBytes)
+		_ = f.Close()
+		if readErr != nil {
+			return readErr
+		}
+
+		fm, _, _ := ParseFrontmatter(content)
+		if fm == nil {
+			fm = &Frontmatter{}
+		}
+
+		skillDir := filepath.Dir(path)
+		relDir, _ := filepath.Rel(absDir, skillDir)
+		skillName := strings.TrimSpace(fm.Name)
+		if skillName == "" {
+			skillName = filepath.Base(skillDir)
+		}
+
+		item := Item{
+			ID:           skillName,
+			Name:         skillName,
+			Type:         ItemTypeSkill,
+			Body:         string(content),
+			Path:         skillDir,
+			RelativePath: filepath.ToSlash(relDir),
+			Digest:       ComputeDigest(content),
+			Source:       absDir,
+		}
+		ApplyFrontmatter(&item, fm, true)
+		item.Normalize()
+		items = append(items, item)
 		return nil
 	})
-
 	if err != nil {
 		return nil, fmt.Errorf("discovering local skills in %s: %w", absDir, err)
 	}
-
 	if len(items) == 0 {
 		return nil, fmt.Errorf("no SKILL.md files found in %s", absDir)
 	}
@@ -741,4 +820,46 @@ func DiscoverLocalCatalog(dirPath string) (*Manifest, error) {
 		Version: "1.0.0",
 		Items:   items,
 	}, nil
+}
+
+// ClassifySource returns "local", "http", or "github" for a catalog source string.
+func ClassifySource(source string) string {
+	s := strings.TrimSpace(source)
+	if strings.HasPrefix(s, "/") || strings.HasPrefix(s, "./") || strings.HasPrefix(s, "../") || strings.HasPrefix(s, "~") {
+		return "local"
+	}
+	if u, err := url.Parse(s); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
+		if strings.EqualFold(u.Hostname(), "github.com") || strings.EqualFold(u.Hostname(), "raw.githubusercontent.com") {
+			return "github"
+		}
+		return "http"
+	}
+	if fi, err := os.Stat(s); err == nil && fi.IsDir() {
+		return "local"
+	}
+	if _, ok := ParseGitHubTarget(s); ok {
+		return "github"
+	}
+	return "http"
+}
+
+// FetchSource fetches a catalog manifest from a GitHub, HTTP, or local directory source.
+// Returns the manifest, optional ETag, and resolved source type ("github", "http", or "local").
+func FetchSource(ctx context.Context, source string, client *http.Client) (*Manifest, string, string, error) {
+	kind := ClassifySource(source)
+	switch kind {
+	case "local":
+		m, err := DiscoverLocalCatalog(source)
+		return m, "", "local", err
+	case "github":
+		target, ok := ParseGitHubTarget(source)
+		if !ok {
+			return nil, "", "github", fmt.Errorf("invalid github catalog source %q", source)
+		}
+		m, err := FetchGitHubCatalog(ctx, target, client)
+		return m, "", "github", err
+	default:
+		m, etag, err := FetchHTTPCatalog(ctx, source, client)
+		return m, etag, "http", err
+	}
 }

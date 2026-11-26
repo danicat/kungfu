@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@ package commands
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -26,53 +25,61 @@ import (
 	"time"
 
 	"github.com/danicat/kungfu/internal/catalog"
-	"github.com/danicat/kungfu/internal/runner"
 	"github.com/danicat/kungfu/internal/state"
 )
 
-func resolveInstallDirectory(scope, skillName string) (string, error) {
+func resolveInstallDirectory(scope, wsDir, skillName string) (string, error) {
+	if err := catalog.ValidateSkillName(skillName); err != nil {
+		return "", fmt.Errorf("unsafe skill name %q: %w", skillName, err)
+	}
+	var targetDir string
 	if scope == state.ScopeGlobal {
 		homeDir, err := os.UserHomeDir()
 		if err != nil || homeDir == "" {
 			return "", fmt.Errorf("unable to determine user home directory: %w", err)
 		}
-		return filepath.Join(homeDir, ".agents", "skills", skillName), nil
+		targetDir = filepath.Join(homeDir, ".agents", "skills", skillName)
+	} else {
+		if wsDir == "" {
+			var err error
+			wsDir, err = os.Getwd()
+			if err != nil || wsDir == "" {
+				return "", fmt.Errorf("unable to determine working directory: %w", err)
+			}
+		}
+		targetDir = filepath.Join(wsDir, ".agents", "skills", skillName)
 	}
-	wsDir, err := os.Getwd()
-	if err != nil || wsDir == "" {
-		return "", fmt.Errorf("unable to determine working directory: %w", err)
+	if !isSafeSkillDirectory(targetDir, scope, wsDir) {
+		return "", fmt.Errorf("resolved install directory %q escapes authorized skills directory: %w", targetDir, catalog.ErrInvalidName)
 	}
-	return filepath.Join(wsDir, ".agents", "skills", skillName), nil
+	return targetDir, nil
 }
 
 func (a *App) RunLearn(args []string) int {
 	fs := flag.NewFlagSet("learn", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
-	var globalFlag, forceFlag, loadFlag, jsonFlag, rawFlag bool
+	var globalFlag, forceFlag, jsonFlag bool
 
 	fs.BoolVar(&globalFlag, "global", false, "Install skill to global store (~/.agents/skills/)")
 	fs.BoolVar(&globalFlag, "g", false, "Install skill to global store (shorthand)")
 	fs.BoolVar(&forceFlag, "force", false, "Overwrite existing skill installation")
 	fs.BoolVar(&forceFlag, "f", false, "Overwrite existing skill installation (shorthand)")
-	fs.BoolVar(&loadFlag, "load", false, "Output loaded skill markdown to stdout upon successful installation")
-	fs.BoolVar(&loadFlag, "l", false, "Output loaded skill markdown (shorthand)")
 	fs.BoolVar(&jsonFlag, "json", false, "Output in JSON format")
-	fs.BoolVar(&rawFlag, "raw", false, "Output in raw format")
 
 	posArgs, err := parseFlagsWithArgs(fs, args)
 	if err != nil {
 		return ExitUsage
 	}
 
-	mode := a.resolveMode(jsonFlag, rawFlag)
+	mode := a.resolveMode(jsonFlag)
+
+	if len(posArgs) == 0 {
+		_, _ = fmt.Fprintln(a.Stderr, "error: learn requires at least one skill name or repository (e.g. 'danicat/kungfu')")
+		return ExitUsage
+	}
 
 	var itemsToInstall []catalog.Item
 	var notFounds []string
-
-	if len(posArgs) == 0 {
-		_, _ = fmt.Fprintln(a.Stderr, "error: learn requires at least one skill name or repository (e.g. 'github:owner/repo')")
-		return ExitUsage
-	}
 
 	for _, spec := range posArgs {
 		if isGitHubSkillSpec(spec) {
@@ -111,9 +118,13 @@ func (a *App) RunLearn(args []string) int {
 		return ExitNotFound
 	}
 
-	scope, wsDir := resolveScopeAndDir(globalFlag)
+	scope, wsDir, scopeErr := resolveScopeAndDir(globalFlag)
+	if scopeErr != nil {
+		_, _ = fmt.Fprintf(a.Stderr, "error: %v\n", scopeErr)
+		return ExitGeneral
+	}
 
-	st := a.loadState()
+	st := a.loadStateReconciled()
 	installed := st.GetInstalledSkills(scope, wsDir)
 
 	type InstallResult struct {
@@ -123,18 +134,23 @@ func (a *App) RunLearn(args []string) int {
 		Version string   `json:"version,omitempty"`
 		Digest  string   `json:"digest,omitempty"`
 		Files   []string `json:"files,omitempty"`
-		Content string   `json:"content,omitempty"`
 		Message string   `json:"message,omitempty"`
 	}
 
-	var results []InstallResult
+	type pendingInstall struct {
+		rec       state.SkillRecord
+		catSource string
+	}
+
+	results := make([]InstallResult, 0, len(itemsToInstall))
+	var pending []pendingInstall
 	errExitCode := ExitSuccess
 
 	for _, item := range itemsToInstall {
-		skillDir, dirErr := resolveInstallDirectory(scope, item.Name)
+		skillDir, dirErr := resolveInstallDirectory(scope, wsDir, item.Name)
 		if dirErr != nil {
-			if errExitCode == ExitSuccess {
-				errExitCode = ExitGeneral
+			if code := MapErrorToExitCode(dirErr); errExitCode == ExitSuccess {
+				errExitCode = code
 			}
 			results = append(results, InstallResult{
 				Name:    item.Name,
@@ -156,8 +172,17 @@ func (a *App) RunLearn(args []string) int {
 			})
 			continue
 		}
+		if _, statErr := os.Stat(skillDir); statErr == nil && !forceFlag {
+			results = append(results, InstallResult{
+				Name:    item.Name,
+				Status:  "already_installed",
+				Path:    skillDir,
+				Message: fmt.Sprintf("directory %q already exists on disk; pass -f/--force to overwrite", skillDir),
+			})
+			continue
+		}
 
-		content, err := a.loadItemContent(&item)
+		content, err := a.Store.LoadContent(&item)
 		if err != nil {
 			if code := MapErrorToExitCode(err); errExitCode == ExitSuccess || errExitCode == ExitGeneral {
 				errExitCode = code
@@ -171,7 +196,7 @@ func (a *App) RunLearn(args []string) int {
 		}
 
 		var extraCandidates []string
-		for _, refFile := range a.listReferenceFiles(item) {
+		for _, refFile := range a.collectReferences(item, false) {
 			extraCandidates = append(extraCandidates, "references/"+refFile)
 		}
 		for _, scr := range a.listScripts(item) {
@@ -179,7 +204,7 @@ func (a *App) RunLearn(args []string) int {
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		files, err := runner.InstallSkillContext(ctx, item, skillDir, content, extraCandidates, a.getHTTPClient())
+		files, err := a.getRunner().InstallSkillContext(ctx, item, skillDir, content, extraCandidates, a.getHTTPClient())
 		cancel()
 
 		if err != nil {
@@ -194,12 +219,21 @@ func (a *App) RunLearn(args []string) int {
 			continue
 		}
 
-		pkgDigest, _ := state.ComputePackageDigest(skillDir, files)
-
-		ver := item.Version
-		if ver == "" && item.Metadata != nil {
-			ver = item.Metadata["version"]
+		pkgDigest, digestErr := state.ComputePackageDigest(skillDir, files)
+		if digestErr != nil {
+			if errExitCode == ExitSuccess {
+				errExitCode = ExitIntegrity
+			}
+			results = append(results, InstallResult{
+				Name:    item.Name,
+				Status:  "error",
+				Path:    skillDir,
+				Message: fmt.Sprintf("computing package digest: %v", digestErr),
+			})
+			continue
 		}
+
+		ver := itemVersion(item)
 
 		origin := state.OriginCatalog
 		repo := ""
@@ -229,7 +263,6 @@ func (a *App) RunLearn(args []string) int {
 			rawURL = item.URL
 		}
 
-		catSource := normalizeItemCatalog(item)
 		rec := state.SkillRecord{
 			Name:            item.Name,
 			Scope:           scope,
@@ -247,66 +280,50 @@ func (a *App) RunLearn(args []string) int {
 			Catalog:         item.Source,
 			Files:           files,
 		}
-		st.RecordInstall(scope, wsDir, rec)
-		st.RecordLearnWithCatalog(item.Name, catSource)
+		pending = append(pending, pendingInstall{
+			rec:       rec,
+			catSource: normalizeItemCatalog(item),
+		})
 
-		res := InstallResult{
+		results = append(results, InstallResult{
 			Name:    item.Name,
 			Status:  "installed",
 			Path:    skillDir,
 			Version: ver,
 			Digest:  pkgDigest,
 			Files:   files,
-		}
-		if loadFlag {
-			res.Content = stripFrontmatter(content)
-			st.RecordLoadDetailedWithCatalog(item.Name, catSource, "", 1)
-		}
-		results = append(results, res)
+		})
 	}
 
-	a.saveState(st)
-
-	switch mode {
-	case OutputModeJSON:
-		enc := json.NewEncoder(a.Stdout)
-		enc.SetIndent("", "  ")
-		_ = enc.Encode(results)
-	case OutputModeRaw:
-		for _, r := range results {
-			if r.Status == "installed" {
-				_, _ = fmt.Fprintf(a.Stdout, "installed\t%s\t%s\t%s\t%d\n",
-					sanitizeTSVField(r.Name),
-					sanitizeTSVField(r.Version),
-					sanitizeTSVField(r.Path),
-					len(r.Files),
-				)
-				if loadFlag && r.Content != "" {
-					_, _ = fmt.Fprint(a.Stdout, r.Content)
-					if !strings.HasSuffix(r.Content, "\n") {
-						_, _ = fmt.Fprintln(a.Stdout)
-					}
+	if len(pending) > 0 {
+		telemetryOn := a.Config != nil && a.Config.IsTelemetryEnabled()
+		if err := state.WithLockedState("", func(disk *state.State) error {
+			for _, p := range pending {
+				disk.RecordInstall(scope, wsDir, p.rec)
+				if telemetryOn {
+					disk.RecordLearn(p.rec.Name, p.catSource)
 				}
-			} else {
-				_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\n",
-					sanitizeTSVField(r.Status),
-					sanitizeTSVField(r.Name),
-					sanitizeTSVField(r.Message),
-				)
+			}
+			return nil
+		}); err != nil {
+			path, _ := state.DefaultStateFilePath()
+			_, _ = fmt.Fprintf(a.Stderr, "error: failed to persist state to %s: %v\n", path, err)
+			if errExitCode == ExitSuccess {
+				errExitCode = ExitGeneral
 			}
 		}
-	default: // OutputModeHuman
+	}
+
+	if mode == OutputModeJSON {
+		if err := writeJSON(a.Stdout, results); err != nil {
+			_, _ = fmt.Fprintf(a.Stderr, "error: writing JSON output: %v\n", err)
+			return ExitGeneral
+		}
+	} else {
 		for _, r := range results {
 			switch r.Status {
 			case "installed":
 				_, _ = fmt.Fprintf(a.Stdout, "✓ Learned skill %q into %s scope (%d files in %s)\n", r.Name, scope, len(r.Files), r.Path)
-				if loadFlag && r.Content != "" {
-					_, _ = fmt.Fprintln(a.Stdout, "\n--- Skill Content ---")
-					_, _ = fmt.Fprint(a.Stdout, r.Content)
-					if !strings.HasSuffix(r.Content, "\n") {
-						_, _ = fmt.Fprintln(a.Stdout)
-					}
-				}
 			case "already_installed":
 				_, _ = fmt.Fprintf(a.Stderr, "• %s\n", r.Message)
 			default:

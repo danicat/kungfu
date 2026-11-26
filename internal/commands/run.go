@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,8 +20,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
+	"syscall"
 	"time"
 
+	"github.com/danicat/kungfu/internal/catalog"
 	"github.com/danicat/kungfu/internal/runner"
 	"github.com/danicat/kungfu/internal/search"
 )
@@ -32,7 +35,7 @@ func (a *App) RunRun(args []string) int {
 		return ExitSuccess
 	}
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(a.Stderr, "USAGE:\n  kungfu run <skill> <script> [args...]\n\nExecute bundled skill scripts (supports Python/uv, Node/Bun/Deno, Shell).")
+		_, _ = fmt.Fprintln(a.Stderr, "USAGE:\n  kungfu run <skill> <script> [args...]\n\nExecute bundled skill scripts or binaries.")
 		return ExitUsage
 	}
 	if len(args) < 2 {
@@ -45,14 +48,22 @@ func (a *App) RunRun(args []string) int {
 
 	item, err := a.resolveSkill(skillName)
 	if err != nil {
-		a.printNotFoundWithSuggestions("run", skillName)
+		if errors.Is(err, catalog.ErrItemNotFound) {
+			a.printNotFoundWithSuggestions("run", skillName)
+			return ExitNotFound
+		}
+		_, _ = fmt.Fprintf(a.Stderr, "error: resolving skill %q: %v\n", skillName, err)
 		return MapErrorToExitCode(err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	a.warnIfLocalCopyOutdated(*item, true)
+
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithTimeout(sigCtx, 120*time.Second)
 	defer cancel()
 
-	err = runner.RunScriptContext(ctx, *item, scriptName, scriptArgs, os.Stdin, a.Stdout, a.Stderr)
+	err = a.getRunner().RunScriptContext(ctx, *item, scriptName, scriptArgs, a.getStdin(), a.Stdout, a.Stderr)
 	if err != nil {
 		if errors.Is(err, runner.ErrScriptNotFound) {
 			_, _ = fmt.Fprintf(a.Stderr, "error: script %q not found in skill %q.\n", scriptName, skillName)
@@ -77,7 +88,7 @@ func (a *App) RunRun(args []string) int {
 			return ExitGeneral
 		}
 		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
-			return exitErr.ExitCode()
+			return exitCodeFromExitError(exitErr)
 		}
 		_, _ = fmt.Fprintf(a.Stderr, "error: running script %q: %v\n", scriptName, err)
 		return MapErrorToExitCode(err)

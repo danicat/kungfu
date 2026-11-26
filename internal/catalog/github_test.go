@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,6 +26,8 @@ import (
 )
 
 func TestParseGitHubTarget(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		input       string
 		wantOwner   string
@@ -38,21 +40,21 @@ func TestParseGitHubTarget(t *testing.T) {
 			input:     "https://github.com/anthropics/anthropic-quickstarts",
 			wantOwner: "anthropics",
 			wantRepo:  "anthropic-quickstarts",
-			wantRef:   "main",
+			wantRef:   "HEAD",
 			wantOK:    true,
 		},
 		{
 			input:     "github.com/danicat/kungfu",
 			wantOwner: "danicat",
 			wantRepo:  "kungfu",
-			wantRef:   "main",
+			wantRef:   "HEAD",
 			wantOK:    true,
 		},
 		{
 			input:       "anthropics/anthropic-quickstarts/evals",
 			wantOwner:   "anthropics",
 			wantRepo:    "anthropic-quickstarts",
-			wantRef:     "main",
+			wantRef:     "HEAD",
 			wantSubpath: "evals",
 			wantOK:      true,
 		},
@@ -90,7 +92,7 @@ func TestParseGitHubTarget(t *testing.T) {
 			input:     "https://github.com/danicat/kungfu.git",
 			wantOwner: "danicat",
 			wantRepo:  "kungfu",
-			wantRef:   "main",
+			wantRef:   "HEAD",
 			wantOK:    true,
 		},
 		{
@@ -116,14 +118,14 @@ func TestParseGitHubTarget(t *testing.T) {
 			wantRef:   "v1.2.3",
 			wantOK:    true,
 		},
-		{
-			input:  "invalid",
-			wantOK: false,
-		},
-		{
-			input:  "",
-			wantOK: false,
-		},
+		{input: "invalid", wantOK: false},
+		{input: "", wantOK: false},
+		{input: "https://evil.example.com/owner/repo", wantOK: false},
+		{input: "https://github.com/owner/repo?foo=bar", wantOK: false},
+		{input: "owner/repo/../../etc/passwd", wantOK: false},
+		{input: "owner/repo/sub?query=1", wantOK: false},
+		{input: "-badowner/repo", wantOK: false},
+		{input: "owner/repo@", wantOK: false},
 	}
 
 	for _, tc := range tests {
@@ -147,11 +149,19 @@ func TestParseGitHubTarget(t *testing.T) {
 			if target.Subpath != tc.wantSubpath {
 				t.Errorf("Subpath = %q, want %q", target.Subpath, tc.wantSubpath)
 			}
+
+			// CanonicalSource must round-trip cleanly.
+			roundTripped, rtOK := ParseGitHubTarget(target.CanonicalSource())
+			if !rtOK || roundTripped.Owner != target.Owner || roundTripped.Repo != target.Repo || roundTripped.Ref != target.Ref || roundTripped.Subpath != target.Subpath {
+				t.Errorf("CanonicalSource(%q) round-trip mismatch: got %+v (ok=%v), want %+v", target.CanonicalSource(), roundTripped, rtOK, target)
+			}
 		})
 	}
 }
 
 func TestFetchGitHubSkillMock(t *testing.T) {
+	t.Parallel()
+
 	mockContent := `---
 name: custom-evals
 description: Custom evaluation harness
@@ -175,6 +185,15 @@ Instructions here.
 	}))
 	defer server.Close()
 
+	client := server.Client()
+	origTransport := client.Transport
+	client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		clone := req.Clone(req.Context())
+		clone.URL.Scheme = "http"
+		clone.URL.Host = server.Listener.Addr().String()
+		return origTransport.RoundTrip(clone)
+	})
+
 	target := &GitHubTarget{
 		Owner:   "testowner",
 		Repo:    "testrepo",
@@ -182,26 +201,30 @@ Instructions here.
 		Subpath: "skills/evals",
 	}
 
-	fm, _, err := ParseFrontmatter([]byte(mockContent))
+	item, err := FetchGitHubSkill(context.Background(), target, client)
 	if err != nil {
-		t.Fatalf("ParseFrontmatter failed: %v", err)
+		t.Fatalf("FetchGitHubSkill failed: %v", err)
 	}
-	if fm.Name != "custom-evals" {
-		t.Errorf("Name = %q, want custom-evals", fm.Name)
+	if item.Name != "custom-evals" {
+		t.Errorf("Name = %q, want custom-evals", item.Name)
 	}
-	if fm.Description != "Custom evaluation harness" {
-		t.Errorf("Description = %q", fm.Description)
+	if item.Description != "Custom evaluation harness" {
+		t.Errorf("Description = %q", item.Description)
 	}
-	if fm.Metadata["version"] != "1.2.0" {
-		t.Errorf("version = %q, want 1.2.0", fm.Metadata["version"])
+	if item.Version != "1.2.0" {
+		t.Errorf("Version = %q, want 1.2.0", item.Version)
 	}
-
-	_ = target
-	_ = server
-	_ = context.Background()
+	if item.URL != "https://raw.githubusercontent.com/testowner/testrepo/main/skills/evals/SKILL.md" {
+		t.Errorf("URL = %q", item.URL)
+	}
+	if item.Digest != ComputeDigest([]byte(mockContent)) {
+		t.Errorf("Digest = %q, want %q", item.Digest, ComputeDigest([]byte(mockContent)))
+	}
 }
 
 func TestDiscoverLocalCatalog(t *testing.T) {
+	t.Parallel()
+
 	tempDir := t.TempDir()
 
 	// Create skill 1
@@ -241,13 +264,18 @@ metadata:
 		t.Fatalf("write file error: %v", err)
 	}
 
+	// Symlink escaping tempDir must be ignored.
+	outsideDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(outsideDir, "SKILL.md"), []byte("---\nname: escaped\n---\n# Escaped\n"), 0644)
+	_ = os.Symlink(filepath.Join(outsideDir, "SKILL.md"), filepath.Join(tempDir, "skills", "SKILL.md"))
+
 	manifest, err := DiscoverLocalCatalog(tempDir)
 	if err != nil {
 		t.Fatalf("DiscoverLocalCatalog failed: %v", err)
 	}
 
 	if len(manifest.Items) != 2 {
-		t.Fatalf("expected 2 items, got %d", len(manifest.Items))
+		t.Fatalf("expected 2 items, got %d (%+v)", len(manifest.Items), manifest.Items)
 	}
 
 	itemsMap := make(map[string]Item)
@@ -269,13 +297,14 @@ metadata:
 		t.Errorf("expected 2 tags, got %v", s1.Tags)
 	}
 
-	_, ok = itemsMap["skill-two"]
-	if !ok {
+	if _, ok := itemsMap["skill-two"]; !ok {
 		t.Fatalf("skill-two not found in manifest")
 	}
 }
 
 func TestFetchHTTPCatalog(t *testing.T) {
+	t.Parallel()
+
 	manifest := Manifest{
 		Version: "1.0.0",
 		Items: []Item{
@@ -296,7 +325,7 @@ func TestFetchHTTPCatalog(t *testing.T) {
 	defer server.Close()
 
 	ctx := context.Background()
-	m, etag, err := FetchHTTPCatalog(ctx, server.URL+"/catalog.json", server.Client())
+	m, etag, err := FetchHTTPCatalog(ctx, server.URL+"/index.json", server.Client())
 	if err != nil {
 		t.Fatalf("FetchHTTPCatalog failed: %v", err)
 	}
@@ -309,9 +338,9 @@ func TestFetchHTTPCatalog(t *testing.T) {
 }
 
 func TestNamedCatalogCache(t *testing.T) {
-	tempCache := t.TempDir()
-	t.Setenv("HOME", tempCache)
+	t.Parallel()
 
+	tempCache := t.TempDir()
 	manifest := Manifest{
 		Version: "1.0.0",
 		Items: []Item{
@@ -324,11 +353,11 @@ func TestNamedCatalogCache(t *testing.T) {
 	}
 
 	catName := "google/skills"
-	if err := SaveNamedCatalogCache(catName, "https://github.com/google/skills", manifest, "etag-abc"); err != nil {
+	if err := SaveNamedCatalogCache(tempCache, catName, "https://github.com/google/skills", manifest, "etag-abc"); err != nil {
 		t.Fatalf("SaveNamedCatalogCache failed: %v", err)
 	}
 
-	loaded, err := LoadNamedCatalogCache(catName)
+	loaded, err := LoadNamedCatalogCache(tempCache, catName)
 	if err != nil {
 		t.Fatalf("LoadNamedCatalogCache failed: %v", err)
 	}
@@ -336,93 +365,76 @@ func TestNamedCatalogCache(t *testing.T) {
 		t.Errorf("unexpected cached item: %+v", loaded.Manifest.Items)
 	}
 
-	allCaches, err := LoadAllNamedCatalogCaches()
+	allCaches, err := LoadAllNamedCatalogCaches(tempCache)
 	if err != nil {
 		t.Fatalf("LoadAllNamedCatalogCaches failed: %v", err)
 	}
-	if len(allCaches) == 0 {
-		t.Fatalf("expected at least 1 cached catalog, got %d", len(allCaches))
+	if _, ok := allCaches[catName]; !ok {
+		t.Fatalf("expected catalog %q in LoadAllNamedCatalogCaches, got keys: %v", catName, allCaches)
 	}
 
-	if err := DeleteNamedCatalogCache(catName); err != nil {
+	if err := DeleteNamedCatalogCache(tempCache, catName); err != nil {
 		t.Fatalf("DeleteNamedCatalogCache failed: %v", err)
 	}
 
-	_, err = LoadNamedCatalogCache(catName)
-	if err == nil {
+	if _, err := LoadNamedCatalogCache(tempCache, catName); err == nil {
 		t.Errorf("expected error after cache deletion, got nil")
 	}
 }
 
-func TestSafeCatalogFileName(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"google/skills", "google-skills.json"},
-		{"https://example.com/skills", "example.com-skills.json"},
-		{"my-catalog", "my-catalog.json"},
-		{"", "default.json"},
-	}
+func TestSafeCatalogFileName_CollisionFree(t *testing.T) {
+	t.Parallel()
 
-	for _, tc := range tests {
-		got := SafeCatalogFileName(tc.input)
-		if got != tc.expected {
-			t.Errorf("SafeCatalogFileName(%q) = %q, expected %q", tc.input, got, tc.expected)
+	a := SafeCatalogFileName("google/skills")
+	b := SafeCatalogFileName("google-skills")
+	if a == b {
+		t.Errorf("expected collision-free names for google/skills and google-skills, both got %q", a)
+	}
+	for _, name := range []string{a, b, SafeCatalogFileName(""), SafeCatalogFileName("https://example.com/skills")} {
+		if !strings.HasSuffix(name, ".json") {
+			t.Errorf("expected .json suffix, got %q", name)
 		}
+		if strings.ContainsAny(name, `/\:@`) {
+			t.Errorf("unsafe characters in catalog filename %q", name)
+		}
+	}
+	if SafeCatalogFileName("my-cat") != SafeCatalogFileName("MY-CAT") {
+		t.Errorf("expected case-insensitive deterministic catalog filename")
 	}
 }
 
-func TestFetchGitHubCatalog_StaticCatalog(t *testing.T) {
-	manifest := Manifest{
-		Version: "1.0.0",
-		Items: []Item{
-			{
-				ID:          "skill-a",
-				Name:        "skill-a",
-				Description: "Skill A from static catalog",
-			},
-		},
-	}
-	data, _ := json.Marshal(manifest)
+func TestFetchGitHubCatalog_FailFastOnServerError(t *testing.T) {
+	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "catalog.json") {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(data)
+		if strings.HasSuffix(r.URL.Path, "/.well-known/agent-skills/index.json") {
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		http.NotFound(w, r)
+		t.Errorf("unexpected fallback request after 500 error: %s", r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer server.Close()
 
 	client := server.Client()
 	origTransport := client.Transport
 	client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		req.URL.Scheme = "http"
-		req.URL.Host = server.Listener.Addr().String()
-		if origTransport != nil {
-			return origTransport.RoundTrip(req)
-		}
-		return http.DefaultTransport.RoundTrip(req)
+		clone := req.Clone(req.Context())
+		clone.URL.Scheme = "http"
+		clone.URL.Host = server.Listener.Addr().String()
+		return origTransport.RoundTrip(clone)
 	})
 
-	target := &GitHubTarget{
-		Owner: "google",
-		Repo:  "skills",
-		Ref:   "main",
-	}
-
-	m, err := FetchGitHubCatalog(context.Background(), target, client)
-	if err != nil {
-		t.Fatalf("FetchGitHubCatalog static failed: %v", err)
-	}
-	if len(m.Items) != 1 || m.Items[0].Name != "skill-a" {
-		t.Errorf("unexpected items from static catalog: %+v", m.Items)
+	target := &GitHubTarget{Owner: "google", Repo: "skills", Ref: "main"}
+	_, err := FetchGitHubCatalog(context.Background(), target, client)
+	if err == nil {
+		t.Fatalf("expected fail-fast error on 500 response")
 	}
 }
 
 func TestFetchGitHubCatalog_TreeDiscovery(t *testing.T) {
+	t.Parallel()
+
 	treeResp := githubTreeResponse{
 		Sha: "treesha",
 		Tree: []struct {
@@ -466,10 +478,12 @@ metadata:
 	defer server.Close()
 
 	client := server.Client()
+	origTransport := client.Transport
 	client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		req.URL.Scheme = "http"
-		req.URL.Host = server.Listener.Addr().String()
-		return http.DefaultTransport.RoundTrip(req)
+		clone := req.Clone(req.Context())
+		clone.URL.Scheme = "http"
+		clone.URL.Host = server.Listener.Addr().String()
+		return origTransport.RoundTrip(clone)
 	})
 
 	target := &GitHubTarget{
@@ -488,9 +502,40 @@ metadata:
 	if m.Items[0].Author != "google" {
 		t.Errorf("expected author google, got %q", m.Items[0].Author)
 	}
+	wantURL := "https://raw.githubusercontent.com/google/skills/main/skills/gemini-dev/SKILL.md"
+	if m.Items[0].URL != wantURL {
+		t.Errorf("tree-discovered URL = %q, want %q", m.Items[0].URL, wantURL)
+	}
+
+	// Truncated tree response must fail fast.
+	truncResp := githubTreeResponse{Sha: "treesha", Truncated: true}
+	truncData, _ := json.Marshal(truncResp)
+	truncServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/git/trees/") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(truncData)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer truncServer.Close()
+
+	tClient := truncServer.Client()
+	tOrig := tClient.Transport
+	tClient.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		clone := req.Clone(req.Context())
+		clone.URL.Scheme = "http"
+		clone.URL.Host = truncServer.Listener.Addr().String()
+		return tOrig.RoundTrip(clone)
+	})
+	if _, err := FetchGitHubCatalog(context.Background(), target, tClient); err == nil || !strings.Contains(err.Error(), "truncated") {
+		t.Errorf("expected truncated tree error, got: %v", err)
+	}
 }
 
 func TestFetchGitHubCatalog_GoogleIndexJSON(t *testing.T) {
+	t.Parallel()
+
 	googleIndexJSON := `{
   "generator": "This file is generated. Do not edit it by hand.",
   "skills": [
@@ -508,7 +553,7 @@ func TestFetchGitHubCatalog_GoogleIndexJSON(t *testing.T) {
 }`
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "index.json") {
+		if strings.HasSuffix(r.URL.Path, "/index.json") && !strings.Contains(r.URL.Path, ".well-known") {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(googleIndexJSON))
 			return
@@ -518,10 +563,12 @@ func TestFetchGitHubCatalog_GoogleIndexJSON(t *testing.T) {
 	defer server.Close()
 
 	client := server.Client()
+	origTransport := client.Transport
 	client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		req.URL.Scheme = "http"
-		req.URL.Host = server.Listener.Addr().String()
-		return http.DefaultTransport.RoundTrip(req)
+		clone := req.Clone(req.Context())
+		clone.URL.Scheme = "http"
+		clone.URL.Host = server.Listener.Addr().String()
+		return origTransport.RoundTrip(clone)
 	})
 
 	target := &GitHubTarget{
@@ -556,6 +603,8 @@ func TestFetchGitHubCatalog_GoogleIndexJSON(t *testing.T) {
 }
 
 func TestFetchGitHubCatalog_WellKnownAgentSkillsIndexJSON(t *testing.T) {
+	t.Parallel()
+
 	wellKnownJSON := `{
   "$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
   "version": "1.0.0",
@@ -583,10 +632,12 @@ func TestFetchGitHubCatalog_WellKnownAgentSkillsIndexJSON(t *testing.T) {
 	defer server.Close()
 
 	client := server.Client()
+	origTransport := client.Transport
 	client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		req.URL.Scheme = "http"
-		req.URL.Host = server.Listener.Addr().String()
-		return http.DefaultTransport.RoundTrip(req)
+		clone := req.Clone(req.Context())
+		clone.URL.Scheme = "http"
+		clone.URL.Host = server.Listener.Addr().String()
+		return origTransport.RoundTrip(clone)
 	})
 
 	target := &GitHubTarget{

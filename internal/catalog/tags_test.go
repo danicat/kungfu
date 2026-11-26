@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,6 +19,8 @@ import (
 )
 
 func TestParseTags(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		input string
 		want  []string
@@ -41,42 +43,5 @@ func TestParseTags(t *testing.T) {
 				t.Errorf("ParseTags(%q)[%d] = %q, want %q", tt.input, i, got[i], tt.want[i])
 			}
 		}
-	}
-}
-
-func TestMatchTags(t *testing.T) {
-	tests := []struct {
-		name     string
-		tags     []string
-		query    string
-		expected bool
-	}{
-		{"empty query matches all", []string{"go", "web"}, "", true},
-		{"single tag match", []string{"go", "testing"}, "go", true},
-		{"single tag mismatch", []string{"python", "django"}, "go", false},
-		{"implicit AND match", []string{"go", "ebiten", "game"}, "ebiten game", true},
-		{"implicit AND mismatch", []string{"go", "game"}, "ebiten game", false},
-		{"explicit AND match", []string{"gamedev", "ebiten", "2d"}, "gamedev AND ebiten", true},
-		{"explicit AND mismatch", []string{"gamedev", "unity"}, "gamedev AND ebiten", false},
-		{"plus sign AND match", []string{"gamedev", "ebiten"}, "gamedev+ebiten", true},
-		{"comma OR match left", []string{"go", "testing"}, "go, python", true},
-		{"comma OR match right", []string{"python", "testing"}, "go, python", true},
-		{"comma OR mismatch", []string{"rust", "testing"}, "go, python", false},
-		{"explicit OR match", []string{"golang", "ast"}, "golang OR typescript", true},
-		{"explicit NOT match", []string{"gamedev", "2d"}, "gamedev NOT 3d", true},
-		{"explicit NOT mismatch", []string{"gamedev", "3d"}, "gamedev NOT 3d", false},
-		{"minus sign NOT match", []string{"gamedev", "2d"}, "gamedev -3d", true},
-		{"parenthesized expression", []string{"go", "game"}, "(go OR rust) AND (game OR web)", true},
-		{"parenthesized expression fail", []string{"go", "cli"}, "(go OR rust) AND (game OR web)", false},
-		{"case insensitivity", []string{"GOLANG", "Testing"}, "golang AND testing", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := MatchTags(tt.tags, tt.query)
-			if got != tt.expected {
-				t.Errorf("MatchTags(%v, %q) = %v, want %v", tt.tags, tt.query, got, tt.expected)
-			}
-		})
 	}
 }

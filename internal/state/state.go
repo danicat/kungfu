@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,20 +19,20 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/danicat/kungfu/internal/catalog"
+	"github.com/danicat/kungfu/internal/config"
 )
 
 const (
-	SchemaVersion     = "1.0"
-	StatusInstalled   = "installed"
-	StatusUninstalled = "uninstalled"
+	SchemaVersion   = "1.0"
+	StatusInstalled = "installed"
 
 	ScopeWorkspace = "workspace"
 	ScopeGlobal    = "global"
@@ -41,43 +41,28 @@ const (
 	OriginCustom  = "custom"
 	OriginGitHub  = "github"
 
-	CatalogTypeDefault = "default"
-	CatalogTypeGitHub  = "github"
-	CatalogTypeHTTP    = "http"
-	CatalogTypeLocal   = "local"
+	defaultLockTimeout = 10 * time.Second
+	maxStateFileBytes  = 10 << 20 // 10 MiB
+	maxHashFileBytes   = 50 << 20 // 50 MiB per file when computing package digest
 )
 
-// CatalogRecord represents a configured external or custom catalog source.
-type CatalogRecord struct {
-	Name       string    `json:"name"`              // Unique catalog identifier (e.g. "google/skills", "internal")
-	Type       string    `json:"type"`              // "github", "http", "local", "default"
-	Source     string    `json:"source"`            // "google/skills", "https://...", "/path/to/dir"
-	URL        string    `json:"url,omitempty"`     // Canonical URL or repo URL
-	Ref        string    `json:"ref,omitempty"`     // Branch/tag ref for github (e.g. "main")
-	Subpath    string    `json:"subpath,omitempty"` // Subpath inside repository or directory
-	SkillCount int       `json:"skill_count"`       // Number of indexed skills
-	AddedAt    time.Time `json:"added_at"`          // When catalog was registered
-	UpdatedAt  time.Time `json:"updated_at"`        // When catalog index was last updated
-}
-
-// SkillRecord represents an installed or soft-deleted skill package.
+// SkillRecord represents an installed skill package.
 type SkillRecord struct {
-	Name            string     `json:"name"`
-	Status          string     `json:"status"`            // "installed" or "uninstalled"
-	Scope           string     `json:"scope"`             // "workspace" or "global"
-	Origin          string     `json:"origin,omitempty"`  // "catalog", "custom", or "github"
-	Repo            string     `json:"repo,omitempty"`    // e.g. "https://github.com/owner/repo" or "owner/repo"
-	Ref             string     `json:"ref,omitempty"`     // e.g. "main", "v1.0.0"
-	RawURL          string     `json:"raw_url,omitempty"` // e.g. "https://raw.githubusercontent.com/owner/repo/main/path/SKILL.md"
-	Catalog         string     `json:"catalog,omitempty"` // Catalog name (e.g. "kungfu", "default")
-	Path            string     `json:"path"`
-	Version         string     `json:"version,omitempty"`
-	Digest          string     `json:"digest,omitempty"`           // Current/reconciled digest
-	InstalledDigest string     `json:"installed_digest,omitempty"` // Immutable baseline digest at install time
-	InstalledAt     time.Time  `json:"installed_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
-	UninstalledAt   *time.Time `json:"uninstalled_at,omitempty"`
-	Files           []string   `json:"files,omitempty"`
+	Name            string    `json:"name"`
+	Status          string    `json:"status"`            // "installed"
+	Scope           string    `json:"scope"`             // "workspace" or "global"
+	Origin          string    `json:"origin,omitempty"`  // "catalog", "custom", or "github"
+	Repo            string    `json:"repo,omitempty"`    // e.g. "https://github.com/owner/repo" or "owner/repo"
+	Ref             string    `json:"ref,omitempty"`     // e.g. "HEAD", "main", "v1.0.0"
+	RawURL          string    `json:"raw_url,omitempty"` // Canonical download URL
+	Catalog         string    `json:"catalog,omitempty"` // Source catalog name (e.g. "default", "kungfu")
+	Path            string    `json:"path"`
+	Version         string    `json:"version,omitempty"`
+	Digest          string    `json:"digest,omitempty"`           // Current/reconciled package digest
+	InstalledDigest string    `json:"installed_digest,omitempty"` // Immutable baseline digest at install time
+	InstalledAt     time.Time `json:"installed_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+	Files           []string  `json:"files,omitempty"`
 }
 
 // WorkspaceState holds skills installed in a specific workspace directory.
@@ -85,8 +70,7 @@ type WorkspaceState struct {
 	Skills map[string]SkillRecord `json:"skills"`
 }
 
-// HistoryRecord tracks immutable cumulative JIT load, learn, and script execution counts for a skill,
-// along with its source catalog provenance.
+// HistoryRecord tracks opt-in local usage counts for a skill.
 type HistoryRecord struct {
 	Catalog          string    `json:"catalog,omitempty"`
 	LastSeenAt       time.Time `json:"last_seen_at"`
@@ -97,82 +81,61 @@ type HistoryRecord struct {
 	LearnCount       int       `json:"learn_count,omitempty"`
 }
 
-// State represents the complete root manifest in ~/.config/kungfu/state.json.
+// State represents the persisted state manifest in ~/.config/kungfu/state.json.
 type State struct {
 	SchemaVersion string                     `json:"schema_version"`
 	UpdatedAt     time.Time                  `json:"updated_at"`
 	Workspaces    map[string]*WorkspaceState `json:"workspaces,omitempty"`
 	Global        *WorkspaceState            `json:"global,omitempty"`
 	History       map[string]*HistoryRecord  `json:"history,omitempty"`
-	Catalogs      map[string]CatalogRecord   `json:"catalogs,omitempty"`
-
-	deletedCatalogs map[string]bool `json:"-"`
-	mu              sync.RWMutex    `json:"-"`
 }
-
-const DefaultRemoteCatalogURL = "https://skills.danicat.dev/.well-known/agent-skills/index.json"
-const DefaultGitHubCatalog = "danicat/kungfu"
 
 // NewState creates an initialized State struct.
 func NewState() *State {
-	now := time.Now().UTC()
-	s := &State{
+	return &State{
 		SchemaVersion: SchemaVersion,
-		UpdatedAt:     now,
+		UpdatedAt:     time.Now().UTC(),
 		Workspaces:    make(map[string]*WorkspaceState),
 		Global: &WorkspaceState{
 			Skills: make(map[string]SkillRecord),
 		},
-		History:  make(map[string]*HistoryRecord),
-		Catalogs: make(map[string]CatalogRecord),
+		History: make(map[string]*HistoryRecord),
 	}
-	s.Catalogs[CatalogTypeDefault] = CatalogRecord{
-		Name:      CatalogTypeDefault,
-		Type:      CatalogTypeDefault,
-		Source:    DefaultRemoteCatalogURL,
-		URL:       DefaultRemoteCatalogURL,
-		AddedAt:   now,
-		UpdatedAt: now,
-	}
-	s.Catalogs["kungfu"] = CatalogRecord{
-		Name:      "kungfu",
-		Type:      CatalogTypeGitHub,
-		Source:    DefaultGitHubCatalog,
-		URL:       "https://github.com/" + DefaultGitHubCatalog,
-		Ref:       "main",
-		AddedAt:   now,
-		UpdatedAt: now,
-	}
-	return s
 }
 
-// DefaultStateFilePath returns ~/.config/kungfu/state.json, or respects KUNGFU_STATE_PATH / KUNGFU_CONFIG_DIR.
-func DefaultStateFilePath() string {
-	if statePath := os.Getenv("KUNGFU_STATE_PATH"); statePath != "" {
-		return statePath
+// DefaultStateFilePath resolves ~/.config/kungfu/state.json, respecting KUNGFU_STATE_PATH and config.UserConfigDir.
+func DefaultStateFilePath() (string, error) {
+	if statePath := strings.TrimSpace(os.Getenv("KUNGFU_STATE_PATH")); statePath != "" {
+		return statePath, nil
 	}
-	if configDir := os.Getenv("KUNGFU_CONFIG_DIR"); configDir != "" {
-		return filepath.Join(configDir, "state.json")
+	dir, err := config.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("state: %w", err)
 	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		panic(fmt.Sprintf("kungfu: unable to determine user home directory: %v", err))
-	}
-	return filepath.Join(home, ".config", "kungfu", "state.json")
+	return filepath.Join(dir, "state.json"), nil
 }
 
-// LoadState loads the State from the specified file path, or returns a new State if it does not exist.
+// LoadState loads State from filePath, returning a fresh State if the file does not exist.
 func LoadState(filePath string) (*State, error) {
 	if filePath == "" {
-		filePath = DefaultStateFilePath()
+		var err error
+		filePath, err = DefaultStateFilePath()
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	data, err := os.ReadFile(filePath)
+	f, err := os.Open(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return NewState(), nil
 		}
 		return nil, fmt.Errorf("state: reading %s: %w", filePath, err)
+	}
+	data, readErr := catalog.ReadBounded(f, maxStateFileBytes)
+	_ = f.Close()
+	if readErr != nil {
+		return nil, fmt.Errorf("state: reading %s: %w", filePath, readErr)
 	}
 
 	var s State
@@ -191,47 +154,39 @@ func LoadState(filePath string) (*State, error) {
 	if s.History == nil {
 		s.History = make(map[string]*HistoryRecord)
 	}
-	if s.Catalogs == nil {
-		s.Catalogs = make(map[string]CatalogRecord)
-	}
-	if _, ok := s.Catalogs[CatalogTypeDefault]; !ok {
-		now := time.Now().UTC()
-		s.Catalogs[CatalogTypeDefault] = CatalogRecord{
-			Name:      CatalogTypeDefault,
-			Type:      CatalogTypeDefault,
-			Source:    DefaultRemoteCatalogURL,
-			URL:       DefaultRemoteCatalogURL,
-			AddedAt:   now,
-			UpdatedAt: now,
+
+	// Prune any legacy soft-deleted records left over from older state files.
+	for name, rec := range s.Global.Skills {
+		if rec.Status != "" && rec.Status != StatusInstalled {
+			delete(s.Global.Skills, name)
 		}
 	}
-	if _, ok := s.Catalogs["kungfu"]; !ok {
-		now := time.Now().UTC()
-		s.Catalogs["kungfu"] = CatalogRecord{
-			Name:      "kungfu",
-			Type:      CatalogTypeGitHub,
-			Source:    DefaultGitHubCatalog,
-			URL:       "https://github.com/" + DefaultGitHubCatalog,
-			Ref:       "main",
-			AddedAt:   now,
-			UpdatedAt: now,
+	for _, ws := range s.Workspaces {
+		if ws == nil || ws.Skills == nil {
+			continue
+		}
+		for name, rec := range ws.Skills {
+			if rec.Status != "" && rec.Status != StatusInstalled {
+				delete(ws.Skills, name)
+			}
 		}
 	}
 
 	return &s, nil
 }
 
-// SaveState saves the State atomically to the specified file path.
+// SaveState writes State atomically to filePath with 0700/0600 modes and fsync.
 func SaveState(filePath string, s *State) error {
 	if s == nil {
 		return fmt.Errorf("state: cannot save nil state")
 	}
 	if filePath == "" {
-		filePath = DefaultStateFilePath()
+		var err error
+		filePath, err = DefaultStateFilePath()
+		if err != nil {
+			return err
+		}
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	s.UpdatedAt = time.Now().UTC()
 	if s.SchemaVersion == "" {
@@ -239,7 +194,7 @@ func SaveState(filePath string, s *State) error {
 	}
 
 	dir := filepath.Dir(filePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("state: creating directory %s: %w", dir, err)
 	}
 
@@ -254,15 +209,22 @@ func SaveState(filePath string, s *State) error {
 		return fmt.Errorf("state: creating temp file in %s: %w", dir, err)
 	}
 	tmpPath := tmpFile.Name()
-	if _, err := tmpFile.Write(data); err != nil {
+	cleanup := func() {
 		_ = tmpFile.Close()
 		_ = os.Remove(tmpPath)
+	}
+
+	if _, err := tmpFile.Write(data); err != nil {
+		cleanup()
 		return fmt.Errorf("state: writing temp file %s: %w", tmpPath, err)
 	}
-	if err := tmpFile.Chmod(0644); err != nil {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpPath)
+	if err := tmpFile.Chmod(0600); err != nil {
+		cleanup()
 		return fmt.Errorf("state: setting permissions on %s: %w", tmpPath, err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		cleanup()
+		return fmt.Errorf("state: syncing temp file %s: %w", tmpPath, err)
 	}
 	if err := tmpFile.Close(); err != nil {
 		_ = os.Remove(tmpPath)
@@ -277,20 +239,24 @@ func SaveState(filePath string, s *State) error {
 	return nil
 }
 
-// WithLockedState acquires an exclusive cross-process file lock on filePath+".lock",
+// WithLockedState acquires a bounded-timeout exclusive cross-process file lock on filePath+".lock",
 // loads the current State from disk, executes fn(s), and saves the updated State atomically.
 func WithLockedState(filePath string, fn func(s *State) error) error {
 	if filePath == "" {
-		filePath = DefaultStateFilePath()
+		var err error
+		filePath, err = DefaultStateFilePath()
+		if err != nil {
+			return err
+		}
 	}
 
 	dir := filepath.Dir(filePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("state: creating lock directory %s: %w", dir, err)
 	}
 
 	lockPath := filePath + ".lock"
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	lockFile, err := openLockFile(lockPath)
 	if err != nil {
 		return fmt.Errorf("state: opening lock file %s: %w", lockPath, err)
 	}
@@ -298,7 +264,7 @@ func WithLockedState(filePath string, fn func(s *State) error) error {
 		_ = lockFile.Close()
 	}()
 
-	if err := lockFileExclusive(lockFile); err != nil {
+	if err := lockFileExclusive(lockFile, defaultLockTimeout); err != nil {
 		return fmt.Errorf("state: acquiring exclusive lock on %s: %w", lockPath, err)
 	}
 	defer func() {
@@ -345,11 +311,7 @@ func (s *State) scopeSkillsMap(scope, workspaceDir string, create bool) map[stri
 
 // RecordInstall records or updates a skill installation in the state.
 func (s *State) RecordInstall(scope string, workspaceDir string, record SkillRecord) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	record.Status = StatusInstalled
-	record.UninstalledAt = nil
 	if record.Digest != "" {
 		record.InstalledDigest = record.Digest
 	}
@@ -367,44 +329,20 @@ func (s *State) RecordInstall(scope string, workspaceDir string, record SkillRec
 	skills[record.Name] = record
 }
 
-// RecordForget soft-deletes a skill by marking it uninstalled.
+// RecordForget removes a skill record cleanly from the state.
 func (s *State) RecordForget(scope string, workspaceDir string, skillName string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	skills := s.scopeSkillsMap(scope, workspaceDir, false)
-	rec, ok := skills[skillName]
-	if !ok {
+	if _, ok := skills[skillName]; !ok {
 		return false
 	}
-
-	now := time.Now().UTC()
-	rec.Status = StatusUninstalled
-	rec.UninstalledAt = &now
-	rec.UpdatedAt = now
-	skills[skillName] = rec
+	delete(skills, skillName)
 	return true
 }
 
-// RecordLoad updates the last seen timestamp and increments primary load count for a skill.
-func (s *State) RecordLoad(skillName string) {
-	s.RecordLoadDetailedWithCatalog(skillName, "", "", 1)
-}
-
-// RecordLoadDetailed updates the last seen timestamp and increments the appropriate counter
-// (LoadCount for primary page-1 loads, PageLoadCount for continuation pages > 1, or SubpathLoadCount for subpaths).
-func (s *State) RecordLoadDetailed(skillName, subpath string, page int) {
-	s.RecordLoadDetailedWithCatalog(skillName, "", subpath, page)
-}
-
-// RecordLoadDetailedWithCatalog updates the last seen timestamp, source catalog, and increments the appropriate counter.
-func (s *State) RecordLoadDetailedWithCatalog(skillName, catalogSource, subpath string, page int) {
-	if skillName == "" {
-		return
+func (s *State) ensureHistory(skillName, catalogSource string) *HistoryRecord {
+	if s.History == nil {
+		s.History = make(map[string]*HistoryRecord)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	now := time.Now().UTC()
 	rec, ok := s.History[skillName]
 	if !ok || rec == nil {
@@ -419,7 +357,15 @@ func (s *State) RecordLoadDetailedWithCatalog(skillName, catalogSource, subpath 
 			rec.Catalog = strings.TrimSpace(catalogSource)
 		}
 	}
+	return rec
+}
 
+// RecordLoad increments local load history counters (LoadCount, PageLoadCount, or SubpathLoadCount).
+func (s *State) RecordLoad(skillName, catalogSource, subpath string, page int) {
+	if skillName == "" {
+		return
+	}
+	rec := s.ensureHistory(skillName, catalogSource)
 	if subpath != "" {
 		rec.SubpathLoadCount++
 	} else if page > 1 {
@@ -429,73 +375,26 @@ func (s *State) RecordLoadDetailedWithCatalog(skillName, catalogSource, subpath 
 	}
 }
 
-// RecordRun updates the last seen timestamp and increments the script execution count for a skill.
-func (s *State) RecordRun(skillName string) {
-	s.RecordRunWithCatalog(skillName, "")
-}
-
-// RecordRunWithCatalog updates the last seen timestamp, source catalog, and increments the script execution count for a skill.
-func (s *State) RecordRunWithCatalog(skillName, catalogSource string) {
+// RecordRun increments the local script execution counter for a skill.
+func (s *State) RecordRun(skillName, catalogSource string) {
 	if skillName == "" {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	now := time.Now().UTC()
-	rec, ok := s.History[skillName]
-	if !ok || rec == nil {
-		rec = &HistoryRecord{
-			Catalog:    strings.TrimSpace(catalogSource),
-			LastSeenAt: now,
-			RunCount:   1,
-		}
-		s.History[skillName] = rec
-	} else {
-		rec.LastSeenAt = now
-		if catalogSource != "" {
-			rec.Catalog = strings.TrimSpace(catalogSource)
-		}
-		rec.RunCount++
-	}
+	rec := s.ensureHistory(skillName, catalogSource)
+	rec.RunCount++
 }
 
-// RecordLearn updates the last seen timestamp and increments the learn count for a skill.
-func (s *State) RecordLearn(skillName string) {
-	s.RecordLearnWithCatalog(skillName, "")
-}
-
-// RecordLearnWithCatalog updates the last seen timestamp, source catalog, and increments the learn count for a skill.
-func (s *State) RecordLearnWithCatalog(skillName, catalogSource string) {
+// RecordLearn increments the local install counter for a skill.
+func (s *State) RecordLearn(skillName, catalogSource string) {
 	if skillName == "" {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	now := time.Now().UTC()
-	rec, ok := s.History[skillName]
-	if !ok || rec == nil {
-		rec = &HistoryRecord{
-			Catalog:    strings.TrimSpace(catalogSource),
-			LastSeenAt: now,
-			LearnCount: 1,
-		}
-		s.History[skillName] = rec
-	} else {
-		rec.LastSeenAt = now
-		if catalogSource != "" {
-			rec.Catalog = strings.TrimSpace(catalogSource)
-		}
-		rec.LearnCount++
-	}
+	rec := s.ensureHistory(skillName, catalogSource)
+	rec.LearnCount++
 }
 
 // GetSkill returns the SkillRecord for a skill in a workspace or global scope.
 func (s *State) GetSkill(scope string, workspaceDir string, skillName string) (SkillRecord, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	skills := s.scopeSkillsMap(scope, workspaceDir, false)
 	if skills == nil {
 		return SkillRecord{}, false
@@ -504,30 +403,19 @@ func (s *State) GetSkill(scope string, workspaceDir string, skillName string) (S
 	return rec, ok
 }
 
-func (s *State) filterSkillsByStatus(scope, workspaceDir, status string) map[string]SkillRecord {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
+// GetInstalledSkills returns all currently installed skills in the given scope.
+func (s *State) GetInstalledSkills(scope string, workspaceDir string) map[string]SkillRecord {
 	out := make(map[string]SkillRecord)
 	for name, rec := range s.scopeSkillsMap(scope, workspaceDir, false) {
-		if rec.Status == status {
+		if rec.Status == "" || rec.Status == StatusInstalled {
 			out[name] = rec
 		}
 	}
 	return out
 }
 
-// GetInstalledSkills returns all currently installed skills in the given scope.
-func (s *State) GetInstalledSkills(scope string, workspaceDir string) map[string]SkillRecord {
-	return s.filterSkillsByStatus(scope, workspaceDir, StatusInstalled)
-}
-
-// GetForgottenSkills returns all soft-deleted skills in the given scope.
-func (s *State) GetForgottenSkills(scope string, workspaceDir string) map[string]SkillRecord {
-	return s.filterSkillsByStatus(scope, workspaceDir, StatusUninstalled)
-}
-
-// ComputePackageDigest computes a deterministic SHA-256 hash over a skill package's files.
+// ComputePackageDigest computes a deterministic SHA-256 hash over regular files inside baseDir.
+// Rejects path traversal, symlinks, and non-regular files, and stream-hashes with a size cap.
 func ComputePackageDigest(baseDir string, files []string) (string, error) {
 	if len(files) == 0 {
 		return "", nil
@@ -540,27 +428,45 @@ func ComputePackageDigest(baseDir string, files []string) (string, error) {
 	h := sha256.New()
 	for _, rel := range sortedFiles {
 		cleanRel := filepath.ToSlash(filepath.Clean(rel))
-		h.Write([]byte(cleanRel + "\n"))
+		if cleanRel == "." || cleanRel == ".." || strings.HasPrefix(cleanRel, "../") || strings.HasPrefix(cleanRel, "/") || filepath.IsAbs(rel) {
+			return "", fmt.Errorf("state: invalid relative file path %q", rel)
+		}
 
 		filePath := filepath.Join(baseDir, filepath.FromSlash(cleanRel))
-		data, err := os.ReadFile(filePath)
+		if !catalog.IsPathContained(baseDir, filePath) {
+			return "", fmt.Errorf("state: file %q escapes %q", rel, baseDir)
+		}
+
+		fi, err := os.Lstat(filePath)
+		if err != nil {
+			return "", fmt.Errorf("state: stating %s: %w", filePath, err)
+		}
+		if !fi.Mode().IsRegular() {
+			continue
+		}
+
+		h.Write([]byte(cleanRel + "\n"))
+		f, err := os.Open(filePath)
 		if err != nil {
 			return "", fmt.Errorf("state: hashing %s: %w", filePath, err)
 		}
-		h.Write(data)
+		n, copyErr := io.Copy(h, io.LimitReader(f, maxHashFileBytes+1))
+		_ = f.Close()
+		if copyErr != nil {
+			return "", fmt.Errorf("state: hashing %s: %w", filePath, copyErr)
+		}
+		if n > maxHashFileBytes {
+			return "", fmt.Errorf("state: file %s exceeds maximum hash size (%d bytes)", filePath, maxHashFileBytes)
+		}
 		h.Write([]byte("\n--FILE-BOUNDARY--\n"))
 	}
 
 	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// ReconcileDisk scans the workspace and global skills directories on disk,
-// registering untracked skills and reconciling metadata (files, digests, versions).
-// isCatalogKnown is a function that checks if a skill name is a known catalog skill.
+// ReconcileDisk scans workspace and global skill directories on disk, registering untracked skills,
+// updating modified digests/versions, and pruning records whose SKILL.md was removed from disk.
 func (s *State) ReconcileDisk(workspaceDir string, globalDir string, isCatalogKnown func(string) bool) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	changed := false
 
 	reconcileScope := func(skillsRoot string, scope string, wsDir string) {
@@ -573,19 +479,18 @@ func (s *State) ReconcileDisk(workspaceDir string, globalDir string, isCatalogKn
 		}
 
 		for _, entry := range entries {
+			if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
+				continue
+			}
 			skillName := entry.Name()
 			skillPath := filepath.Join(skillsRoot, skillName)
-			if !entry.IsDir() {
-				dirInfo, statErr := os.Stat(skillPath)
-				if statErr != nil || !dirInfo.IsDir() {
-					continue
-				}
+			if !catalog.IsPathContained(skillsRoot, skillPath) {
+				continue
 			}
-			skillMD := filepath.Join(skillPath, "SKILL.md")
 
-			// Only process directories with a valid SKILL.md
-			fi, err := os.Stat(skillMD)
-			if err != nil || fi.IsDir() {
+			skillMD := filepath.Join(skillPath, "SKILL.md")
+			fi, err := os.Lstat(skillMD)
+			if err != nil || !fi.Mode().IsRegular() {
 				continue
 			}
 
@@ -593,8 +498,11 @@ func (s *State) ReconcileDisk(workspaceDir string, globalDir string, isCatalogKn
 			digest, _ := ComputePackageDigest(skillPath, files)
 
 			version := ""
-			if content, err := os.ReadFile(skillMD); err == nil {
-				version = extractVersion(string(content))
+			if f, err := os.Open(skillMD); err == nil {
+				if content, readErr := catalog.ReadBounded(f, catalog.DefaultMaxSkillMDBytes); readErr == nil {
+					version = extractVersion(string(content))
+				}
+				_ = f.Close()
 			}
 
 			origin := OriginCustom
@@ -604,7 +512,7 @@ func (s *State) ReconcileDisk(workspaceDir string, globalDir string, isCatalogKn
 
 			skills := s.scopeSkillsMap(scope, wsDir, true)
 			rec, exists := skills[skillName]
-			if !exists || rec.Status != StatusInstalled {
+			if !exists {
 				skills[skillName] = SkillRecord{
 					Name:            skillName,
 					Status:          StatusInstalled,
@@ -657,33 +565,24 @@ func (s *State) ReconcileDisk(workspaceDir string, globalDir string, isCatalogKn
 		if skills == nil {
 			return
 		}
-		now := time.Now().UTC()
 		for name, rec := range skills {
-			if rec.Status != StatusInstalled {
-				continue
-			}
 			skillMD := filepath.Join(rec.Path, "SKILL.md")
 			if rec.Path == "" {
 				skillMD = filepath.Join(skillsRoot, name, "SKILL.md")
 			}
-			if fi, err := os.Stat(skillMD); err != nil || fi.IsDir() {
-				rec.Status = StatusUninstalled
-				rec.UninstalledAt = &now
-				rec.UpdatedAt = now
-				skills[name] = rec
+			if fi, err := os.Lstat(skillMD); err != nil || !fi.Mode().IsRegular() {
+				delete(skills, name)
 				changed = true
 			}
 		}
 	}
 
-	// 1. Reconcile workspace
 	if workspaceDir != "" {
 		wsSkillsDir := filepath.Join(workspaceDir, ".agents", "skills")
 		reconcileScope(wsSkillsDir, ScopeWorkspace, workspaceDir)
 		reconcileDeleted(wsSkillsDir, ScopeWorkspace, workspaceDir)
 	}
 
-	// 2. Reconcile global
 	if globalDir != "" {
 		gSkillsDir := filepath.Join(globalDir, ".agents", "skills")
 		if _, err := os.Stat(gSkillsDir); err == nil {
@@ -701,7 +600,10 @@ func scanSkillFiles(dir string) ([]string, error) {
 		if err != nil {
 			return nil
 		}
-		if info.IsDir() {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if info.IsDir() || !info.Mode().IsRegular() {
 			return nil
 		}
 		rel, err := filepath.Rel(dir, path)
@@ -720,165 +622,5 @@ func extractVersion(content string) string {
 			return strings.Trim(v, "\"'")
 		}
 	}
-	lines := strings.Split(content, "\n")
-	inFrontmatter := false
-	for _, rawLine := range lines {
-		line := strings.TrimSpace(rawLine)
-		if line == "---" {
-			if !inFrontmatter {
-				inFrontmatter = true
-				continue
-			}
-			break
-		}
-		if inFrontmatter {
-			if after, ok := strings.CutPrefix(line, "version:"); ok {
-				v := strings.TrimSpace(after)
-				return strings.Trim(v, "\"'")
-			}
-		}
-	}
 	return ""
-}
-
-// AddCatalog adds or updates a registered catalog source.
-func (s *State) AddCatalog(rec CatalogRecord) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.Catalogs == nil {
-		s.Catalogs = make(map[string]CatalogRecord)
-	}
-	if s.deletedCatalogs != nil {
-		delete(s.deletedCatalogs, rec.Name)
-	}
-	if rec.AddedAt.IsZero() {
-		rec.AddedAt = time.Now().UTC()
-	}
-	rec.UpdatedAt = time.Now().UTC()
-	s.Catalogs[rec.Name] = rec
-	s.UpdatedAt = time.Now().UTC()
-}
-
-// RemoveCatalog removes a registered catalog by name.
-func (s *State) RemoveCatalog(name string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.Catalogs == nil {
-		return false
-	}
-	if _, ok := s.Catalogs[name]; ok {
-		delete(s.Catalogs, name)
-		if s.deletedCatalogs == nil {
-			s.deletedCatalogs = make(map[string]bool)
-		}
-		s.deletedCatalogs[name] = true
-		s.UpdatedAt = time.Now().UTC()
-		return true
-	}
-	return false
-}
-
-// MergeInto merges changes from s into disk without clobbering newer concurrent updates on disk.
-func (s *State) MergeInto(disk *State) {
-	if s == nil || disk == nil {
-		return
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if disk.Workspaces == nil {
-		disk.Workspaces = make(map[string]*WorkspaceState)
-	}
-	for wsPath, ws := range s.Workspaces {
-		if ws == nil || len(ws.Skills) == 0 {
-			continue
-		}
-		diskWs, ok := disk.Workspaces[wsPath]
-		if !ok || diskWs == nil || diskWs.Skills == nil {
-			diskWs = &WorkspaceState{Skills: make(map[string]SkillRecord)}
-			disk.Workspaces[wsPath] = diskWs
-		}
-		for name, rec := range ws.Skills {
-			if diskRec, exists := diskWs.Skills[name]; !exists || !rec.UpdatedAt.Before(diskRec.UpdatedAt) {
-				diskWs.Skills[name] = rec
-			}
-		}
-	}
-
-	if s.Global != nil && len(s.Global.Skills) > 0 {
-		if disk.Global == nil || disk.Global.Skills == nil {
-			disk.Global = &WorkspaceState{Skills: make(map[string]SkillRecord)}
-		}
-		for name, rec := range s.Global.Skills {
-			if diskRec, exists := disk.Global.Skills[name]; !exists || !rec.UpdatedAt.Before(diskRec.UpdatedAt) {
-				disk.Global.Skills[name] = rec
-			}
-		}
-	}
-
-	if disk.Catalogs == nil {
-		disk.Catalogs = make(map[string]CatalogRecord)
-	}
-	for deleted := range s.deletedCatalogs {
-		delete(disk.Catalogs, deleted)
-	}
-	for name, rec := range s.Catalogs {
-		if s.deletedCatalogs[name] {
-			continue
-		}
-		if diskRec, exists := disk.Catalogs[name]; !exists || !rec.UpdatedAt.Before(diskRec.UpdatedAt) {
-			disk.Catalogs[name] = rec
-		}
-	}
-
-	if disk.History == nil {
-		disk.History = make(map[string]*HistoryRecord)
-	}
-	for name, h := range s.History {
-		if h == nil {
-			continue
-		}
-		cur, ok := disk.History[name]
-		if !ok || cur == nil {
-			cp := *h
-			disk.History[name] = &cp
-			continue
-		}
-		if h.LastSeenAt.After(cur.LastSeenAt) {
-			cur.LastSeenAt = h.LastSeenAt
-		}
-		if cur.Catalog == "" && h.Catalog != "" {
-			cur.Catalog = h.Catalog
-		}
-		cur.LoadCount = max(cur.LoadCount, h.LoadCount)
-		cur.PageLoadCount = max(cur.PageLoadCount, h.PageLoadCount)
-		cur.SubpathLoadCount = max(cur.SubpathLoadCount, h.SubpathLoadCount)
-		cur.RunCount = max(cur.RunCount, h.RunCount)
-		cur.LearnCount = max(cur.LearnCount, h.LearnCount)
-	}
-}
-
-// GetCatalog retrieves a registered catalog by name.
-func (s *State) GetCatalog(name string) (CatalogRecord, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.Catalogs == nil {
-		return CatalogRecord{}, false
-	}
-	rec, ok := s.Catalogs[name]
-	return rec, ok
-}
-
-// GetCatalogs returns all registered catalogs sorted by name.
-func (s *State) GetCatalogs() []CatalogRecord {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var list []CatalogRecord
-	for _, rec := range s.Catalogs {
-		list = append(list, rec)
-	}
-	sort.Slice(list, func(i, j int) bool {
-		return list[i].Name < list[j].Name
-	})
-	return list
 }

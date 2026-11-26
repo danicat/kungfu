@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -30,25 +29,33 @@ import (
 func (a *App) RunForget(args []string) int {
 	fs := flag.NewFlagSet("forget", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
-	var globalFlag, forceFlag, allFlag, jsonFlag, rawFlag bool
+	var globalFlag, forceFlag, allFlag, jsonFlag bool
 
 	fs.BoolVar(&globalFlag, "global", false, "Forget skill from global store (~/.agents/skills/)")
 	fs.BoolVar(&globalFlag, "g", false, "Forget skill from global store (shorthand)")
-	fs.BoolVar(&forceFlag, "force", false, "Force forget without confirmation")
-	fs.BoolVar(&forceFlag, "f", false, "Force forget without confirmation (shorthand)")
+	fs.BoolVar(&forceFlag, "force", false, "Also remove custom/external skills not installed by kungfu")
+	fs.BoolVar(&forceFlag, "f", false, "Also remove custom/external skills (shorthand)")
 	fs.BoolVar(&allFlag, "all", false, "Forget all installed skills in scope")
 	fs.BoolVar(&allFlag, "a", false, "Forget all installed skills in scope (shorthand)")
 	fs.BoolVar(&jsonFlag, "json", false, "Output in JSON format")
-	fs.BoolVar(&rawFlag, "raw", false, "Output in raw format")
 
 	posArgs, err := parseFlagsWithArgs(fs, args)
 	if err != nil {
 		return ExitUsage
 	}
 
-	scope, wsDir := resolveScopeAndDir(globalFlag)
+	if allFlag && len(posArgs) > 0 {
+		_, _ = fmt.Fprintln(a.Stderr, "error: cannot combine --all with explicit skill names")
+		return ExitUsage
+	}
 
-	st := a.loadState()
+	scope, wsDir, scopeErr := resolveScopeAndDir(globalFlag)
+	if scopeErr != nil {
+		_, _ = fmt.Fprintf(a.Stderr, "error: %v\n", scopeErr)
+		return ExitGeneral
+	}
+
+	st := a.loadStateReconciled()
 	installed := st.GetInstalledSkills(scope, wsDir)
 
 	var targets []string
@@ -74,9 +81,10 @@ func (a *App) RunForget(args []string) int {
 		Message string   `json:"message,omitempty"`
 	}
 
-	var results []ForgetResult
+	results := make([]ForgetResult, 0, len(targets))
+	var forgottenNames []string
 
-	var installedNames []string
+	installedNames := make([]string, 0, len(installed))
 	for k := range installed {
 		installedNames = append(installedNames, k)
 	}
@@ -111,10 +119,6 @@ func (a *App) RunForget(args []string) int {
 				})
 				continue
 			}
-			for _, relFile := range rec.Files {
-				filePath := filepath.Join(rec.Path, filepath.FromSlash(relFile))
-				_ = os.Remove(filePath)
-			}
 			if err := os.RemoveAll(rec.Path); err != nil {
 				results = append(results, ForgetResult{
 					Name:    name,
@@ -125,7 +129,7 @@ func (a *App) RunForget(args []string) int {
 			}
 		}
 
-		st.RecordForget(scope, wsDir, name)
+		forgottenNames = append(forgottenNames, name)
 		results = append(results, ForgetResult{
 			Name:   name,
 			Status: "forgotten",
@@ -134,30 +138,31 @@ func (a *App) RunForget(args []string) int {
 		})
 	}
 
-	a.saveState(st)
-
-	mode := a.resolveMode(jsonFlag, rawFlag)
-	switch mode {
-	case OutputModeJSON:
-		enc := json.NewEncoder(a.Stdout)
-		enc.SetIndent("", "  ")
-		_ = enc.Encode(results)
-	case OutputModeRaw:
-		for _, r := range results {
-			if r.Status == "forgotten" {
-				_, _ = fmt.Fprintf(a.Stdout, "forgot\t%s\t%s\n",
-					sanitizeTSVField(r.Name),
-					sanitizeTSVField(r.Path),
-				)
-			} else {
-				_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\n",
-					sanitizeTSVField(r.Status),
-					sanitizeTSVField(r.Name),
-					sanitizeTSVField(r.Message),
-				)
+	saveFailed := false
+	if len(forgottenNames) > 0 {
+		if err := state.WithLockedState("", func(disk *state.State) error {
+			for _, name := range forgottenNames {
+				disk.RecordForget(scope, wsDir, name)
 			}
+			return nil
+		}); err != nil {
+			saveFailed = true
+			path, _ := state.DefaultStateFilePath()
+			_, _ = fmt.Fprintf(a.Stderr, "error: failed to persist state to %s: %v\n", path, err)
 		}
-	default: // OutputModeHuman
+	}
+
+	mode := a.resolveMode(jsonFlag)
+	if mode == OutputModeJSON {
+		if err := writeJSON(a.Stdout, results); err != nil {
+			_, _ = fmt.Fprintf(a.Stderr, "error: writing JSON output: %v\n", err)
+			return ExitGeneral
+		}
+	} else {
+		globalHint := ""
+		if globalFlag {
+			globalHint = "-g "
+		}
 		for _, r := range results {
 			switch r.Status {
 			case "forgotten":
@@ -173,7 +178,7 @@ func (a *App) RunForget(args []string) int {
 					if len(suggs) > 0 {
 						_, _ = fmt.Fprintln(a.Stderr, "\nDid you mean:")
 						for _, s := range suggs {
-							_, _ = fmt.Fprintf(a.Stderr, "  - kungfu forget %s\n", s)
+							_, _ = fmt.Fprintf(a.Stderr, "  - kungfu forget %s%s\n", globalHint, s)
 						}
 					}
 				}
@@ -181,6 +186,10 @@ func (a *App) RunForget(args []string) int {
 				_, _ = fmt.Fprintf(a.Stderr, "✗ Failed to forget skill %q: %s\n", r.Name, r.Message)
 			}
 		}
+	}
+
+	if saveFailed {
+		return ExitGeneral
 	}
 
 	hasNotFound := false
@@ -201,6 +210,26 @@ func (a *App) RunForget(args []string) int {
 		return ExitNotFound
 	}
 	return ExitSuccess
+}
+
+func resolveSymlinkPrefix(p string) string {
+	clean := filepath.Clean(p)
+	if realP, err := filepath.EvalSymlinks(clean); err == nil {
+		return realP
+	}
+	parent := filepath.Dir(clean)
+	relParts := []string{filepath.Base(clean)}
+	for {
+		if evalParent, err := filepath.EvalSymlinks(parent); err == nil {
+			return filepath.Join(append([]string{evalParent}, relParts...)...)
+		}
+		relParts = append([]string{filepath.Base(parent)}, relParts...)
+		next := filepath.Dir(parent)
+		if next == parent {
+			return clean
+		}
+		parent = next
+	}
 }
 
 func isSafeSkillDirectory(targetPath, scope, wsDir string) bool {
@@ -232,20 +261,8 @@ func isSafeSkillDirectory(targetPath, scope, wsDir string) bool {
 		return false
 	}
 
-	realBase, err := filepath.EvalSymlinks(allowedBase)
-	if err != nil {
-		realBase = allowedBase
-	}
-	realTarget, err := filepath.EvalSymlinks(cleanTarget)
-	if err != nil {
-		parent := filepath.Dir(cleanTarget)
-		evalParent, pErr := filepath.EvalSymlinks(parent)
-		if pErr == nil {
-			realTarget = filepath.Join(evalParent, filepath.Base(cleanTarget))
-		} else {
-			realTarget = cleanTarget
-		}
-	}
+	realBase := resolveSymlinkPrefix(allowedBase)
+	realTarget := resolveSymlinkPrefix(cleanTarget)
 
 	realRel, err := filepath.Rel(realBase, realTarget)
 	if err != nil || realRel == "." || realRel == ".." || strings.HasPrefix(realRel, ".."+string(filepath.Separator)) {

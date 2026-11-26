@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,19 +17,50 @@
 package state
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"syscall"
+	"time"
 )
 
-func lockFileExclusive(f *os.File) error {
+func openLockFile(lockPath string) (*os.File, error) {
+	return os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0600)
+}
+
+func lockFileExclusive(f *os.File, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+	backoff := 5 * time.Millisecond
+
 	for {
-		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
-		if err != syscall.EINTR {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return nil
+		}
+		if err == syscall.EINTR {
+			continue
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
 			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out after %s waiting for state lock", timeout)
+		}
+		time.Sleep(backoff)
+		if backoff < 100*time.Millisecond {
+			backoff *= 2
 		}
 	}
 }
 
 func unlockFile(f *os.File) error {
-	return syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		if err != syscall.EINTR {
+			return err
+		}
+	}
 }

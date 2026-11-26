@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,25 +19,36 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+
+	"github.com/danicat/kungfu/internal/version"
 )
 
 // Archive safety errors per Cloudflare Agent Skills Discovery RFC v0.2.0.
 var (
 	ErrArchiveTraversal         = errors.New("archive contains path traversal or absolute path")
-	ErrArchiveSymlinkEscapes    = errors.New("archive contains symlink or hardlink escaping skill directory")
-	ErrArchiveDecompressionBomb = errors.New("archive exceeds maximum unpacked size limit")
+	ErrArchiveSymlinkEscapes    = errors.New("archive contains disallowed symlink or hardlink")
+	ErrArchiveDecompressionBomb = errors.New("archive exceeds maximum unpacked size or file count limit")
 	ErrArchiveMissingSkillMD    = errors.New("archive missing required SKILL.md at root")
 	ErrUnsupportedArchiveFormat = errors.New("unsupported archive format (expected .tar.gz or .zip)")
 )
 
-// DefaultMaxUnpackedBytes limits total unpacked size to prevent decompression bombs (50 MB).
-const DefaultMaxUnpackedBytes = 50 * 1024 * 1024
+const (
+	// DefaultMaxUnpackedBytes limits total unpacked archive size (50 MiB).
+	DefaultMaxUnpackedBytes = 50 * 1024 * 1024
+	// DefaultMaxArchiveFiles limits total entries in a skill archive to prevent inode exhaustion.
+	DefaultMaxArchiveFiles = 2000
+	// DefaultMaxSkillMDBytes limits plain SKILL.md downloads and extractions (5 MiB).
+	DefaultMaxSkillMDBytes = 5 * 1024 * 1024
+)
 
 // ReadBounded reads all bytes from r up to maxBytes, returning ErrArchiveDecompressionBomb if r exceeds maxBytes.
 func ReadBounded(r io.Reader, maxBytes int64) ([]byte, error) {
@@ -94,7 +105,7 @@ func ExtractSkillMDFromArchive(data []byte) (string, error) {
 	if len(data) >= 4 && data[0] == 'P' && data[1] == 'K' && data[2] == 0x03 && data[3] == 0x04 {
 		return extractSkillMDZip(data)
 	}
-	return "", errors.New("unrecognized archive format")
+	return "", ErrUnsupportedArchiveFormat
 }
 
 func extractSkillMDTarGz(data []byte) (string, error) {
@@ -104,26 +115,38 @@ func extractSkillMDTarGz(data []byte) (string, error) {
 	}
 	defer func() { _ = gzr.Close() }()
 
-	tr := tar.NewReader(gzr)
+	// Bound total decompressed tar stream to prevent gzip bombs on non-SKILL.md entries.
+	maxStream := int64(DefaultMaxUnpackedBytes) + int64(DefaultMaxArchiveFiles)*4096
+	limited := io.LimitReader(gzr, maxStream+1)
+	tr := tar.NewReader(limited)
+
+	entries := 0
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
+			if limited.(*io.LimitedReader).N == 0 {
+				return "", fmt.Errorf("%w: decompressed stream exceeded limit", ErrArchiveDecompressionBomb)
+			}
 			return "", fmt.Errorf("reading tar entry: %w", err)
+		}
+		entries++
+		if entries > DefaultMaxArchiveFiles {
+			return "", fmt.Errorf("%w: exceeds %d entries", ErrArchiveDecompressionBomb, DefaultMaxArchiveFiles)
 		}
 
 		cleanName := strings.TrimPrefix(hdr.Name, "./")
-		if cleanName == "SKILL.md" || strings.EqualFold(cleanName, "SKILL.md") {
-			content, err := ReadBounded(tr, 5<<20)
+		if hdr.Typeflag == tar.TypeReg && (cleanName == "SKILL.md" || strings.EqualFold(cleanName, "SKILL.md")) {
+			content, err := ReadBounded(tr, DefaultMaxSkillMDBytes)
 			if err != nil {
 				return "", fmt.Errorf("reading SKILL.md: %w", err)
 			}
 			return string(content), nil
 		}
 	}
-	return "", errors.New("SKILL.md not found in archive")
+	return "", ErrArchiveMissingSkillMD
 }
 
 func extractSkillMDZip(data []byte) (string, error) {
@@ -131,17 +154,23 @@ func extractSkillMDZip(data []byte) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("reading zip: %w", err)
 	}
+	if len(zr.File) > DefaultMaxArchiveFiles {
+		return "", fmt.Errorf("%w: exceeds %d entries", ErrArchiveDecompressionBomb, DefaultMaxArchiveFiles)
+	}
 	for _, f := range zr.File {
 		cleanName := strings.TrimPrefix(f.Name, "./")
+		if f.FileInfo().IsDir() || f.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
 		if cleanName == "SKILL.md" || strings.EqualFold(cleanName, "SKILL.md") {
-			if f.UncompressedSize64 > 5<<20 {
-				return "", fmt.Errorf("%w: SKILL.md exceeds 5 MiB", ErrArchiveDecompressionBomb)
+			if f.UncompressedSize64 > DefaultMaxSkillMDBytes {
+				return "", fmt.Errorf("%w: SKILL.md exceeds %d bytes", ErrArchiveDecompressionBomb, DefaultMaxSkillMDBytes)
 			}
 			rc, err := f.Open()
 			if err != nil {
 				return "", fmt.Errorf("opening zip SKILL.md: %w", err)
 			}
-			content, err := ReadBounded(rc, 5<<20)
+			content, err := ReadBounded(rc, DefaultMaxSkillMDBytes)
 			_ = rc.Close()
 			if err != nil {
 				return "", fmt.Errorf("reading zip SKILL.md: %w", err)
@@ -149,23 +178,41 @@ func extractSkillMDZip(data []byte) (string, error) {
 			return string(content), nil
 		}
 	}
-	return "", errors.New("SKILL.md not found in archive")
+	return "", ErrArchiveMissingSkillMD
 }
 
-// IsArchiveCachedWithDigest reports whether <cacheRoot>/skills/<skillName> has been unpacked
-// and matches expectedDigest (when expectedDigest is non-empty).
-func IsArchiveCachedWithDigest(cacheRoot, skillName, expectedDigest string) bool {
+// IsArchiveCachedWithDigest reports whether the skill cache directory has been unpacked,
+// matches expectedDigest, and has an intact SKILL.md matching its recorded digest.
+func IsArchiveCachedWithDigest(cacheRoot, skillName, source, expectedDigest string) bool {
 	if cacheRoot == "" || skillName == "" {
 		return false
 	}
-	cleanSkillName := filepath.Base(filepath.Clean(skillName))
-	if cleanSkillName == "" || cleanSkillName == "." || cleanSkillName == ".." {
+	skillDir, err := SkillCacheDir(cacheRoot, skillName, source)
+	if err != nil {
 		return false
 	}
-	skillDir := filepath.Join(cacheRoot, "skills", cleanSkillName)
-	if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err != nil {
+	return isArchiveDirCachedWithDigest(skillDir, expectedDigest)
+}
+
+func isArchiveDirCachedWithDigest(skillDir, expectedDigest string) bool {
+	skillMDPath := filepath.Join(skillDir, "SKILL.md")
+	f, err := os.Open(skillMDPath)
+	if err != nil {
 		return false
 	}
+	mdBytes, readErr := ReadBounded(f, DefaultMaxSkillMDBytes)
+	_ = f.Close()
+	if readErr != nil || len(mdBytes) == 0 {
+		return false
+	}
+
+	// Verify cached SKILL.md digest if present (protects against on-disk tampering).
+	if mdDigestBytes, err := os.ReadFile(filepath.Join(skillDir, ".skillmd.digest")); err == nil {
+		if VerifyDigest(mdBytes, strings.TrimSpace(string(mdDigestBytes))) != nil {
+			return false
+		}
+	}
+
 	if strings.TrimSpace(expectedDigest) == "" {
 		return true
 	}
@@ -177,23 +224,25 @@ func IsArchiveCachedWithDigest(cacheRoot, skillName, expectedDigest string) bool
 }
 
 // UnpackArchiveToCache unpacks the archive into a temporary directory under <cacheRoot>/skills,
-// records the normalized digest in .digest, and atomically swaps it into <cacheRoot>/skills/<skillName>.
-func UnpackArchiveToCache(data []byte, cacheRoot, skillName, expectedDigest string) ([]string, error) {
+// records the normalized archive and SKILL.md digests, and atomically swaps it into the skill cache directory.
+func UnpackArchiveToCache(data []byte, cacheRoot, skillName, source, expectedDigest string) ([]string, string, error) {
 	if cacheRoot == "" || skillName == "" {
-		return nil, errors.New("cacheRoot and skillName are required")
+		return nil, "", errors.New("cacheRoot and skillName are required")
 	}
-	cleanSkillName := filepath.Base(filepath.Clean(skillName))
-	if cleanSkillName == "" || cleanSkillName == "." || cleanSkillName == ".." {
-		return nil, fmt.Errorf("invalid skill name %q", skillName)
+	skillDir, err := SkillCacheDir(cacheRoot, skillName, source)
+	if err != nil {
+		return nil, "", err
 	}
-	skillsParentDir := filepath.Join(cacheRoot, "skills")
-	if err := os.MkdirAll(skillsParentDir, 0755); err != nil {
-		return nil, fmt.Errorf("creating skills cache dir: %w", err)
+	skillsParentDir := filepath.Dir(skillDir)
+	cleanKey := filepath.Base(skillDir)
+
+	if err := os.MkdirAll(skillsParentDir, 0700); err != nil {
+		return nil, "", fmt.Errorf("creating skills cache dir: %w", err)
 	}
 
-	tmpDir, err := os.MkdirTemp(skillsParentDir, "."+cleanSkillName+"-tmp-*")
+	tmpDir, err := os.MkdirTemp(skillsParentDir, "."+cleanKey+"-tmp-*")
 	if err != nil {
-		return nil, fmt.Errorf("creating temp archive dir: %w", err)
+		return nil, "", fmt.Errorf("creating temp archive dir: %w", err)
 	}
 	defer func() {
 		_ = os.RemoveAll(tmpDir)
@@ -201,46 +250,101 @@ func UnpackArchiveToCache(data []byte, cacheRoot, skillName, expectedDigest stri
 
 	extracted, err := UnpackArchive(data, tmpDir, DefaultMaxUnpackedBytes)
 	if err != nil {
-		return nil, err
+		return nil, "", err
+	}
+
+	mdBytes, err := os.ReadFile(filepath.Join(tmpDir, "SKILL.md"))
+	if err != nil {
+		return nil, "", fmt.Errorf("reading unpacked SKILL.md: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".skillmd.digest"), []byte(ComputeDigest(mdBytes)), 0600); err != nil {
+		return nil, "", fmt.Errorf("writing SKILL.md digest marker: %w", err)
 	}
 	if strings.TrimSpace(expectedDigest) != "" {
-		_ = os.WriteFile(filepath.Join(tmpDir, ".digest"), []byte(NormalizeDigest(expectedDigest)), 0644)
+		if err := os.WriteFile(filepath.Join(tmpDir, ".digest"), []byte(NormalizeDigest(expectedDigest)), 0600); err != nil {
+			return nil, "", fmt.Errorf("writing archive digest marker: %w", err)
+		}
 	}
 
-	// If another concurrent process already unpacked the exact same digest, leave skillDir intact.
-	if strings.TrimSpace(expectedDigest) != "" && IsArchiveCachedWithDigest(cacheRoot, cleanSkillName, expectedDigest) {
-		return extracted, nil
+	if strings.TrimSpace(expectedDigest) != "" && isArchiveDirCachedWithDigest(skillDir, expectedDigest) {
+		return extracted, skillDir, nil
 	}
 
-	skillDir := filepath.Join(skillsParentDir, cleanSkillName)
 	var oldDir string
 	if _, statErr := os.Stat(skillDir); statErr == nil {
-		if trashDir, mkErr := os.MkdirTemp(skillsParentDir, "."+cleanSkillName+"-old-*"); mkErr == nil {
+		if trashDir, mkErr := os.MkdirTemp(skillsParentDir, "."+cleanKey+"-old-*"); mkErr == nil {
 			_ = os.Remove(trashDir)
 			if renErr := os.Rename(skillDir, trashDir); renErr == nil {
 				oldDir = trashDir
 			}
 		}
 	}
-	defer func() {
-		if oldDir != "" {
-			_ = os.RemoveAll(oldDir)
-		}
-	}()
 
 	if err := os.Rename(tmpDir, skillDir); err != nil {
-		if strings.TrimSpace(expectedDigest) != "" && IsArchiveCachedWithDigest(cacheRoot, cleanSkillName, expectedDigest) {
-			return extracted, nil
+		// Roll back oldDir if rename failed so we never leave the cache empty.
+		if oldDir != "" {
+			_ = os.Rename(oldDir, skillDir)
 		}
-		return nil, fmt.Errorf("moving unpacked skill into cache: %w", err)
+		if strings.TrimSpace(expectedDigest) != "" && isArchiveDirCachedWithDigest(skillDir, expectedDigest) {
+			return extracted, skillDir, nil
+		}
+		return nil, "", fmt.Errorf("moving unpacked skill into cache: %w", err)
 	}
-	return extracted, nil
+	if oldDir != "" {
+		_ = os.RemoveAll(oldDir)
+	}
+	return extracted, skillDir, nil
 }
 
-// UnpackArchive extracts a .tar.gz or .zip archive into destDir with strict RFC v0.2.0 safety checks:
-// 1. Rejects path traversal sequences (..) or absolute paths.
-// 2. Rejects symlinks or hardlinks that resolve outside the destination directory.
-// 3. Rejects archives whose total unpacked size exceeds maxUnpackedBytes (decompression bomb protection).
+// FetchAndUnpackArchive downloads a remote skill archive, verifies its SHA-256 digest
+// (failing closed if missing unless forceBypassDigest is true), extracts SKILL.md,
+// and optionally unpacks into cacheRoot.
+func FetchAndUnpackArchive(ctx context.Context, client *http.Client, archiveURL, expectedDigest, cacheRoot, skillName, source string, forceBypassDigest bool) (string, string, []string, error) {
+	resp, err := FetchWithRetryAndHeaders(ctx, client, archiveURL, version.UserAgent(), nil, defaultMaxRetries, defaultInitialBackoff)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("downloading archive %s: %w", archiveURL, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", "", nil, &HTTPStatusError{StatusCode: resp.StatusCode, URL: archiveURL}
+	}
+
+	data, err := ReadBounded(resp.Body, DefaultMaxUnpackedBytes)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("reading archive %s: %w", archiveURL, err)
+	}
+	if len(data) == 0 {
+		return "", "", nil, fmt.Errorf("empty archive downloaded from %s", archiveURL)
+	}
+
+	if !forceBypassDigest {
+		if err := VerifyRequiredDigest(data, expectedDigest); err != nil {
+			return "", "", nil, fmt.Errorf("%w: archive %q from %s", err, skillName, archiveURL)
+		}
+	}
+
+	skillMD, err := ExtractSkillMDFromArchive(data)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("extracting SKILL.md from archive %q: %w", skillName, err)
+	}
+
+	var skillDir string
+	var extracted []string
+	if cacheRoot != "" && skillName != "" {
+		extracted, skillDir, err = UnpackArchiveToCache(data, cacheRoot, skillName, source, expectedDigest)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("unpacking archive %q to cache: %w", skillName, err)
+		}
+	}
+
+	return skillMD, skillDir, extracted, nil
+}
+
+// UnpackArchive extracts a .tar.gz or .zip archive into destDir with kernel-enforced os.Root confinement:
+// 1. Rejects path traversal sequences (..), absolute paths, Windows drive/UNC paths, and symlinks/hardlinks.
+// 2. Limits total unpacked bytes and total entry count (decompression & inode bomb protection).
+// 3. Strips group/world write permissions on extracted files.
 // 4. Verifies that SKILL.md exists at the archive root.
 func UnpackArchive(data []byte, destDir string, maxUnpackedBytes int64) ([]string, error) {
 	if destDir == "" {
@@ -251,7 +355,7 @@ func UnpackArchive(data []byte, destDir string, maxUnpackedBytes int64) ([]strin
 	}
 
 	cleanDest := filepath.Clean(destDir)
-	if err := os.MkdirAll(cleanDest, 0755); err != nil {
+	if err := os.MkdirAll(cleanDest, 0700); err != nil {
 		return nil, fmt.Errorf("creating destination directory: %w", err)
 	}
 
@@ -260,34 +364,35 @@ func UnpackArchive(data []byte, destDir string, maxUnpackedBytes int64) ([]strin
 		return nil, ErrUnsupportedArchiveFormat
 	}
 
-	var extracted []string
-	var err error
+	root, err := os.OpenRoot(cleanDest)
+	if err != nil {
+		return nil, fmt.Errorf("opening confined archive root %s: %w", cleanDest, err)
+	}
+	defer func() { _ = root.Close() }()
 
-	cleanupExtracted := func(files []string) {
-		for _, rel := range files {
-			p := filepath.Join(cleanDest, filepath.FromSlash(rel))
-			_ = os.Remove(p)
-			for dir := filepath.Dir(p); dir != cleanDest && strings.HasPrefix(dir, cleanDest+string(filepath.Separator)); dir = filepath.Dir(dir) {
-				if err := os.Remove(dir); err != nil {
-					break
-				}
-			}
+	var extracted []string
+	var createdDirs []string
+
+	cleanup := func() {
+		for _, rel := range extracted {
+			_ = root.Remove(filepath.FromSlash(rel))
+		}
+		for _, createdDir := range slices.Backward(createdDirs) {
+			_ = root.Remove(filepath.FromSlash(createdDir))
 		}
 	}
 
 	switch format {
 	case "tar.gz":
-		extracted, err = unpackTarGz(data, cleanDest, maxUnpackedBytes)
+		extracted, createdDirs, err = unpackTarGz(data, root, maxUnpackedBytes)
 	case "zip":
-		extracted, err = unpackZip(data, cleanDest, maxUnpackedBytes)
+		extracted, createdDirs, err = unpackZip(data, root, maxUnpackedBytes)
 	}
-
 	if err != nil {
-		cleanupExtracted(extracted)
+		cleanup()
 		return nil, err
 	}
 
-	// Verify SKILL.md exists at root
 	hasSkillMD := false
 	for _, f := range extracted {
 		if f == "SKILL.md" || strings.EqualFold(f, "SKILL.md") {
@@ -296,7 +401,7 @@ func UnpackArchive(data []byte, destDir string, maxUnpackedBytes int64) ([]strin
 		}
 	}
 	if !hasSkillMD {
-		cleanupExtracted(extracted)
+		cleanup()
 		return nil, ErrArchiveMissingSkillMD
 	}
 
@@ -333,11 +438,7 @@ func IsPathContained(baseDir, targetPath string) bool {
 		return false
 	}
 
-	realBase, err := filepath.EvalSymlinks(cleanBase)
-	if err != nil {
-		realBase = cleanBase
-	}
-
+	realBase := evalSymlinkPrefix(cleanBase)
 	realTarget := evalSymlinkPrefix(cleanTarget)
 	realRel, err := filepath.Rel(realBase, realTarget)
 	if err != nil || realRel == ".." || strings.HasPrefix(realRel, ".."+string(filepath.Separator)) {
@@ -346,34 +447,48 @@ func IsPathContained(baseDir, targetPath string) bool {
 	return true
 }
 
-func validateArchivePath(targetRel, destDir string) (string, error) {
-	cleanRel := filepath.ToSlash(filepath.Clean(targetRel))
+func validateArchiveRelPath(targetRel string) (string, error) {
+	if strings.ContainsRune(targetRel, 0) || strings.HasPrefix(targetRel, "/") || strings.HasPrefix(targetRel, "\\") || strings.Contains(targetRel, ":") || filepath.VolumeName(targetRel) != "" || filepath.IsAbs(targetRel) {
+		return "", fmt.Errorf("%w: %q", ErrArchiveTraversal, targetRel)
+	}
+	slashNormalized := strings.ReplaceAll(targetRel, "\\", "/")
+	cleanRel := filepath.ToSlash(filepath.Clean(slashNormalized))
 	cleanRel = strings.TrimPrefix(cleanRel, "./")
 
 	if cleanRel == "" || cleanRel == "." {
-		return "", nil // root directory, skip
+		return "", nil
 	}
-	if cleanRel == ".." || strings.HasPrefix(cleanRel, "../") || strings.Contains(cleanRel, "/../") || filepath.IsAbs(targetRel) || strings.HasPrefix(cleanRel, "/") || strings.HasPrefix(targetRel, "\\") || strings.Contains(targetRel, ":") {
+	if cleanRel == ".." || strings.HasPrefix(cleanRel, "../") || strings.Contains(cleanRel, "/../") || strings.HasPrefix(cleanRel, "/") {
 		return "", fmt.Errorf("%w: %q", ErrArchiveTraversal, targetRel)
 	}
-
-	fullPath := filepath.Join(destDir, filepath.FromSlash(cleanRel))
-	if !IsPathContained(destDir, fullPath) {
-		return "", fmt.Errorf("%w: %q escapes %q", ErrArchiveTraversal, targetRel, destDir)
-	}
-	return fullPath, nil
+	return cleanRel, nil
 }
 
-func unpackTarGz(data []byte, destDir string, maxBytes int64) ([]string, error) {
+func safeExtractedMode(raw os.FileMode) os.FileMode {
+	perm := raw.Perm()
+	if perm == 0 {
+		perm = 0600
+	}
+	// Strip group/other write bits and guarantee owner read/write.
+	return (perm & 0755 &^ 0022) | 0600
+}
+
+func unpackTarGz(data []byte, root *os.Root, maxBytes int64) ([]string, []string, error) {
 	gzr, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
-		return nil, fmt.Errorf("reading gzip header: %w", err)
+		return nil, nil, fmt.Errorf("reading gzip header: %w", err)
 	}
 	defer func() { _ = gzr.Close() }()
 
-	tr := tar.NewReader(gzr)
+	// Bound the total decompressed tar stream so skipped/PAX entries cannot cause a gzip bomb.
+	maxStream := maxBytes + int64(DefaultMaxArchiveFiles)*4096
+	limited := io.LimitReader(gzr, maxStream+1)
+	tr := tar.NewReader(limited)
+
 	var extracted []string
+	var createdDirs []string
 	var totalBytes int64
+	entries := 0
 
 	for {
 		hdr, err := tr.Next()
@@ -381,203 +496,159 @@ func unpackTarGz(data []byte, destDir string, maxBytes int64) ([]string, error) 
 			break
 		}
 		if err != nil {
-			return extracted, fmt.Errorf("reading tar entry: %w", err)
+			if limited.(*io.LimitedReader).N == 0 {
+				return extracted, createdDirs, fmt.Errorf("%w: decompressed stream exceeded limit", ErrArchiveDecompressionBomb)
+			}
+			return extracted, createdDirs, fmt.Errorf("reading tar entry: %w", err)
 		}
 
-		fullPath, err := validateArchivePath(hdr.Name, destDir)
-		if err != nil {
-			return extracted, err
+		entries++
+		if entries > DefaultMaxArchiveFiles {
+			return extracted, createdDirs, fmt.Errorf("%w: exceeds %d entries", ErrArchiveDecompressionBomb, DefaultMaxArchiveFiles)
 		}
-		if fullPath == "" {
+
+		relPath, err := validateArchiveRelPath(hdr.Name)
+		if err != nil {
+			return extracted, createdDirs, err
+		}
+		if relPath == "" {
 			continue
 		}
-
-		relPath, _ := filepath.Rel(destDir, fullPath)
-		relPath = filepath.ToSlash(relPath)
+		nativeRel := filepath.FromSlash(relPath)
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(fullPath, 0755); err != nil {
-				return extracted, fmt.Errorf("creating dir %s: %w", fullPath, err)
+			if err := root.MkdirAll(nativeRel, 0700); err != nil {
+				return extracted, createdDirs, fmt.Errorf("creating dir %s: %w", relPath, err)
 			}
+			createdDirs = append(createdDirs, relPath)
 
 		case tar.TypeReg:
 			if hdr.Size < 0 || hdr.Size > maxBytes-totalBytes {
-				return extracted, fmt.Errorf("%w: exceeded %d bytes", ErrArchiveDecompressionBomb, maxBytes)
+				return extracted, createdDirs, fmt.Errorf("%w: exceeded %d bytes", ErrArchiveDecompressionBomb, maxBytes)
 			}
 
-			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-				return extracted, fmt.Errorf("creating parent dir for %s: %w", fullPath, err)
+			if parent := filepath.Dir(nativeRel); parent != "." {
+				if err := root.MkdirAll(parent, 0700); err != nil {
+					return extracted, createdDirs, fmt.Errorf("creating parent dir for %s: %w", relPath, err)
+				}
+				createdDirs = append(createdDirs, filepath.ToSlash(parent))
 			}
 
-			perm := os.FileMode(hdr.Mode) & 0777
-			if perm == 0 {
-				perm = 0644
-			}
-
-			outFile, err := os.OpenFile(fullPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, perm)
+			perm := safeExtractedMode(os.FileMode(hdr.Mode))
+			outFile, err := root.OpenFile(nativeRel, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, perm)
 			if err != nil {
-				return extracted, fmt.Errorf("creating file %s: %w", fullPath, err)
+				return extracted, createdDirs, fmt.Errorf("creating file %s: %w", relPath, err)
 			}
 
 			remaining := maxBytes - totalBytes
-			written, err := io.Copy(outFile, io.LimitReader(tr, remaining+1))
-			_ = outFile.Close()
+			written, copyErr := io.Copy(outFile, io.LimitReader(tr, remaining+1))
+			closeErr := outFile.Close()
 			extracted = append(extracted, relPath)
 			totalBytes += written
 			if totalBytes > maxBytes {
-				return extracted, fmt.Errorf("%w: exceeded %d bytes", ErrArchiveDecompressionBomb, maxBytes)
+				return extracted, createdDirs, fmt.Errorf("%w: exceeded %d bytes", ErrArchiveDecompressionBomb, maxBytes)
 			}
-			if err != nil {
-				return extracted, fmt.Errorf("writing file %s: %w", fullPath, err)
+			if copyErr != nil {
+				return extracted, createdDirs, fmt.Errorf("writing file %s: %w", relPath, copyErr)
+			}
+			if closeErr != nil {
+				return extracted, createdDirs, fmt.Errorf("closing file %s: %w", relPath, closeErr)
 			}
 			if written != hdr.Size {
-				return extracted, fmt.Errorf("incomplete file write for %s (expected %d, wrote %d)", fullPath, hdr.Size, written)
+				return extracted, createdDirs, fmt.Errorf("incomplete file write for %s (expected %d, wrote %d)", relPath, hdr.Size, written)
 			}
-			_ = os.Chmod(fullPath, perm)
+			_ = root.Chmod(nativeRel, perm)
 
-		case tar.TypeSymlink:
-			linkTarget := hdr.Linkname
-			if filepath.IsAbs(linkTarget) {
-				return extracted, fmt.Errorf("%w: absolute symlink target %q", ErrArchiveSymlinkEscapes, linkTarget)
-			}
-			realParent := evalSymlinkPrefix(filepath.Dir(fullPath))
-			resolvedTarget := filepath.Clean(filepath.Join(realParent, linkTarget))
-			if !IsPathContained(destDir, resolvedTarget) {
-				return extracted, fmt.Errorf("%w: symlink %q -> %q escapes %q", ErrArchiveSymlinkEscapes, hdr.Name, linkTarget, destDir)
-			}
-
-			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-				return extracted, fmt.Errorf("creating parent dir for %s: %w", fullPath, err)
-			}
-			_ = os.Remove(fullPath)
-			if err := os.Symlink(linkTarget, fullPath); err != nil {
-				return extracted, fmt.Errorf("creating symlink %s -> %s: %w", fullPath, linkTarget, err)
-			}
-			extracted = append(extracted, relPath)
-
-		case tar.TypeLink:
-			linkTarget := hdr.Linkname
-			if filepath.IsAbs(linkTarget) {
-				return extracted, fmt.Errorf("%w: absolute hardlink target %q", ErrArchiveSymlinkEscapes, linkTarget)
-			}
-			resolvedTarget := filepath.Clean(filepath.Join(destDir, filepath.FromSlash(linkTarget)))
-			if !IsPathContained(destDir, resolvedTarget) {
-				return extracted, fmt.Errorf("%w: hardlink %q -> %q escapes %q", ErrArchiveSymlinkEscapes, hdr.Name, linkTarget, destDir)
-			}
-			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-				return extracted, fmt.Errorf("creating parent dir for %s: %w", fullPath, err)
-			}
-			_ = os.Remove(fullPath)
-			if err := os.Link(resolvedTarget, fullPath); err != nil {
-				return extracted, fmt.Errorf("creating hardlink %s -> %s: %w", fullPath, resolvedTarget, err)
-			}
-			extracted = append(extracted, relPath)
+		case tar.TypeSymlink, tar.TypeLink:
+			return extracted, createdDirs, fmt.Errorf("%w: entry %q -> %q", ErrArchiveSymlinkEscapes, hdr.Name, hdr.Linkname)
 
 		default:
-			// Skip unsupported header types (devices, fifos, etc.)
+			// Skip non-regular metadata headers (PAX, GNU longname, etc.)
 		}
 	}
 
-	return extracted, nil
+	return extracted, createdDirs, nil
 }
 
-func unpackZip(data []byte, destDir string, maxBytes int64) ([]string, error) {
+func unpackZip(data []byte, root *os.Root, maxBytes int64) ([]string, []string, error) {
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
-		return nil, fmt.Errorf("reading zip header: %w", err)
+		return nil, nil, fmt.Errorf("reading zip header: %w", err)
+	}
+	if len(zr.File) > DefaultMaxArchiveFiles {
+		return nil, nil, fmt.Errorf("%w: exceeds %d entries", ErrArchiveDecompressionBomb, DefaultMaxArchiveFiles)
 	}
 
 	var extracted []string
+	var createdDirs []string
 	var totalBytes int64
 
 	for _, f := range zr.File {
-		fullPath, err := validateArchivePath(f.Name, destDir)
+		relPath, err := validateArchiveRelPath(f.Name)
 		if err != nil {
-			return extracted, err
+			return extracted, createdDirs, err
 		}
-		if fullPath == "" {
+		if relPath == "" {
 			continue
 		}
+		nativeRel := filepath.FromSlash(relPath)
 
-		relPath, _ := filepath.Rel(destDir, fullPath)
-		relPath = filepath.ToSlash(relPath)
+		if f.Mode()&os.ModeSymlink != 0 {
+			return extracted, createdDirs, fmt.Errorf("%w: zip symlink entry %q", ErrArchiveSymlinkEscapes, f.Name)
+		}
 
 		if f.FileInfo().IsDir() {
-			if err := os.MkdirAll(fullPath, 0755); err != nil {
-				return extracted, fmt.Errorf("creating dir %s: %w", fullPath, err)
+			if err := root.MkdirAll(nativeRel, 0700); err != nil {
+				return extracted, createdDirs, fmt.Errorf("creating dir %s: %w", relPath, err)
 			}
+			createdDirs = append(createdDirs, relPath)
 			continue
 		}
 
 		if f.UncompressedSize64 > uint64(maxBytes) || int64(f.UncompressedSize64) > maxBytes-totalBytes {
-			return extracted, fmt.Errorf("%w: exceeded %d bytes", ErrArchiveDecompressionBomb, maxBytes)
+			return extracted, createdDirs, fmt.Errorf("%w: exceeded %d bytes", ErrArchiveDecompressionBomb, maxBytes)
 		}
 
-		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-			return extracted, fmt.Errorf("creating parent dir for %s: %w", fullPath, err)
+		if parent := filepath.Dir(nativeRel); parent != "." {
+			if err := root.MkdirAll(parent, 0700); err != nil {
+				return extracted, createdDirs, fmt.Errorf("creating parent dir for %s: %w", relPath, err)
+			}
+			createdDirs = append(createdDirs, filepath.ToSlash(parent))
 		}
 
 		rc, err := f.Open()
 		if err != nil {
-			return extracted, fmt.Errorf("opening zip file %s: %w", f.Name, err)
+			return extracted, createdDirs, fmt.Errorf("opening zip file %s: %w", f.Name, err)
 		}
 
-		if f.Mode()&os.ModeSymlink != 0 {
-			linkTargetBytes, readErr := ReadBounded(rc, 4096)
-			_ = rc.Close()
-			if readErr != nil {
-				return extracted, fmt.Errorf("reading zip symlink target %s: %w", f.Name, readErr)
-			}
-			totalBytes += int64(len(linkTargetBytes))
-			if totalBytes > maxBytes {
-				return extracted, fmt.Errorf("%w: exceeded %d bytes", ErrArchiveDecompressionBomb, maxBytes)
-			}
-			linkTarget := string(linkTargetBytes)
-			if filepath.IsAbs(linkTarget) {
-				return extracted, fmt.Errorf("%w: absolute symlink target %q", ErrArchiveSymlinkEscapes, linkTarget)
-			}
-			realParent := evalSymlinkPrefix(filepath.Dir(fullPath))
-			resolvedTarget := filepath.Clean(filepath.Join(realParent, linkTarget))
-			if !IsPathContained(destDir, resolvedTarget) {
-				return extracted, fmt.Errorf("%w: zip symlink %q -> %q escapes %q", ErrArchiveSymlinkEscapes, f.Name, linkTarget, destDir)
-			}
-			_ = os.Remove(fullPath)
-			if err := os.Symlink(linkTarget, fullPath); err != nil {
-				return extracted, fmt.Errorf("creating zip symlink %s -> %s: %w", fullPath, linkTarget, err)
-			}
-			extracted = append(extracted, relPath)
-			continue
-		}
-
-		perm := f.Mode().Perm()
-		if perm == 0 {
-			perm = 0644
-		}
-
-		outFile, err := os.OpenFile(fullPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, perm)
+		perm := safeExtractedMode(f.Mode())
+		outFile, err := root.OpenFile(nativeRel, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, perm)
 		if err != nil {
 			_ = rc.Close()
-			return extracted, fmt.Errorf("creating file %s: %w", fullPath, err)
+			return extracted, createdDirs, fmt.Errorf("creating file %s: %w", relPath, err)
 		}
 
 		remaining := maxBytes - totalBytes
 		written, copyErr := io.Copy(outFile, io.LimitReader(rc, remaining+1))
 		_ = rc.Close()
-		_ = outFile.Close()
+		closeErr := outFile.Close()
 		extracted = append(extracted, relPath)
 		totalBytes += written
 		if totalBytes > maxBytes {
-			return extracted, fmt.Errorf("%w: exceeded %d bytes", ErrArchiveDecompressionBomb, maxBytes)
+			return extracted, createdDirs, fmt.Errorf("%w: exceeded %d bytes", ErrArchiveDecompressionBomb, maxBytes)
 		}
 		if copyErr != nil {
-			return extracted, fmt.Errorf("writing zip file %s: %w", fullPath, copyErr)
+			return extracted, createdDirs, fmt.Errorf("writing zip file %s: %w", relPath, copyErr)
+		}
+		if closeErr != nil {
+			return extracted, createdDirs, fmt.Errorf("closing zip file %s: %w", relPath, closeErr)
 		}
 		if f.UncompressedSize64 != 0 && written != int64(f.UncompressedSize64) {
-			return extracted, fmt.Errorf("incomplete zip file write for %s (expected %d, wrote %d)", fullPath, f.UncompressedSize64, written)
+			return extracted, createdDirs, fmt.Errorf("incomplete zip file write for %s (expected %d, wrote %d)", relPath, f.UncompressedSize64, written)
 		}
-		_ = os.Chmod(fullPath, perm)
+		_ = root.Chmod(nativeRel, perm)
 	}
 
-	return extracted, nil
+	return extracted, createdDirs, nil
 }

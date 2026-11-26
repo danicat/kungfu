@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,18 +20,14 @@ import (
 	"unicode/utf8"
 )
 
-// Suggestion represents a ranked suggestion candidate.
-type Suggestion struct {
-	Text  string
-	Score int // Lower is better (0 = exact match)
-}
-
-// Levenshtein calculates the Levenshtein edit distance between two strings using Unicode runes.
-func Levenshtein(a, b string) int {
-	ra := []rune(strings.ToLower(strings.TrimSpace(a)))
-	rb := []rune(strings.ToLower(strings.TrimSpace(b)))
-	la := len(ra)
-	lb := len(rb)
+// levenshteinNormalized calculates the Levenshtein edit distance between two pre-normalized strings using Unicode runes.
+func levenshteinNormalized(a, b string) int {
+	ra := []rune(a)
+	rb := []rune(b)
+	if len(ra) < len(rb) {
+		ra, rb = rb, ra
+	}
+	la, lb := len(ra), len(rb)
 	if la == 0 {
 		return lb
 	}
@@ -52,28 +48,22 @@ func Levenshtein(a, b string) int {
 			if ra[i-1] != rb[j-1] {
 				cost = 1
 			}
-			curr[j] = min3(prev[j]+1, curr[j-1]+1, prev[j-1]+cost)
+			curr[j] = min(prev[j]+1, curr[j-1]+1, prev[j-1]+cost)
 		}
-		copy(prev, curr)
+		prev, curr = curr, prev
 	}
 	return prev[lb]
 }
 
-func min3(a, b, c int) int {
-	if a < b {
-		if a < c {
-			return a
-		}
-		return c
-	}
-	if b < c {
-		return b
-	}
-	return c
+type scoredSuggestion struct {
+	text    string
+	tier    int // 0=exact, 1=prefix, 2=substring, 3=edit-distance
+	score   int // within-tier distance/length delta
+	runeLen int
 }
 
-// Suggest finds the best matching candidates for a given query from a slice of candidate strings.
-// Returns at most maxResults suggestions sorted by relevance (prefixes, substrings, lowest edit distance).
+// Suggest finds the best matching candidates for query sorted strictly by tier
+// (exact, prefix, substring, edit distance), within-tier score, rune length, and text.
 func Suggest(query string, candidates []string, maxResults int) []string {
 	q := strings.ToLower(strings.TrimSpace(query))
 	if q == "" || len(candidates) == 0 {
@@ -83,65 +73,65 @@ func Suggest(query string, candidates []string, maxResults int) []string {
 		maxResults = 3
 	}
 
-	seen := make(map[string]bool)
-	var scored []Suggestion
+	seen := make(map[string]struct{}, len(candidates))
+	scored := make([]scoredSuggestion, 0, min(len(candidates), maxResults*2))
 	qRuneLen := utf8.RuneCountInString(q)
 
 	for _, cand := range candidates {
 		candClean := strings.TrimSpace(cand)
 		cLower := strings.ToLower(candClean)
-		if cLower == "" || seen[cLower] {
+		if cLower == "" {
 			continue
 		}
-		seen[cLower] = true
+		if _, ok := seen[cLower]; ok {
+			continue
+		}
+		seen[cLower] = struct{}{}
 
 		cRuneLen := utf8.RuneCountInString(cLower)
 
-		// Exact match
 		if cLower == q {
-			scored = append(scored, Suggestion{Text: candClean, Score: 0})
+			scored = append(scored, scoredSuggestion{text: candClean, tier: 0, score: 0, runeLen: cRuneLen})
 			continue
 		}
-
-		// Prefix match (e.g. godoc -> godoctor)
 		if strings.HasPrefix(cLower, q) {
-			scored = append(scored, Suggestion{Text: candClean, Score: 100 + (cRuneLen - qRuneLen)})
+			scored = append(scored, scoredSuggestion{text: candClean, tier: 1, score: cRuneLen - qRuneLen, runeLen: cRuneLen})
 			continue
 		}
-
-		// Substring match (e.g. doctor -> godoctor)
 		if strings.Contains(cLower, q) {
-			scored = append(scored, Suggestion{Text: candClean, Score: 200 + (cRuneLen - qRuneLen)})
+			scored = append(scored, scoredSuggestion{text: candClean, tier: 2, score: cRuneLen - qRuneLen, runeLen: cRuneLen})
 			continue
 		}
 
-		// Edit distance match
-		dist := Levenshtein(q, cLower)
+		dist := levenshteinNormalized(q, cLower)
 		maxAllowedDist := 3
 		if qRuneLen <= 3 {
 			maxAllowedDist = 1
 		} else if qRuneLen <= 5 {
 			maxAllowedDist = 2
 		}
-
 		if dist <= maxAllowedDist {
-			scored = append(scored, Suggestion{Text: candClean, Score: 300 + dist})
+			scored = append(scored, scoredSuggestion{text: candClean, tier: 3, score: dist, runeLen: cRuneLen})
 		}
 	}
 
 	sort.Slice(scored, func(i, j int) bool {
-		if scored[i].Score != scored[j].Score {
-			return scored[i].Score < scored[j].Score
+		if scored[i].tier != scored[j].tier {
+			return scored[i].tier < scored[j].tier
 		}
-		if len(scored[i].Text) != len(scored[j].Text) {
-			return len(scored[i].Text) < len(scored[j].Text)
+		if scored[i].score != scored[j].score {
+			return scored[i].score < scored[j].score
 		}
-		return scored[i].Text < scored[j].Text
+		if scored[i].runeLen != scored[j].runeLen {
+			return scored[i].runeLen < scored[j].runeLen
+		}
+		return scored[i].text < scored[j].text
 	})
 
-	var results []string
-	for i := 0; i < len(scored) && i < maxResults; i++ {
-		results = append(results, scored[i].Text)
+	limit := min(len(scored), maxResults)
+	results := make([]string, limit)
+	for i := range limit {
+		results[i] = scored[i].text
 	}
 	return results
 }

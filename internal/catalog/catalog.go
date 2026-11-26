@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -34,19 +33,22 @@ import (
 // DefaultRemoteURL is the default endpoint for the skills catalog manifest.
 const DefaultRemoteURL = "https://skills.danicat.dev/.well-known/agent-skills/index.json"
 
-const defaultRemoteURL = DefaultRemoteURL
+const (
+	defaultMaxRetries     = 3
+	defaultInitialBackoff = 100 * time.Millisecond
+)
 
-// ResolveCatalogURL resolves a catalog base origin or endpoint URL.
+// ResolveCatalogURL resolves a catalog base origin or JSON endpoint URL.
 func ResolveCatalogURL(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return DefaultRemoteURL
 	}
-	if strings.HasSuffix(raw, ".json") {
+	if strings.HasSuffix(strings.ToLower(raw), ".json") {
 		return raw
 	}
 	raw = strings.TrimSuffix(raw, "/")
-	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
+	if !strings.Contains(raw, "://") {
 		raw = "https://" + raw
 	}
 	return raw + "/.well-known/agent-skills/index.json"
@@ -56,9 +58,9 @@ func ResolveCatalogURL(raw string) string {
 type Option func(*Catalog)
 
 // WithRemoteURL sets a custom remote catalog URL or base origin.
-func WithRemoteURL(url string) Option {
+func WithRemoteURL(rawURL string) Option {
 	return func(c *Catalog) {
-		c.remoteURL = ResolveCatalogURL(url)
+		c.remoteURL = ResolveCatalogURL(rawURL)
 	}
 }
 
@@ -66,27 +68,7 @@ func WithRemoteURL(url string) Option {
 func WithHTTPClient(client *http.Client) Option {
 	return func(c *Catalog) {
 		c.httpClient = client
-	}
-}
-
-// WithRemoteDisabled disables remote fetching.
-func WithRemoteDisabled() Option {
-	return func(c *Catalog) {
-		c.enableRemote = false
-	}
-}
-
-// WithManifest injects a pre-parsed manifest (useful for testing).
-func WithManifest(m *Manifest) Option {
-	return func(c *Catalog) {
-		c.manifest = m
-		if m != nil {
-			for i := range m.Items {
-				m.Items[i].Normalize()
-				c.items[strings.ToLower(m.Items[i].ID)] = m.Items[i]
-				c.items[strings.ToLower(m.Items[i].Name)] = m.Items[i]
-			}
-		}
+		c.customClient = true
 	}
 }
 
@@ -132,13 +114,20 @@ func WithOffline(offline bool) Option {
 	}
 }
 
-// Catalog implements the Store interface with deterministic in-memory lookup.
+type cachedCatalogMeta struct {
+	name      string
+	fetchedAt time.Time
+}
+
+// Catalog stores and resolves discovered Agent Skills with thread-safe access.
 type Catalog struct {
 	mu           sync.RWMutex
 	items        map[string]Item
+	catalogMeta  map[string]cachedCatalogMeta
 	manifest     *Manifest
 	remoteURL    string
 	httpClient   *http.Client
+	customClient bool
 	enableRemote bool
 	enableLocal  bool
 	cacheDir     string
@@ -147,90 +136,17 @@ type Catalog struct {
 	offline      bool
 }
 
-const (
-	defaultMaxRetries     = 3
-	defaultInitialBackoff = 100 * time.Millisecond
-)
-
-// fetchWithRetry executes an HTTP GET request with up to maxRetries retries using exponential backoff.
-func fetchWithRetry(ctx context.Context, client *http.Client, url string, userAgent string, maxRetries int, initialBackoff time.Duration) (*http.Response, error) {
-	return fetchWithRetryAndHeaders(ctx, client, url, userAgent, nil, maxRetries, initialBackoff)
-}
-
-// fetchWithRetryAndHeaders executes an HTTP GET request with custom request headers and exponential backoff.
-func fetchWithRetryAndHeaders(ctx context.Context, client *http.Client, url string, userAgent string, headers map[string]string, maxRetries int, initialBackoff time.Duration) (*http.Response, error) {
-	if client == nil {
-		client = http.DefaultClient
-	}
-	if maxRetries < 0 {
-		maxRetries = 0
-	}
-	if initialBackoff <= 0 {
-		initialBackoff = 100 * time.Millisecond
-	}
-
-	backoff := initialBackoff
-	var lastErr error
-
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(backoff):
-			}
-			backoff *= 2
-		}
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			return nil, err
-		}
-		if userAgent != "" {
-			req.Header.Set("User-Agent", userAgent)
-		}
-		for k, v := range headers {
-			req.Header.Set(k, v)
-		}
-
-		resp, err := client.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		// If successful (200 OK or 304 Not Modified), return response immediately
-		if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNotModified {
-			return resp, nil
-		}
-
-		// On retryable HTTP status (429, 5xx), close body and retry
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			_ = resp.Body.Close()
-			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
-			continue
-		}
-
-		// Non-retryable client error (e.g. 404, 403, 400)
-		return resp, nil
-	}
-
-	return nil, lastErr
-}
-
 // NewCatalog constructs a Catalog instance with option modifiers.
 func NewCatalog(opts ...Option) (*Catalog, error) {
-	remote := defaultRemoteURL
-	if envURL := os.Getenv("KUNGFU_URL"); envURL != "" {
-		remote = ResolveCatalogURL(envURL)
-	} else if envURL := os.Getenv("KUNGFU_REMOTE_URL"); envURL != "" {
+	remote := DefaultRemoteURL
+	if envURL := strings.TrimSpace(os.Getenv("KUNGFU_URL")); envURL != "" {
 		remote = ResolveCatalogURL(envURL)
 	}
 
 	c := &Catalog{
 		items:        make(map[string]Item),
+		catalogMeta:  make(map[string]cachedCatalogMeta),
 		remoteURL:    remote,
-		httpClient:   &http.Client{Timeout: 10 * time.Second},
 		enableRemote: true,
 		enableLocal:  true,
 	}
@@ -239,15 +155,18 @@ func NewCatalog(opts ...Option) (*Catalog, error) {
 		opt(c)
 	}
 
-	// 1. Fetch live remote catalog manifest if enabled with 3 exponential retries and caching
+	if !c.customClient || c.httpClient == nil {
+		c.httpClient = NewSafeHTTPClientWithLoopback(15*time.Second, IsLoopbackURL(c.remoteURL))
+	}
+
 	if c.enableRemote && c.remoteURL != "" && c.manifest == nil {
 		if err := c.fetchRemoteLocked(context.Background()); err != nil {
 			return nil, err
 		}
 	}
 
-	// 2. Discover local/installed skills
 	c.mu.Lock()
+	c.loadNamedCatalogsLocked()
 	if c.enableLocal {
 		c.discoverLocalSkillsLocked()
 	}
@@ -255,86 +174,74 @@ func NewCatalog(opts ...Option) (*Catalog, error) {
 	return c, nil
 }
 
-// Sync synchronizes the remote catalog manifest with the local cache.
-func (c *Catalog) Sync(ctx context.Context, force bool) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if !c.enableRemote || c.remoteURL == "" {
-		return nil
+func (c *Catalog) resolveCacheRoot() string {
+	dir, err := ResolveCacheDir(c.cacheDir)
+	if err != nil {
+		return ""
 	}
+	return dir
+}
 
-	prevForce := c.forceRefresh
-	c.forceRefresh = force
-	defer func() { c.forceRefresh = prevForce }()
-
-	if err := c.fetchRemoteLocked(ctx); err != nil {
-		return err
+func (c *Catalog) setDefaultItemsLocked(items []Item) {
+	c.items = make(map[string]Item, len(items)*4)
+	for _, it := range items {
+		it.Source = "default"
+		lowID := strings.ToLower(it.ID)
+		lowName := strings.ToLower(it.Name)
+		c.items[lowID] = it
+		c.items[lowName] = it
+		c.items[lowID+"@default"] = it
+		c.items[lowName+"@default"] = it
 	}
-	if c.enableLocal {
-		c.discoverLocalSkillsLocked()
-	}
-	return nil
 }
 
 func (c *Catalog) fetchRemoteLocked(ctx context.Context) error {
-	var cachePath string
+	cacheRoot := ""
 	if !c.noCache {
-		if c.cacheDir != "" {
-			cachePath = filepath.Join(c.cacheDir, "index.json")
-		} else {
-			cachePath = GetCatalogCachePath()
-		}
+		cacheRoot = c.resolveCacheRoot()
 	}
 
+	allowLoopback := AllowLoopbackHTTP(c.httpClient)
+
 	var cached *CachedCatalog
-	if !c.noCache && cachePath != "" {
-		if loaded, err := LoadCachedCatalog(cachePath); err == nil && loaded != nil && loaded.URL == c.remoteURL {
+	if !c.noCache && cacheRoot != "" {
+		if loaded, err := LoadNamedCatalogCache(cacheRoot, "default"); err == nil && loaded != nil && loaded.URL == c.remoteURL {
 			cached = loaded
 		}
 	}
 
-	// If cache is fresh (or offline mode is active) and not forced refresh, use cached manifest immediately
 	if cached != nil && !c.forceRefresh && (c.offline || time.Since(cached.FetchedAt) < DefaultCatalogTTL) {
-		ResolveManifestURLs(&cached.Manifest, c.remoteURL)
-		c.manifest = &cached.Manifest
-		c.items = make(map[string]Item)
-		for _, it := range cached.Manifest.Items {
-			c.items[strings.ToLower(it.ID)] = it
-			c.items[strings.ToLower(it.Name)] = it
+		if err := ResolveManifestURLs(&cached.Manifest, c.remoteURL, allowLoopback); err != nil {
+			return err
 		}
+		c.manifest = &cached.Manifest
+		c.setDefaultItemsLocked(cached.Manifest.Items)
 	} else if c.offline {
-		c.loadNamedCatalogsLocked()
 		return nil
 	} else {
-		reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 
-		headers := make(map[string]string)
-		if cached != nil && cached.ETag != "" && !c.forceRefresh {
+		headers := map[string]string{"Accept": "application/json"}
+		if cached != nil && cached.ETag != "" {
 			headers["If-None-Match"] = cached.ETag
 		}
 
-		resp, err := fetchWithRetryAndHeaders(reqCtx, c.httpClient, c.remoteURL, version.UserAgent(), headers, defaultMaxRetries, defaultInitialBackoff)
+		resp, err := FetchWithRetryAndHeaders(reqCtx, c.httpClient, c.remoteURL, version.UserAgent(), headers, defaultMaxRetries, defaultInitialBackoff)
 		if err != nil {
 			return fmt.Errorf("catalog: fetching %s: %w", c.remoteURL, err)
 		}
-		if resp == nil {
-			return fmt.Errorf("catalog: nil response from %s", c.remoteURL)
-		}
 		defer func() { _ = resp.Body.Close() }()
+
 		if resp.StatusCode == http.StatusNotModified && cached != nil {
-			// 304 Not Modified: refresh fetched timestamp and use cache
-			ResolveManifestURLs(&cached.Manifest, c.remoteURL)
-			if !c.noCache && cachePath != "" {
-				_ = SaveCachedCatalog(cachePath, c.remoteURL, cached.Manifest, cached.ETag)
+			if err := ResolveManifestURLs(&cached.Manifest, c.remoteURL, allowLoopback); err != nil {
+				return err
+			}
+			if !c.noCache && cacheRoot != "" {
+				_ = SaveNamedCatalogCache(cacheRoot, "default", c.remoteURL, cached.Manifest, cached.ETag)
 			}
 			c.manifest = &cached.Manifest
-			c.items = make(map[string]Item)
-			for _, it := range cached.Manifest.Items {
-				c.items[strings.ToLower(it.ID)] = it
-				c.items[strings.ToLower(it.Name)] = it
-			}
+			c.setDefaultItemsLocked(cached.Manifest.Items)
 		} else if resp.StatusCode == http.StatusOK {
 			data, err := ReadBounded(resp.Body, 10<<20)
 			if err != nil {
@@ -344,24 +251,20 @@ func (c *Catalog) fetchRemoteLocked(ctx context.Context) error {
 			if err := json.Unmarshal(data, &manifest); err != nil {
 				return fmt.Errorf("catalog: parsing %s JSON: %w", c.remoteURL, err)
 			}
-			ResolveManifestURLs(&manifest, c.remoteURL)
+			if err := ResolveManifestURLs(&manifest, c.remoteURL, allowLoopback); err != nil {
+				return err
+			}
 			c.manifest = &manifest
 			etag := resp.Header.Get("ETag")
-			if !c.noCache && cachePath != "" {
-				_ = SaveCachedCatalog(cachePath, c.remoteURL, manifest, etag)
+			if !c.noCache && cacheRoot != "" {
+				_ = SaveNamedCatalogCache(cacheRoot, "default", c.remoteURL, manifest, etag)
 			}
-			c.items = make(map[string]Item)
-			for _, it := range manifest.Items {
-				c.items[strings.ToLower(it.ID)] = it
-				c.items[strings.ToLower(it.Name)] = it
-			}
+			c.setDefaultItemsLocked(manifest.Items)
 		} else {
-			return fmt.Errorf("catalog: unexpected HTTP %d from %s", resp.StatusCode, c.remoteURL)
+			return &HTTPStatusError{StatusCode: resp.StatusCode, URL: c.remoteURL}
 		}
 	}
 
-	// Also load all registered/named external catalogs from cache
-	c.loadNamedCatalogsLocked()
 	return nil
 }
 
@@ -369,12 +272,19 @@ func (c *Catalog) loadNamedCatalogsLocked() {
 	if c.noCache {
 		return
 	}
-	namedCaches, err := LoadAllNamedCatalogCachesIn(c.resolveCacheRoot())
+	cacheRoot := c.resolveCacheRoot()
+	if cacheRoot == "" {
+		return
+	}
+	namedCaches, err := LoadAllNamedCatalogCaches(cacheRoot)
 	if err != nil || len(namedCaches) == 0 {
 		return
 	}
-	var catNames []string
+	catNames := make([]string, 0, len(namedCaches))
 	for catName := range namedCaches {
+		if strings.EqualFold(catName, "default") {
+			continue
+		}
 		catNames = append(catNames, catName)
 	}
 	sort.Strings(catNames)
@@ -383,6 +293,10 @@ func (c *Catalog) loadNamedCatalogsLocked() {
 		cached := namedCaches[catName]
 		if cached == nil {
 			continue
+		}
+		c.catalogMeta[strings.ToLower(catName)] = cachedCatalogMeta{
+			name:      catName,
+			fetchedAt: cached.FetchedAt,
 		}
 		for _, it := range cached.Manifest.Items {
 			it.Normalize()
@@ -401,6 +315,45 @@ func (c *Catalog) loadNamedCatalogsLocked() {
 	}
 }
 
+// HasFreshCatalog reports whether name is loaded in memory and its cache timestamp is within DefaultCatalogTTL.
+func (c *Catalog) HasFreshCatalog(name string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	meta, ok := c.catalogMeta[strings.ToLower(strings.TrimSpace(name))]
+	if !ok {
+		return false
+	}
+	return !meta.fetchedAt.IsZero() && time.Since(meta.fetchedAt) < DefaultCatalogTTL
+}
+
+// IsCatalogCacheStale reports whether name is loaded from a cache older than DefaultCatalogTTL.
+func (c *Catalog) IsCatalogCacheStale(name string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	meta, ok := c.catalogMeta[strings.ToLower(strings.TrimSpace(name))]
+	if !ok {
+		return false
+	}
+	return meta.fetchedAt.IsZero() || time.Since(meta.fetchedAt) >= DefaultCatalogTTL
+}
+
+// StaleCatalogs returns sorted display names of all loaded named catalogs whose cache exceeds DefaultCatalogTTL.
+func (c *Catalog) StaleCatalogs() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var stale []string
+	for _, meta := range c.catalogMeta {
+		if strings.EqualFold(meta.name, "default") {
+			continue
+		}
+		if meta.fetchedAt.IsZero() || time.Since(meta.fetchedAt) >= DefaultCatalogTTL {
+			stale = append(stale, meta.name)
+		}
+	}
+	sort.Strings(stale)
+	return stale
+}
+
 func shouldPreferCatalogItem(existing, candidate Item) bool {
 	if candidate.Version != "" && existing.Version != "" {
 		return CompareSemver(candidate.Version, existing.Version) > 0
@@ -408,12 +361,33 @@ func shouldPreferCatalogItem(existing, candidate Item) bool {
 	return false
 }
 
-// AddCatalogManifest dynamically registers items from a newly added or updated catalog manifest.
+func (c *Catalog) removeCatalogItemsLocked(name string) {
+	cleanName := strings.ToLower(strings.TrimSpace(name))
+	if cleanName == "" {
+		return
+	}
+	suffix := "@" + cleanName
+	for k, it := range c.items {
+		src := strings.ToLower(strings.TrimSpace(it.Source))
+		srcTrimmed := strings.TrimPrefix(src, "github:")
+		if src == cleanName || srcTrimmed == cleanName || strings.HasSuffix(strings.ToLower(k), suffix) {
+			delete(c.items, k)
+		}
+	}
+	delete(c.catalogMeta, cleanName)
+}
+
+// AddCatalogManifest replaces and registers items from an added or refreshed catalog manifest.
 func (c *Catalog) AddCatalogManifest(name string, manifest *Manifest) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if manifest == nil {
 		return
+	}
+	c.removeCatalogItemsLocked(name)
+	c.catalogMeta[strings.ToLower(strings.TrimSpace(name))] = cachedCatalogMeta{
+		name:      name,
+		fetchedAt: time.Now().UTC(),
 	}
 	for _, it := range manifest.Items {
 		it.Normalize()
@@ -435,67 +409,55 @@ func (c *Catalog) AddCatalogManifest(name string, manifest *Manifest) {
 func (c *Catalog) RemoveCatalogItems(name string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	cleanName := strings.ToLower(strings.TrimSpace(name))
-	if cleanName == "" {
-		return
-	}
-	safeName := SafeCatalogFileName(cleanName)
-	suffix := "@" + cleanName
-	for k, it := range c.items {
-		src := strings.ToLower(strings.TrimSpace(it.Source))
-		srcTrimmed := strings.TrimPrefix(src, "github:")
-		if src == cleanName || srcTrimmed == cleanName ||
-			(safeName != "" && (SafeCatalogFileName(src) == safeName || SafeCatalogFileName(srcTrimmed) == safeName)) ||
-			strings.HasSuffix(strings.ToLower(k), suffix) {
-			delete(c.items, k)
-		}
-	}
+	c.removeCatalogItemsLocked(name)
 }
 
-// Get retrieves an item by ID or Name (case-insensitive).
+// Get retrieves a deep-copied Item by ID or Name (case-insensitive), supporting
+// exact @catalog qualifiers as well as unambiguous short repo suffix matches
+// (e.g. "go@go-skills" matching "go@spf13/go-skills").
 func (c *Catalog) Get(idOrName string) (*Item, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	key := strings.ToLower(strings.TrimSpace(idOrName))
 	if item, exists := c.items[key]; exists {
-		itCopy := item
+		itCopy := item.Clone()
 		return &itCopy, nil
 	}
-	return nil, fmt.Errorf("%w: %s", ErrItemNotFound, idOrName)
-}
 
-// ListByFilter filters unique catalog items by boolean tag query.
-func (c *Catalog) ListByFilter(filter QueryFilter) []Item {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	tagQuery := strings.TrimSpace(filter.TagQuery)
-	seen := make(map[string]struct{})
-	var result []Item
-
-	for _, item := range c.items {
-		lowID := strings.ToLower(item.ID)
-		if primary, ok := c.items[lowID]; ok {
-			item = primary
-			lowID = strings.ToLower(item.ID)
+	if skillPart, catPart, ok := strings.Cut(key, "@"); ok && skillPart != "" && catPart != "" && catPart != "default" {
+		suffix := "/" + catPart
+		prefix := skillPart + "@"
+		matchedCats := make(map[string]Item)
+		for k, it := range c.items {
+			if !strings.HasPrefix(k, prefix) {
+				continue
+			}
+			fullCat := k[len(prefix):]
+			if strings.HasSuffix(fullCat, suffix) {
+				displayCat := it.Source
+				if displayCat == "" {
+					displayCat = fullCat
+				}
+				matchedCats[displayCat] = it
+			}
 		}
-		if _, already := seen[lowID]; already {
-			continue
+		if len(matchedCats) == 1 {
+			for _, it := range matchedCats {
+				itCopy := it.Clone()
+				return &itCopy, nil
+			}
 		}
-		seen[lowID] = struct{}{}
-
-		// Check Tag Query filter
-		if tagQuery != "" && !MatchTags(item.Tags, tagQuery) {
-			continue
+		if len(matchedCats) > 1 {
+			names := make([]string, 0, len(matchedCats))
+			for name := range matchedCats {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			return nil, fmt.Errorf("%w: %q matches multiple catalogs (%s); use the full catalog name", ErrAmbiguousCatalog, catPart, strings.Join(names, ", "))
 		}
-
-		result = append(result, item)
 	}
 
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].ID < result[j].ID
-	})
-	return result
+	return nil, fmt.Errorf("%w: %s", ErrItemNotFound, idOrName)
 }
 
 // AddItem registers an Item in the catalog (useful for testing and extensions).
@@ -511,28 +473,50 @@ func (c *Catalog) AddItem(item Item) {
 	}
 }
 
-// All returns all unique items in the catalog.
+// All returns deep copies of all unique (ID, Source) items across all loaded catalogs, sorted by ID then Source.
 func (c *Catalog) All() []Item {
-	return c.ListByFilter(QueryFilter{})
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	type itemKey struct {
+		id     string
+		source string
+	}
+	seen := make(map[itemKey]struct{}, len(c.items))
+	result := make([]Item, 0, len(c.items))
+
+	for _, item := range c.items {
+		k := itemKey{
+			id:     strings.ToLower(item.ID),
+			source: strings.ToLower(strings.TrimSpace(item.Source)),
+		}
+		if _, already := seen[k]; already {
+			continue
+		}
+		seen[k] = struct{}{}
+		result = append(result, item.Clone())
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].ID != result[j].ID {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].Source < result[j].Source
+	})
+	return result
 }
 
 func (c *Catalog) discoverLocalSkillsLocked() {
 	var candidateRoots []string
 
-	// 1. Workspace directories
 	if wd, err := os.Getwd(); err == nil && wd != "" {
-		candidateRoots = append(candidateRoots, filepath.Join(wd, ".agents", "skills"))
-		candidateRoots = append(candidateRoots, filepath.Join(wd, "skills"))
+		candidateRoots = append(candidateRoots,
+			filepath.Join(wd, ".agents", "skills"),
+			filepath.Join(wd, "skills"),
+		)
 	}
-
-	// 2. Global user directories and cache directory
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		candidateRoots = append(candidateRoots, filepath.Join(home, ".agents", "skills"))
-	}
-	var cacheSkillsDir string
-	if cacheRoot := c.resolveCacheRoot(); cacheRoot != "" && !c.noCache {
-		cacheSkillsDir = filepath.Join(cacheRoot, "skills")
-		candidateRoots = append(candidateRoots, cacheSkillsDir)
 	}
 
 	for _, root := range candidateRoots {
@@ -542,12 +526,14 @@ func (c *Catalog) discoverLocalSkillsLocked() {
 		}
 		for _, entry := range entries {
 			skillDir := filepath.Join(root, entry.Name())
-			if !entry.IsDir() {
-				info, err := os.Stat(skillDir)
-				if err != nil || !info.IsDir() {
-					continue
-				}
+			if !IsPathContained(root, skillDir) {
+				continue
 			}
+			fi, err := os.Stat(skillDir)
+			if err != nil || !fi.IsDir() {
+				continue
+			}
+
 			skillFile := filepath.Join(skillDir, "SKILL.md")
 			if _, err := os.Stat(skillFile); err != nil {
 				skillFile = filepath.Join(skillDir, "skill.md")
@@ -555,8 +541,16 @@ func (c *Catalog) discoverLocalSkillsLocked() {
 					continue
 				}
 			}
-			data, err := os.ReadFile(skillFile)
-			if err != nil || len(data) == 0 {
+			if !IsPathContained(root, skillFile) {
+				continue
+			}
+			f, err := os.Open(skillFile)
+			if err != nil {
+				continue
+			}
+			data, readErr := ReadBounded(f, DefaultMaxSkillMDBytes)
+			_ = f.Close()
+			if readErr != nil || len(data) == 0 {
 				continue
 			}
 			fm, _, err := ParseFrontmatter(data)
@@ -571,13 +565,10 @@ func (c *Catalog) discoverLocalSkillsLocked() {
 
 			existing, exists := c.items[key]
 			if exists && existing.Source != "local" {
-				// For remote catalog items, only populate tags if empty; keep remote version authoritative
 				if len(existing.Tags) == 0 && fm.Metadata != nil && fm.Metadata["tags"] != "" {
 					existing.Tags = ParseTags(fm.Metadata["tags"])
 				}
-				isCachePath := strings.Contains(filepath.ToSlash(skillFile), "/.cache/kungfu/skills/") ||
-					(cacheSkillsDir != "" && IsPathContained(cacheSkillsDir, skillFile))
-				if existing.Path == "" && !isCachePath {
+				if existing.Path == "" {
 					existing.Path = skillFile
 				}
 				c.items[key] = existing
@@ -595,38 +586,13 @@ func (c *Catalog) discoverLocalSkillsLocked() {
 					Path:   skillFile,
 				}
 			}
-
-			if fm.Description != "" {
-				existing.Description = fm.Description
-			}
-			if fm.License != "" {
-				existing.License = fm.License
-			}
-			if fm.AllowedTools != "" {
-				existing.AllowedTools = fm.AllowedTools
-			}
-			if len(data) > 0 && existing.Body == "" {
+			if existing.Body == "" {
 				existing.Body = string(data)
-			}
-			if fm.Metadata != nil {
-				if existing.Metadata == nil {
-					existing.Metadata = make(map[string]string)
-				}
-				maps.Copy(existing.Metadata, fm.Metadata)
-				if ver, ok := fm.Metadata["version"]; ok && ver != "" {
-					existing.Version = ver
-				}
-				if auth, ok := fm.Metadata["author"]; ok && auth != "" {
-					existing.Author = auth
-				}
-				if tags, ok := fm.Metadata["tags"]; ok && tags != "" {
-					existing.Tags = ParseTags(tags)
-				}
 			}
 			if existing.Path == "" {
 				existing.Path = skillFile
 			}
-
+			ApplyFrontmatter(&existing, fm, true)
 			existing.Normalize()
 
 			c.items[key] = existing
@@ -636,116 +602,137 @@ func (c *Catalog) discoverLocalSkillsLocked() {
 	}
 }
 
-func (c *Catalog) resolveCacheRoot() string {
-	if c.cacheDir != "" {
-		return c.cacheDir
-	}
-	if envDir := os.Getenv("KUNGFU_CACHE_DIR"); envDir != "" {
-		return envDir
-	}
-	home, err := os.UserHomeDir()
-	if err == nil && home != "" {
-		return filepath.Join(home, ".cache", "kungfu")
-	}
-	return ""
+// LoadContent retrieves the full raw markdown content for an item using context.Background().
+func (c *Catalog) LoadContent(item *Item) (string, error) {
+	return c.LoadContentContext(context.Background(), item, false)
 }
 
-// LoadContent retrieves the full raw markdown content for an item.
-// It loads in-memory bodies or streams live from remote URLs.
-// Kungfu does not load skills from local filesystem paths; local paths are only used for installation via learn.
-func (c *Catalog) LoadContent(item *Item) (string, error) {
+// LoadContentContext retrieves the full raw markdown content for an item with context and optional digest bypass.
+func (c *Catalog) LoadContentContext(ctx context.Context, item *Item, forceBypassDigest bool) (string, error) {
 	if item == nil {
 		return "", errors.New("cannot load content for nil item")
 	}
 
-	// 1. Direct frontmatter body already in memory
-	if strings.HasPrefix(item.Body, "---") {
+	expectedDigest := item.EffectiveDigest()
+
+	// 1. Direct frontmatter body already in memory (verify digest & respect forceRefresh).
+	if strings.HasPrefix(item.Body, "---") && !c.forceRefresh {
+		if !forceBypassDigest && expectedDigest != "" {
+			if err := VerifyDigest([]byte(item.Body), expectedDigest); err != nil {
+				return "", fmt.Errorf("%w: inline content for %q does not match expected digest %s", err, item.Name, expectedDigest)
+			}
+		}
 		return item.Body, nil
 	}
 
-	// 2. Remote URL: Check digest-verified local cache first, otherwise stream live over HTTP
+	// 2. Remote URL: Check digest-verified local cache first, otherwise stream live over HTTP.
 	remoteURL := item.URL
-	if remoteURL == "" && item.Metadata != nil && item.Metadata["canonical"] != "" {
+	if remoteURL == "" && item.Metadata != nil {
 		remoteURL = item.Metadata["canonical"]
 	}
 	if remoteURL != "" {
-		expectedDigest := item.Digest
-		if expectedDigest == "" {
-			expectedDigest = item.Sha256
+		cacheRoot := ""
+		if !c.noCache {
+			cacheRoot = c.resolveCacheRoot()
 		}
-		if !c.noCache && !c.forceRefresh && item.Name != "" && expectedDigest != "" {
-			if cacheRoot := c.resolveCacheRoot(); cacheRoot != "" {
-				cleanSkillName := filepath.Base(filepath.Clean(item.Name))
-				if cleanSkillName != "" && cleanSkillName != "." && cleanSkillName != ".." {
-					cachedMD := filepath.Join(cacheRoot, "skills", cleanSkillName, "SKILL.md")
-					if IsArchiveItem(*item) {
-						if IsArchiveCachedWithDigest(cacheRoot, cleanSkillName, expectedDigest) {
-							if cachedData, err := os.ReadFile(cachedMD); err == nil && len(cachedData) > 0 {
+
+		if cacheRoot != "" && !c.forceRefresh && item.Name != "" && expectedDigest != "" {
+			if skillDir, err := SkillCacheDir(cacheRoot, item.Name, item.Source); err == nil {
+				cachedMD := filepath.Join(skillDir, "SKILL.md")
+				if IsArchiveItem(*item) {
+					if isArchiveDirCachedWithDigest(skillDir, expectedDigest) {
+						if f, err := os.Open(cachedMD); err == nil {
+							cachedData, readErr := ReadBounded(f, DefaultMaxSkillMDBytes)
+							_ = f.Close()
+							if readErr == nil && len(cachedData) > 0 {
 								EnrichItemFromSkillMD(item, cachedData)
 								return string(cachedData), nil
 							}
 						}
-					} else if cachedData, err := os.ReadFile(cachedMD); err == nil && len(cachedData) > 0 {
-						if VerifyDigest(cachedData, expectedDigest) == nil {
-							EnrichItemFromSkillMD(item, cachedData)
-							return string(cachedData), nil
-						}
+					}
+				} else if f, err := os.Open(cachedMD); err == nil {
+					cachedData, readErr := ReadBounded(f, DefaultMaxSkillMDBytes)
+					_ = f.Close()
+					if readErr == nil && len(cachedData) > 0 && VerifyDigest(cachedData, expectedDigest) == nil {
+						EnrichItemFromSkillMD(item, cachedData)
+						return string(cachedData), nil
 					}
 				}
 			}
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
 
 		client := c.httpClient
 		if client == nil {
-			client = &http.Client{Timeout: 15 * time.Second}
+			client = NewSafeHTTPClient(15 * time.Second)
 		}
-		resp, err := fetchWithRetry(ctx, client, remoteURL, version.UserAgent(), defaultMaxRetries, defaultInitialBackoff)
+
+		// Archive path: unified download + required digest verification + unpack to cache.
+		if IsArchiveItem(*item) {
+			extractedMD, _, _, err := FetchAndUnpackArchive(reqCtx, client, remoteURL, expectedDigest, cacheRoot, item.Name, item.Source, forceBypassDigest)
+			if err != nil {
+				return "", err
+			}
+			EnrichItemFromSkillMD(item, []byte(extractedMD))
+			return extractedMD, nil
+		}
+
+		resp, err := FetchWithRetryAndHeaders(reqCtx, client, remoteURL, version.UserAgent(), nil, defaultMaxRetries, defaultInitialBackoff)
 		if err != nil {
-			return "", fmt.Errorf("failed to download skill %q from %s: network unreachable: %w", item.Name, remoteURL, err)
+			return "", fmt.Errorf("failed to download skill %q from %s: %w", item.Name, remoteURL, err)
 		}
 		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("failed to download skill %q from %s: HTTP %d", item.Name, remoteURL, resp.StatusCode)
+			return "", &HTTPStatusError{StatusCode: resp.StatusCode, URL: remoteURL}
 		}
-		data, err := ReadBounded(resp.Body, DefaultMaxUnpackedBytes)
+
+		data, err := ReadBounded(resp.Body, DefaultMaxSkillMDBytes)
 		if err != nil {
 			return "", fmt.Errorf("failed to read response for %q: %w", item.Name, err)
 		}
 		if len(data) == 0 {
 			return "", fmt.Errorf("empty content downloaded for %q", item.Name)
 		}
-		if expectedDigest != "" {
-			if err := VerifyDigest(data, expectedDigest); err != nil {
-				return "", fmt.Errorf("%w: downloaded content for %q does not match expected digest %s", ErrDigestMismatch, item.Name, expectedDigest)
-			}
-		}
 
-		// If item is an archive (.tar.gz, .zip or type == "archive"), extract SKILL.md and unpack to cache
-		if IsArchiveItem(*item) || DetectArchiveFormat(data, remoteURL) != "" {
+		// Sniff archive payload even if manifest did not tag type: "archive".
+		if DetectArchiveFormat(data, remoteURL) != "" {
+			if !forceBypassDigest {
+				if err := VerifyRequiredDigest(data, expectedDigest); err != nil {
+					return "", fmt.Errorf("%w: archive %q", err, item.Name)
+				}
+			}
 			extractedMD, err := ExtractSkillMDFromArchive(data)
 			if err != nil {
 				return "", fmt.Errorf("failed to extract SKILL.md from archive for %q: %w", item.Name, err)
 			}
 			EnrichItemFromSkillMD(item, []byte(extractedMD))
-			if !c.noCache && item.Name != "" {
-				if cacheRoot := c.resolveCacheRoot(); cacheRoot != "" {
-					if _, err := UnpackArchiveToCache(data, cacheRoot, item.Name, expectedDigest); err != nil {
-						return "", fmt.Errorf("failed to unpack archive for %q: %w", item.Name, err)
-					}
+			if cacheRoot != "" && item.Name != "" {
+				if _, _, err := UnpackArchiveToCache(data, cacheRoot, item.Name, item.Source, expectedDigest); err != nil {
+					return "", fmt.Errorf("failed to unpack archive for %q: %w", item.Name, err)
 				}
 			}
 			return extractedMD, nil
+		}
+
+		if !forceBypassDigest && expectedDigest != "" {
+			if err := VerifyDigest(data, expectedDigest); err != nil {
+				return "", fmt.Errorf("%w: downloaded content for %q does not match expected digest %s", err, item.Name, expectedDigest)
+			}
 		}
 
 		EnrichItemFromSkillMD(item, data)
 		return string(data), nil
 	}
 
-	// 3. If item has raw body, return it
+	// 3. Fallback to raw body when no remote URL is set.
 	if item.Body != "" {
+		if !forceBypassDigest && expectedDigest != "" {
+			if err := VerifyDigest([]byte(item.Body), expectedDigest); err != nil {
+				return "", fmt.Errorf("%w: body for %q does not match expected digest %s", err, item.Name, expectedDigest)
+			}
+		}
 		return item.Body, nil
 	}
 

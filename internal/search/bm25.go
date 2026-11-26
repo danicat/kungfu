@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,9 +14,7 @@
 
 package search
 
-import (
-	"math"
-)
+import "math"
 
 const (
 	// DefaultBM25K1 controls term frequency saturation.
@@ -30,18 +28,16 @@ const (
 type BM25Scorer struct {
 	k1        float32
 	b         float32
-	numDocs   int
-	avgDocLen float32
 	normTable []float32
 	idfCache  map[uint32]float32
 }
 
-// NewBM25Scorer initializes a BM25 scorer with k1 and b parameters.
+// NewBM25Scorer initializes a BM25 scorer with validated k1 and b parameters.
 func NewBM25Scorer(k1, b float32) *BM25Scorer {
-	if k1 <= 0 {
+	if math.IsNaN(float64(k1)) || math.IsInf(float64(k1), 0) || k1 <= 0 {
 		k1 = DefaultBM25K1
 	}
-	if b < 0 {
+	if math.IsNaN(float64(b)) || math.IsInf(float64(b), 0) || b < 0 || b > 1 {
 		b = DefaultBM25B
 	}
 	return &BM25Scorer{
@@ -71,8 +67,11 @@ func ComputeIDF(docFreq, totalDocs int) float32 {
 
 // Build precomputes document length normalizations and caches IDFs for the given corpus statistics.
 func (s *BM25Scorer) Build(numDocs int, avgDocLen float32, docLengths []float32, docFreqs map[uint32]uint32) {
-	s.numDocs = numDocs
-	s.avgDocLen = avgDocLen
+	if numDocs <= 0 {
+		s.normTable = nil
+		s.idfCache = make(map[uint32]float32)
+		return
+	}
 	s.normTable = make([]float32, numDocs)
 	s.idfCache = make(map[uint32]float32, len(docFreqs))
 
@@ -85,7 +84,6 @@ func (s *BM25Scorer) Build(numDocs int, avgDocLen float32, docLengths []float32,
 		if i < len(docLengths) {
 			docLen = docLengths[i]
 		}
-		// norm(d) = 1 - b + b * (docLen / avgDocLen)
 		s.normTable[i] = (1.0 - s.b) + s.b*(docLen/avgDocLen)
 	}
 
@@ -96,7 +94,7 @@ func (s *BM25Scorer) Build(numDocs int, avgDocLen float32, docLengths []float32,
 
 // ScoreTerm computes the BM25 contribution for a single term in a document.
 func (s *BM25Scorer) ScoreTerm(termID uint32, tf float32, docID uint32) float32 {
-	if tf <= 0 || int(docID) >= len(s.normTable) {
+	if tf <= 0 || uint64(docID) >= uint64(len(s.normTable)) {
 		return 0
 	}
 
@@ -115,7 +113,7 @@ func (s *BM25Scorer) ScoreTerm(termID uint32, tf float32, docID uint32) float32 
 	return idf * (num / den)
 }
 
-// Score computes the cumulative BM25 score for a document given query term frequencies and weights.
+// Score computes the cumulative BM25 score for a document given unique query term IDs.
 func (s *BM25Scorer) Score(docID uint32, queryTermIDs []uint32, termWeights []float32, docTFs map[uint32]float32) float32 {
 	var total float32
 	for i, termID := range queryTermIDs {

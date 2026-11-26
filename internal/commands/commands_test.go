@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@ package commands
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -25,10 +26,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 
 	"github.com/danicat/kungfu/internal/catalog"
+	"github.com/danicat/kungfu/internal/runner"
 )
 
 func TestMain(m *testing.M) {
@@ -38,22 +41,33 @@ func TestMain(m *testing.M) {
 	}))
 
 	tempHome, err := os.MkdirTemp("", "kungfu-cmd-test-home-*")
-	if err == nil {
-		_ = os.Setenv("HOME", tempHome)
-		_ = os.Setenv("KUNGFU_CONFIG_DIR", filepath.Join(tempHome, ".config", "kungfu"))
-		_ = os.Setenv("KUNGFU_STATE_PATH", filepath.Join(tempHome, ".config", "kungfu", "state.json"))
-		_ = os.Setenv("KUNGFU_CONFIG", "")
-		_ = os.Setenv("KUNGFU_URL", defaultServer.URL)
+	if err != nil {
+		defaultServer.Close()
+		fmt.Fprintf(os.Stderr, "failed to create temp test home: %v\n", err)
+		os.Exit(1)
 	}
+	_ = os.Setenv("HOME", tempHome)
+	_ = os.Setenv("USERPROFILE", tempHome)
+	_ = os.Setenv("APPDATA", filepath.Join(tempHome, "AppData", "Roaming"))
+	_ = os.Setenv("LOCALAPPDATA", filepath.Join(tempHome, "AppData", "Local"))
+	_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(tempHome, ".config"))
+	_ = os.Setenv("XDG_CACHE_HOME", filepath.Join(tempHome, ".cache"))
+	_ = os.Setenv("KUNGFU_CONFIG_DIR", filepath.Join(tempHome, ".config", "kungfu"))
+	_ = os.Setenv("KUNGFU_CACHE_DIR", filepath.Join(tempHome, ".cache", "kungfu"))
+	_ = os.Setenv("KUNGFU_STATE_PATH", filepath.Join(tempHome, ".config", "kungfu", "state.json"))
+	_ = os.Setenv("KUNGFU_CONFIG", "")
+	_ = os.Setenv("KUNGFU_TELEMETRY", "")
+	_ = os.Setenv("KUNGFU_URL", defaultServer.URL)
+
 	code := m.Run()
 	defaultServer.Close()
-	if tempHome != "" {
-		_ = os.RemoveAll(tempHome)
-	}
+	_ = os.RemoveAll(tempHome)
 	os.Exit(code)
 }
 
 func TestMapErrorToExitCode(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		err      error
@@ -61,19 +75,27 @@ func TestMapErrorToExitCode(t *testing.T) {
 	}{
 		{"nil error", nil, ExitSuccess},
 		{"item not found", catalog.ErrItemNotFound, ExitNotFound},
+		{"script not found", runner.ErrScriptNotFound, ExitNotFound},
+		{"file not found", runner.ErrFileNotFound, ExitNotFound},
 		{"fs ErrNotExist", fmt.Errorf("config: reading /missing.yaml: %w", &os.PathError{Op: "open", Path: "/missing.yaml", Err: syscall.ENOENT}), ExitNotFound},
 		{"fs ErrExist", fs.ErrExist, ExitGeneral},
 		{"syscall EISDIR", &os.PathError{Op: "read", Path: "/tmp", Err: syscall.EISDIR}, ExitGeneral},
+		{"invalid name", catalog.ErrInvalidName, ExitUsage},
+		{"invalid path", runner.ErrInvalidPath, ExitUsage},
 		{"digest mismatch", catalog.ErrDigestMismatch, ExitIntegrity},
+		{"missing digest", catalog.ErrMissingDigest, ExitIntegrity},
+		{"insecure URL", catalog.ErrInsecureURL, ExitIntegrity},
 		{"invalid frontmatter", catalog.ErrInvalidFrontmatter, ExitIntegrity},
-		{"generic not found", errors.New("resource not found"), ExitNotFound},
-		{"http 404", errors.New("HTTP 404 Not Found"), ExitNotFound},
-		{"network timeout", errors.New("connection timeout"), ExitNetwork},
+		{"http 404", &catalog.HTTPStatusError{StatusCode: http.StatusNotFound, URL: "https://example.com"}, ExitNotFound},
+		{"http 503", &catalog.HTTPStatusError{StatusCode: http.StatusServiceUnavailable, URL: "https://example.com"}, ExitNetwork},
+		{"http 429", &catalog.HTTPStatusError{StatusCode: http.StatusTooManyRequests, URL: "https://example.com"}, ExitNetwork},
+		{"deadline exceeded", context.DeadlineExceeded, ExitNetwork},
+		{"script timeout is ExitGeneral not ExitNetwork", fmt.Errorf("%w: %v", runner.ErrExecutionTimeout, context.DeadlineExceeded), ExitGeneral},
 		{"connection refused", syscall.ECONNREFUSED, ExitNetwork},
 		{"connection reset", syscall.ECONNRESET, ExitNetwork},
 		{"net OpError wrapping ECONNRESET", &net.OpError{Op: "read", Net: "tcp", Err: &os.SyscallError{Syscall: "read", Err: syscall.ECONNRESET}}, ExitNetwork},
 		{"custom net error", &net.DNSError{Err: "no such host"}, ExitNetwork},
-		{"unclassified error", errors.New("some unexpected syntax error"), ExitGeneral},
+		{"unclassified error string does not trigger heuristics", errors.New("resource not found in syntax"), ExitGeneral},
 	}
 
 	for _, tt := range tests {
@@ -88,24 +110,26 @@ func TestMapErrorToExitCode(t *testing.T) {
 
 func TestGlobalHelpAndVersion(t *testing.T) {
 	tests := []struct {
-		name     string
-		args     []string
-		wantCode int
-		wantSub  string
+		name       string
+		args       []string
+		wantCode   int
+		wantStdout string
+		wantStderr string
 	}{
-		{"version flag", []string{"--version"}, ExitSuccess, "kungfu version"},
-		{"version short", []string{"-V"}, ExitSuccess, "kungfu version"},
-		{"version cmd", []string{"version"}, ExitSuccess, "kungfu version"},
-		{"help flag", []string{"--help"}, ExitSuccess, "USAGE:"},
-		{"help short", []string{"-h"}, ExitSuccess, "USAGE:"},
-		{"help cmd", []string{"help"}, ExitSuccess, "USAGE:"},
-		{"help subcommand find", []string{"help", "find"}, ExitSuccess, "kungfu find"},
-		{"help subcommand load", []string{"help", "load"}, ExitSuccess, "kungfu load"},
-		{"subcommand --help offline", []string{"find", "--help"}, ExitSuccess, "kungfu find"},
-		{"subcommand -h offline", []string{"load", "-h"}, ExitSuccess, "kungfu load"},
-		{"run --help offline", []string{"run", "--help"}, ExitSuccess, "kungfu run"},
-		{"catalog add --help offline", []string{"catalog", "add", "--help"}, ExitSuccess, "kungfu catalog add"},
-		{"no args", []string{}, ExitUsage, "USAGE:"},
+		{"version flag", []string{"--version"}, ExitSuccess, "kungfu version", ""},
+		{"version short", []string{"-V"}, ExitSuccess, "kungfu version", ""},
+		{"version cmd", []string{"version"}, ExitSuccess, "kungfu version", ""},
+		{"help flag", []string{"--help"}, ExitSuccess, "USAGE:", ""},
+		{"help short", []string{"-h"}, ExitSuccess, "USAGE:", ""},
+		{"help cmd", []string{"help"}, ExitSuccess, "USAGE:", ""},
+		{"help subcommand find", []string{"help", "find"}, ExitSuccess, "kungfu find", ""},
+		{"help subcommand load", []string{"help", "load"}, ExitSuccess, "kungfu load", ""},
+		{"help unknown topic", []string{"help", "bogus"}, ExitUsage, "", "unknown help topic"},
+		{"subcommand --help offline", []string{"find", "--help"}, ExitSuccess, "kungfu find", ""},
+		{"subcommand -h offline", []string{"load", "-h"}, ExitSuccess, "kungfu load", ""},
+		{"run --help offline", []string{"run", "--help"}, ExitSuccess, "kungfu run", ""},
+		{"catalog add --help offline", []string{"catalog", "add", "--help"}, ExitSuccess, "kungfu catalog add", ""},
+		{"no args writes usage to stderr", []string{}, ExitUsage, "", "USAGE:"},
 	}
 
 	for _, tt := range tests {
@@ -116,11 +140,13 @@ func TestGlobalHelpAndVersion(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			code := Run(tt.args, &stdout, &stderr)
 			if code != tt.wantCode {
-				t.Fatalf("Run(%v) = %d, want %d; stderr: %s", tt.args, code, tt.wantCode, stderr.String())
+				t.Fatalf("Run(%v) = %d, want %d; stdout=%q stderr=%q", tt.args, code, tt.wantCode, stdout.String(), stderr.String())
 			}
-			out := stdout.String()
-			if !strings.Contains(out, tt.wantSub) {
-				t.Errorf("Run(%v) stdout %q does not contain %q", tt.args, out, tt.wantSub)
+			if tt.wantStdout != "" && !strings.Contains(stdout.String(), tt.wantStdout) {
+				t.Errorf("Run(%v) stdout %q does not contain %q", tt.args, stdout.String(), tt.wantStdout)
+			}
+			if tt.wantStderr != "" && !strings.Contains(stderr.String(), tt.wantStderr) {
+				t.Errorf("Run(%v) stderr %q does not contain %q", tt.args, stderr.String(), tt.wantStderr)
 			}
 		})
 	}
@@ -162,10 +188,22 @@ func TestFlagParsingEdgeCases(t *testing.T) {
 			wantStderr: "flag needs an argument: --name",
 		},
 		{
+			name:       "triple-dash flag syntax rejected",
+			args:       []string{"find", "---json", "kungfu"},
+			wantCode:   ExitUsage,
+			wantStderr: "bad flag syntax",
+		},
+		{
+			name:       "missing value immediately before -- terminator",
+			args:       []string{"find", "-n", "--", "kungfu"},
+			wantCode:   ExitUsage,
+			wantStderr: "flag needs an argument: -n",
+		},
+		{
 			name:       "double-dash terminator preserves dash-prefixed search term",
 			args:       []string{"find", "--", "-z"},
 			wantCode:   ExitNotFound,
-			wantStderr: `skill "-z" not found`,
+			wantStderr: `no skills matching "-z"`,
 		},
 		{
 			name:       "missing explicit config file returns ExitNotFound",
@@ -178,6 +216,18 @@ func TestFlagParsingEdgeCases(t *testing.T) {
 			args:       []string{"find", "kungfu", "-n", "0"},
 			wantCode:   ExitUsage,
 			wantStderr: "limit must be >= 1",
+		},
+		{
+			name:       "removed command alias ls rejected",
+			args:       []string{"ls"},
+			wantCode:   ExitUsage,
+			wantStderr: "unknown command",
+		},
+		{
+			name:       "removed global --no-color rejected",
+			args:       []string{"--no-color", "list"},
+			wantCode:   ExitUsage,
+			wantStderr: "flag provided but not defined",
 		},
 	}
 
@@ -376,7 +426,6 @@ func TestGlobalFlagStopAtDoubleDashAndSubcommandNamedConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 
-	// Create a config file literally named "list" in tmpDir
 	origWD, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -385,7 +434,7 @@ func TestGlobalFlagStopAtDoubleDashAndSubcommandNamedConfig(t *testing.T) {
 	if err := os.Chdir(tmpDir); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(tmpDir, "list"), []byte("load:\n  auto_update: true\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "list"), []byte("telemetry:\n  enabled: false\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -423,7 +472,7 @@ func TestLoadLocalSubpathAndCorruptDigestForceGuard(t *testing.T) {
 	tmpCache := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 
-	var subpathHits int
+	var subpathHits atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/agent-skills/index.json":
@@ -443,7 +492,7 @@ func TestLoadLocalSubpathAndCorruptDigestForceGuard(t *testing.T) {
 		case "/skills/bad/SKILL.md":
 			_, _ = w.Write([]byte("---\nname: bad-digest-skill\n---\n# Tampered Content\n"))
 		case "/skills/bad/references/secret.md":
-			subpathHits++
+			subpathHits.Add(1)
 			_, _ = w.Write([]byte("# Remote Subpath\n"))
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -465,8 +514,8 @@ func TestLoadLocalSubpathAndCorruptDigestForceGuard(t *testing.T) {
 	if code != ExitNotFound {
 		t.Fatalf("expected ExitNotFound for uncached --local subpath load, got %d (stderr: %s)", code, stderr.String())
 	}
-	if subpathHits != 0 {
-		t.Errorf("expected 0 network requests for --local subpath load, got %d", subpathHits)
+	if got := subpathHits.Load(); got != 0 {
+		t.Errorf("expected 0 network requests for --local subpath load, got %d", got)
 	}
 
 	// 3. `load bad-digest-skill --force` bypasses verification for stdout, but must NOT poison the shared cache
@@ -476,9 +525,8 @@ func TestLoadLocalSubpathAndCorruptDigestForceGuard(t *testing.T) {
 	if code != ExitSuccess {
 		t.Fatalf("expected ExitSuccess when bypassing integrity with --force, got %d (stderr: %s)", code, stderr.String())
 	}
-	cachedFile := filepath.Join(tmpCache, "skills", "bad-digest-skill", "SKILL.md")
-	if _, err := os.Stat(cachedFile); !os.IsNotExist(err) {
-		t.Errorf("expected corrupt skill content NOT to be written to cache %s", cachedFile)
+	if _, err := catalog.FindCachedSkillDir(tmpCache, "bad-digest-skill", ""); err == nil {
+		t.Errorf("expected corrupt skill content NOT to be written to cache")
 	}
 
 	// Subsequent `load bad-digest-skill` without --force must still fail with ExitIntegrity
@@ -486,6 +534,6 @@ func TestLoadLocalSubpathAndCorruptDigestForceGuard(t *testing.T) {
 	stderr.Reset()
 	code = Run([]string{"--cache-dir", tmpCache, "load", "bad-digest-skill"}, &stdout, &stderr)
 	if code != ExitIntegrity {
-		t.Fatalf("expected ExitIntegrity (4) on subsequent load without --force, got %d (stderr: %s)", code, stderr.String())
+		t.Fatalf("expected ExitIntegrity (%d) on subsequent load without --force, got %d (stderr: %s)", ExitIntegrity, code, stderr.String())
 	}
 }

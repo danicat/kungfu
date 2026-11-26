@@ -1,18 +1,21 @@
 # How to Contribute
 
-We'd love to accept your patches and contributions to this project.
+Contributions and pull requests are welcome.
 
 ## Code Reviews
 
-All submissions, including submissions by project members, require review. We
-use GitHub pull requests for this purpose. Consult
+All submissions require review via GitHub pull requests. See
 [GitHub Help](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/about-pull-requests)
 for more information on using pull requests.
 
-## Community Guidelines
+## Testing
 
-This project follows [Google's Open Source Community
-Guidelines](https://opensource.google/conduct/).
+Before opening a pull request, run the test suite with the race detector:
+
+```bash
+go test -race ./...
+go vet ./...
+```
 
 ## Disclaimer
 

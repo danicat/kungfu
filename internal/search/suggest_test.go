@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,10 +16,13 @@ package search
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
 func TestLevenshtein(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		a, b string
 		want int
@@ -39,14 +42,16 @@ func TestLevenshtein(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := Levenshtein(tt.a, tt.b)
+		got := levenshteinNormalized(strings.ToLower(strings.TrimSpace(tt.a)), strings.ToLower(strings.TrimSpace(tt.b)))
 		if got != tt.want {
-			t.Errorf("Levenshtein(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
+			t.Errorf("levenshteinNormalized(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
 		}
 	}
 }
 
 func TestSuggest(t *testing.T) {
+	t.Parallel()
+
 	candidates := []string{
 		"godoctor",
 		"ebitengineer",
@@ -85,6 +90,15 @@ func TestSuggest(t *testing.T) {
 		want := []string{"kungfu"}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("Suggest(kungfuu) = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("prefix strictly beats substring even with >100 char difference", func(t *testing.T) {
+		longPrefix := "alpha-" + strings.Repeat("x", 120)
+		got := Suggest("alpha", []string{"my-alpha", longPrefix}, 2)
+		want := []string{longPrefix, "my-alpha"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("Suggest(alpha) = %v, want %v", got, want)
 		}
 	})
 

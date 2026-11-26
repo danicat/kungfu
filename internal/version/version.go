@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,30 +16,78 @@ package version
 
 import (
 	"fmt"
+	"regexp"
 	"runtime/debug"
 	"strings"
 )
 
-// DefaultVersion is the fallback version string used in local development builds.
-var DefaultVersion = "0.8.1"
+// Version may be injected at build time via:
+//
+//	go build -ldflags "-X github.com/danicat/kungfu/internal/version.Version=1.0.0"
+var Version = ""
 
-// Get returns the dynamic version string resolved from runtime/debug build info
-// (e.g., when built via `go install module@version`), falling back to DefaultVersion.
+// DefaultVersion is the fallback release version string when neither -ldflags
+// nor tagged module build info is available.
+var DefaultVersion = "0.9.0"
+
+var pseudoVersionRe = regexp.MustCompile(`(?:^v0\.0\.0-|-0\.|\.)\d{14}-([0-9a-f]{12})(\+dirty)?$`)
+
+// Get returns the version string resolved in priority order:
+// 1. Build-time -ldflags override (Version)
+// 2. Tagged module version from runtime/debug.ReadBuildInfo
+// 3. DefaultVersion annotated with VCS revision / dirty status for dev builds
 func Get() string {
-	if info, ok := debug.ReadBuildInfo(); ok {
-		v := info.Main.Version
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		info = nil
+	}
+	return resolve(Version, DefaultVersion, info)
+}
+
+func resolve(override, fallback string, info *debug.BuildInfo) string {
+	if v := strings.TrimSpace(override); v != "" {
+		return strings.TrimPrefix(v, "v")
+	}
+
+	if info != nil {
+		v := strings.TrimSpace(info.Main.Version)
 		if v != "" && v != "(devel)" {
-			if strings.Contains(v, "dirty") {
-				return DefaultVersion + "+dirty"
-			}
-			// Ignore VCS pseudo-versions from local untagged git checkouts (e.g. v0.0.0-2026... or v0.6.4-0.2026...)
-			if strings.HasPrefix(v, "v0.0.0-") || strings.Contains(v, "-0.20") {
-				return DefaultVersion
+			if m := pseudoVersionRe.FindStringSubmatch(v); m != nil {
+				shortRev := m[1]
+				if len(shortRev) > 7 {
+					shortRev = shortRev[:7]
+				}
+				return fallback + "-dev+" + shortRev + m[2]
 			}
 			return strings.TrimPrefix(v, "v")
 		}
+
+		var rev string
+		var modified bool
+		for _, s := range info.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				rev = strings.TrimSpace(s.Value)
+			case "vcs.modified":
+				modified = s.Value == "true"
+			}
+		}
+		if rev != "" {
+			if len(rev) > 7 {
+				rev = rev[:7]
+			}
+			out := fallback + "-dev+" + rev
+			if modified {
+				out += ".dirty"
+			}
+			return out
+		}
+		if modified {
+			return fallback + "+dirty"
+		}
 	}
-	return DefaultVersion
+
+	return fallback
 }
 
 // UserAgent returns the standard User-Agent header for HTTP requests.

@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,6 +22,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/danicat/kungfu/internal/config"
 )
 
 func TestRunCatalog(t *testing.T) {
@@ -33,9 +35,9 @@ func TestRunCatalog(t *testing.T) {
 	t.Setenv("HOME", tmpDir)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmpDir, ".cache"))
+	t.Setenv("KUNGFU_CONFIG_DIR", filepath.Join(tmpDir, ".config", "kungfu"))
 	t.Setenv("KUNGFU_STATE_PATH", filepath.Join(tmpDir, ".kungfu-state.json"))
 
-	// Create mock HTTP server for custom catalog
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
@@ -53,20 +55,48 @@ func TestRunCatalog(t *testing.T) {
 	t.Setenv("KUNGFU_URL", server.URL)
 
 	var stdout, stderr bytes.Buffer
-	app, err := NewApp(GlobalOptions{}, &stdout, &stderr)
+	app, err := NewApp(GlobalOptions{CacheDir: t.TempDir()}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("NewApp failed: %v", err)
 	}
 
-	// 1. Add catalog
+	// 1. Add catalog and verify persistence in config.yaml
 	stdout.Reset()
 	stderr.Reset()
 	code := app.RunCatalog([]string{"add", server.URL, "--name", "mock-cat"})
 	if code != ExitSuccess {
 		t.Fatalf("RunCatalog add = %d; stderr: %s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "Added catalog \"mock-cat\"") {
+	if !strings.Contains(stdout.String(), `Added catalog "mock-cat"`) {
 		t.Errorf("expected added catalog confirmation, got: %s", stdout.String())
+	}
+	reloadedCfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("config.Load after catalog add: %v", err)
+	}
+	if reloadedCfg.Catalogs["mock-cat"] != server.URL {
+		t.Errorf("expected mock-cat persisted in config.yaml, got %q", reloadedCfg.Catalogs["mock-cat"])
+	}
+
+	// 1b. Adding duplicate catalog without -f must fail; with -f must succeed
+	stdout.Reset()
+	stderr.Reset()
+	if code := app.RunCatalog([]string{"add", server.URL, "--name", "mock-cat"}); code != ExitUsage {
+		t.Errorf("duplicate catalog add without -f = %d, want ExitUsage", code)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := app.RunCatalog([]string{"add", server.URL, "--name", "mock-cat", "-f"}); code != ExitSuccess {
+		t.Errorf("duplicate catalog add with -f = %d, want ExitSuccess; stderr: %s", code, stderr.String())
+	}
+
+	// 1c. Invalid or reserved catalog names must be rejected
+	for _, badName := range []string{"default", "kungfu", "../evil", "bad name", "bad@name"} {
+		stdout.Reset()
+		stderr.Reset()
+		if code := app.RunCatalog([]string{"add", server.URL, "--name", badName}); code != ExitUsage {
+			t.Errorf("catalog add --name %q = %d, want ExitUsage", badName, code)
+		}
 	}
 
 	// 2. List catalogs
@@ -77,15 +107,16 @@ func TestRunCatalog(t *testing.T) {
 		t.Fatalf("RunCatalog list = %d; stderr: %s", code, stderr.String())
 	}
 	listOut := stdout.String()
-	if !strings.Contains(listOut, "mock-cat") {
-		t.Errorf("expected mock-cat in catalog list, got: %s", listOut)
+	if !strings.Contains(listOut, "mock-cat") || !strings.Contains(listOut, "kungfu") || !strings.Contains(listOut, "default") {
+		t.Errorf("expected default, kungfu, and mock-cat in catalog list, got: %s", listOut)
 	}
 	if strings.Contains(listOut, "https://") || strings.Contains(listOut, "http://") {
 		t.Errorf("expected catalog list to omit http(s):// prefix in SOURCE column, got: %s", listOut)
 	}
 
-	// 3. Synchronize all catalogs via RunUpdate (using mock server URL so tests never hit live internet)
+	// 3. Synchronize all catalogs via RunUpdate (override built-ins to mock server so tests never hit live internet)
 	app.Config.Catalogs["default"] = server.URL
+	app.Config.Catalogs["kungfu"] = server.URL
 	stdout.Reset()
 	stderr.Reset()
 	code = app.RunUpdate([]string{})
@@ -96,30 +127,35 @@ func TestRunCatalog(t *testing.T) {
 		t.Errorf("expected synchronized confirmation, got: %s", stdout.String())
 	}
 
-	// 4. Remove catalog
+	// 4. Remove catalog and verify removal from config.yaml
 	stdout.Reset()
 	stderr.Reset()
 	code = app.RunCatalog([]string{"remove", "mock-cat"})
 	if code != ExitSuccess {
 		t.Fatalf("RunCatalog remove = %d; stderr: %s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "Removed catalog \"mock-cat\"") {
+	if !strings.Contains(stdout.String(), `Removed catalog "mock-cat"`) {
 		t.Errorf("expected removed confirmation, got: %s", stdout.String())
 	}
+	reloadedCfg, _ = config.Load("")
+	if _, exists := reloadedCfg.Catalogs["mock-cat"]; exists {
+		t.Errorf("expected mock-cat to be removed from config.yaml")
+	}
 
-	// 5. Attempt to remove default catalog should fail
-	stdout.Reset()
-	stderr.Reset()
-	code = app.RunCatalog([]string{"remove", "default"})
-	if code == ExitSuccess || strings.Contains(stdout.String(), "Removed catalog \"default\"") {
-		t.Errorf("expected default catalog removal to be prevented")
+	// 5. Attempt to remove built-in catalogs ("default" and "kungfu") must fail
+	for _, builtin := range []string{"default", "kungfu"} {
+		stdout.Reset()
+		stderr.Reset()
+		code = app.RunCatalog([]string{"remove", builtin})
+		if code != ExitUsage || strings.Contains(stdout.String(), `Removed catalog "`+builtin+`"`) {
+			t.Errorf("expected built-in catalog %q removal to be prevented with ExitUsage, got %d", builtin, code)
+		}
 	}
 
 	// 6. Legacy catalog sync subcommand should fail with ExitUsage
 	stdout.Reset()
 	stderr.Reset()
-	code = app.RunCatalog([]string{"sync"})
-	if code != ExitUsage {
+	if code := app.RunCatalog([]string{"sync"}); code != ExitUsage {
 		t.Fatalf("RunCatalog sync = %d, want %d", code, ExitUsage)
 	}
 

@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ import (
 )
 
 func TestTokenizer_Basic(t *testing.T) {
+	t.Parallel()
 	tok := search.NewTokenizer()
 
 	tests := []struct {
@@ -74,6 +75,7 @@ func TestTokenizer_Basic(t *testing.T) {
 }
 
 func TestTokenizer_Stemmer(t *testing.T) {
+	t.Parallel()
 	tok := search.NewTokenizer()
 
 	stemTests := map[string]string{
@@ -98,7 +100,13 @@ func TestTokenizer_Stemmer(t *testing.T) {
 	}
 }
 
-func TestBM25_IDF(t *testing.T) {
+func TestBM25_IDFAndParameterBounds(t *testing.T) {
+	t.Parallel()
+
+	if idf := search.ComputeIDF(0, 0); idf != 0 {
+		t.Errorf("ComputeIDF(0, 0) = %f, want 0", idf)
+	}
+
 	// RSJ non-negative IDF test: ln(1 + (N - n + 0.5) / (n + 0.5))
 	N := 100
 	for df := 0; df <= N; df++ {
@@ -110,22 +118,13 @@ func TestBM25_IDF(t *testing.T) {
 			t.Errorf("IDF for df=%d, N=%d returned NaN/Inf: %f", df, N, idf)
 		}
 	}
-}
 
-func TestTFIDF_Sublinear(t *testing.T) {
-	tf0 := search.SublinearTF(0)
-	if tf0 != 0 {
-		t.Errorf("SublinearTF(0) = %f, expected 0", tf0)
-	}
-
-	tf1 := search.SublinearTF(1)
-	if tf1 != 1.0 {
-		t.Errorf("SublinearTF(1) = %f, expected 1.0", tf1)
-	}
-
-	tf10 := search.SublinearTF(10)
-	if tf10 <= tf1 {
-		t.Errorf("SublinearTF(10) (%f) should be > SublinearTF(1) (%f)", tf10, tf1)
+	// Invalid NaN/Inf/out-of-range parameters must be safely normalized.
+	b := search.NewBM25Scorer(float32(math.NaN()), float32(math.Inf(1)))
+	b.Build(1, 2.0, []float32{2.0}, map[uint32]uint32{1: 1})
+	score := b.ScoreTerm(1, 1.0, 0)
+	if math.IsNaN(float64(score)) || math.IsInf(float64(score), 0) || score <= 0 {
+		t.Errorf("expected valid positive BM25 score after clamping invalid params, got %f", score)
 	}
 }
 
@@ -173,6 +172,8 @@ var sampleCatalogItems = []catalog.Item{
 }
 
 func TestEngine_IndexAndSearch(t *testing.T) {
+	t.Parallel()
+
 	eng := search.NewEngine()
 	err := eng.Index(sampleCatalogItems)
 	if err != nil {
@@ -204,14 +205,6 @@ func TestEngine_IndexAndSearch(t *testing.T) {
 			minResults:  1,
 		},
 		{
-			name:        "tfidf search ast quality",
-			query:       "ast quality testing",
-			strategy:    "tfidf",
-			limit:       3,
-			expectFirst: "godoctor",
-			minResults:  1,
-		},
-		{
 			name:        "exact match skill name",
 			query:       "buffer-cli",
 			strategy:    "exact",
@@ -220,8 +213,8 @@ func TestEngine_IndexAndSearch(t *testing.T) {
 			minResults:  1,
 		},
 		{
-			name:        "tag filtering with keyword",
-			query:       "tag:physics simulation",
+			name:        "tag terms match as bag-of-words keywords",
+			query:       "physics simulation",
 			strategy:    "hybrid",
 			limit:       5,
 			expectFirst: "physics-2d",
@@ -274,6 +267,8 @@ func TestEngine_IndexAndSearch(t *testing.T) {
 }
 
 func TestEngine_FuzzyAndDelimiterScores(t *testing.T) {
+	t.Parallel()
+
 	eng := search.NewEngine()
 	_ = eng.Index(sampleCatalogItems)
 
@@ -296,7 +291,43 @@ func TestEngine_FuzzyAndDelimiterScores(t *testing.T) {
 	}
 }
 
+func TestEngine_RRFDocIDCollisionAndExactPrecedenceAndAtCatalog(t *testing.T) {
+	t.Parallel()
+
+	items := []catalog.Item{
+		{ID: "go", Name: "go", Description: "Go skill in catalog A", Source: "cat-a"},
+		{ID: "go", Name: "go", Description: "Go skill in catalog B", Source: "cat-b"},
+		{ID: "go-helper", Name: "go-helper", Description: "go go go helper for go", Tags: []string{"go"}, Source: "default"},
+	}
+	eng := search.NewEngine()
+	_ = eng.Index(items)
+
+	// 1. Identical IDs from distinct catalogs must not overwrite each other in RRF fusion.
+	res := eng.Search("go", "hybrid", 10, 0.0)
+	if len(res) != 3 {
+		t.Fatalf("expected 3 results (including both duplicate IDs from cat-a and cat-b), got %d", len(res))
+	}
+	// Exact matches must strictly outrank prefix/substring match "go-helper", with deterministic Source ordering.
+	if res[0].Item.ID != "go" || res[0].Item.Source != "cat-a" {
+		t.Errorf("res[0] = %s@%s, want go@cat-a", res[0].Item.ID, res[0].Item.Source)
+	}
+	if res[1].Item.ID != "go" || res[1].Item.Source != "cat-b" {
+		t.Errorf("res[1] = %s@%s, want go@cat-b", res[1].Item.ID, res[1].Item.Source)
+	}
+	if res[2].Item.ID != "go-helper" {
+		t.Errorf("res[2] = %s, want go-helper", res[2].Item.ID)
+	}
+
+	// 2. @default filters to default catalog items only.
+	defRes := eng.Search("go@default", "hybrid", 10, 0.0)
+	if len(defRes) != 1 || defRes[0].Item.ID != "go-helper" {
+		t.Errorf("expected go@default to return only go-helper, got %+v", defRes)
+	}
+}
+
 func TestEngine_EmptyAndThreshold(t *testing.T) {
+	t.Parallel()
+
 	eng := search.NewEngine()
 	_ = eng.Index(sampleCatalogItems)
 
@@ -315,6 +346,8 @@ func TestEngine_EmptyAndThreshold(t *testing.T) {
 }
 
 func TestEngine_ConcurrentAccess(t *testing.T) {
+	t.Parallel()
+
 	eng := search.NewEngine()
 	_ = eng.Index(sampleCatalogItems)
 
@@ -323,7 +356,7 @@ func TestEngine_ConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func(iter int) {
 			defer wg.Done()
-			queries := []string{"game", "astro", "godoctor", "physics", "tag:game"}
+			queries := []string{"game", "astro", "godoctor", "physics", "simulation"}
 			q := queries[iter%len(queries)]
 			results := eng.Search(q, "hybrid", 3, 0.0)
 			if len(results) == 0 {
@@ -353,6 +386,8 @@ func BenchmarkSearch_Hybrid(b *testing.B) {
 }
 
 func TestEngine_CatalogFilterAndBlankQueryAndSuggestRanking(t *testing.T) {
+	t.Parallel()
+
 	items := append([]catalog.Item{}, sampleCatalogItems...)
 	items = append(items, catalog.Item{
 		ID:          "go-specialist",
@@ -383,10 +418,11 @@ func TestEngine_CatalogFilterAndBlankQueryAndSuggestRanking(t *testing.T) {
 		t.Errorf("expected @go-skills to return only go-specialist, got %+v", resCatOnly)
 	}
 
-	// 4. Suggest ranks prefix and substring matches strictly ahead of edit-distance matches
-	candidates := []string{"go-skills", "developing-genkit-go-extra-long-name-that-used-to-overflow-bucket", "godoctor"}
+	// 4. Suggest ranks prefix and substring matches strictly ahead of edit-distance matches even when lenDiff >= 100
+	veryLongSubstring := "prefix-" + "genkit-" + "01234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"
+	candidates := []string{"genkis", veryLongSubstring, "godoctor"}
 	suggs := search.Suggest("genkit", candidates, 3)
-	if len(suggs) == 0 || suggs[0] != "developing-genkit-go-extra-long-name-that-used-to-overflow-bucket" {
-		t.Errorf("expected substring match to rank first in Suggest, got %v", suggs)
+	if len(suggs) < 2 || suggs[0] != veryLongSubstring {
+		t.Errorf("expected long substring match to rank ahead of edit-distance match, got %v", suggs)
 	}
 }

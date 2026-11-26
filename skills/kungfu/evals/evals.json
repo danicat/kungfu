@@ -1,13 +1,13 @@
 {
   "skill_name": "kungfu",
-  "version": "0.1.0",
+  "version": "0.9.0",
   "description_eval": {
     "train_set": [
       {
         "id": "train_pos_1",
-        "query": "/ebitengine-helper",
+        "query": "//ebitengineer",
         "should_trigger": true,
-        "rationale": "Unmapped slash command should trigger catalog lookup"
+        "rationale": "Double-slash skill command should trigger JIT loading"
       },
       {
         "id": "train_pos_2",
@@ -23,9 +23,9 @@
       },
       {
         "id": "train_pos_4",
-        "query": "Load the game development skills into context",
+        "query": "Load the ebitengineer skill and its architecture reference into context",
         "should_trigger": true,
-        "rationale": "Batch loading skills by category"
+        "rationale": "JIT loading a skill and bundled reference subpath"
       },
       {
         "id": "train_pos_5",
@@ -79,9 +79,9 @@
     "validation_set": [
       {
         "id": "val_pos_1",
-        "query": "What skills are available in the writing category?",
+        "query": "What Go skills are available in the go-skills catalog?",
         "should_trigger": true,
-        "rationale": "Listing and inspecting catalog categories"
+        "rationale": "Catalog-scoped skill discovery using @catalog"
       },
       {
         "id": "val_pos_2",
@@ -97,9 +97,9 @@
       },
       {
         "id": "val_pos_4",
-        "query": "Load all skills tagged with golang AND backend",
+        "query": "Find physics and game skills in the catalog",
         "should_trigger": true,
-        "rationale": "Boolean tag selector loading query"
+        "rationale": "Keyword search across skill descriptions and tags via kungfu find"
       },
       {
         "id": "val_neg_1",
@@ -131,23 +131,23 @@
     {
       "id": 1,
       "name": "unmapped_slash_command_lookup",
-      "prompt": "User enters command /seo-optimizer to audit their article metadata.",
-      "expected_output": "Agent recognizes unmapped command, invokes kungfu find seo-optimizer, identifies the skill, and loads or learns it.",
+      "prompt": "User enters command //seo-optimizer to audit their article metadata.",
+      "expected_output": "Agent recognizes skill shortcut, invokes kungfu find seo-optimizer or kungfu load seo-optimizer, and incorporates the skill instructions.",
       "assertions": [
-        "Invokes kungfu find with 'seo-optimizer' or related keywords",
-        "Identifies seo-optimizer in catalog results",
-        "Uses kungfu load or kungfu learn to retrieve skill instructions",
+        "Invokes kungfu find or kungfu load for 'seo-optimizer'",
+        "Identifies matching skill in catalog results",
+        "Uses kungfu load to retrieve skill instructions without cluttering the workspace",
         "Does not error or report unknown command failure without checking catalog"
       ]
     },
     {
       "id": 2,
-      "name": "multi_skill_jit_loading",
-      "prompt": "Load both godoctor and ebitengineer skills into the current session context.",
-      "expected_output": "Agent executes kungfu load individually for each skill (kungfu load godoctor then kungfu load ebitengineer) and incorporates verbatim instructions.",
+      "name": "multi_skill_jit_loading_with_pagination",
+      "prompt": "Load both godoctor and ebitengineer skills into the current session context and read all pages.",
+      "expected_output": "Agent executes kungfu load individually for each skill (kungfu load godoctor, then kungfu load ebitengineer, advancing with -p 2 when paginated) and incorporates verbatim instructions.",
       "assertions": [
         "Runs kungfu load individually for godoctor and ebitengineer",
-        "Receives verbatim markdown bodies for both skills",
+        "Uses -p <N> when a skill response indicates additional pages",
         "Does not create files on disk (.agents/skills/ is untouched)",
         "Acknowledges capabilities of both loaded skills"
       ]
@@ -166,13 +166,13 @@
     },
     {
       "id": 4,
-      "name": "category_and_boolean_tag_discovery",
-      "prompt": "Show me all skills in the game-dev category tagged with 2d and physics.",
-      "expected_output": "Agent executes kungfu find or kungfu list with --category game-dev and --tags \"2d AND physics\".",
+      "name": "catalog_scoped_subpath_and_script_execution",
+      "prompt": "Find testing skills in the go-skills catalog, load the architecture reference from godoctor, and run its smart_build script.",
+      "expected_output": "Agent runs kungfu find testing@go-skills, kungfu load godoctor/references/architecture.md, and kungfu run godoctor smart_build.",
       "assertions": [
-        "Passes properly quoted boolean tag expression: --tags \"2d AND physics\"",
-        "Specifies --category game-dev",
-        "Presents matching skills with metadata to user"
+        "Uses @go-skills catalog qualifier in kungfu find",
+        "Loads bundled reference via kungfu load godoctor/references/architecture.md",
+        "Executes companion script via kungfu run godoctor smart_build without searching disk"
       ]
     }
   ]

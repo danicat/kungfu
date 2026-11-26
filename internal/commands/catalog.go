@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,33 +16,56 @@ package commands
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/danicat/kungfu/internal/catalog"
-	"github.com/danicat/kungfu/internal/state"
+	"github.com/danicat/kungfu/internal/config"
 )
+
+func validateCatalogName(name string) error {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" || trimmed != name {
+		return fmt.Errorf("catalog name cannot be empty or have leading/trailing whitespace")
+	}
+	if config.IsBuiltinCatalog(trimmed) {
+		return fmt.Errorf("cannot use reserved built-in catalog name %q", trimmed)
+	}
+	if strings.HasPrefix(trimmed, "/") || strings.HasSuffix(trimmed, "/") || strings.Contains(trimmed, "//") || strings.Contains(trimmed, "..") {
+		return fmt.Errorf("invalid catalog name %q", trimmed)
+	}
+	for _, r := range trimmed {
+		if r == '@' || r == '\\' || r == ':' || r == 0 || unicode.IsSpace(r) || unicode.IsControl(r) {
+			return fmt.Errorf("invalid catalog name %q: contains forbidden character", trimmed)
+		}
+	}
+	return nil
+}
+
+func expandHomePath(p string) (string, error) {
+	if p == "~" || strings.HasPrefix(p, "~/") || strings.HasPrefix(p, `~\`) {
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			return "", fmt.Errorf("expanding ~ in %q: %w", p, err)
+		}
+		if p == "~" {
+			return home, nil
+		}
+		return filepath.Join(home, p[2:]), nil
+	}
+	return p, nil
+}
 
 func (a *App) RunCatalog(args []string) int {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
-		_, _ = fmt.Fprintln(a.Stdout, `USAGE:
-  kungfu catalog <subcommand> [flags] [arguments...]
-
-SUBCOMMANDS:
-  add <source> [--name <name>] [--ref <ref>] [--subpath <path>] [--refresh] [--json] [--raw]
-      Register a skill catalog from a GitHub repository, HTTP manifest, or local directory.
-  list [--json] [--raw]
-      List all registered skill catalogs and default sources.
-  remove <name> [--json] [--raw]
-      Remove a registered catalog source.
-
-ALIASES:
-  ls (list), rm / delete (remove)`)
+		_ = PrintSubcommandHelp(a.Stdout, "catalog", nil)
 		return ExitSuccess
 	}
 
@@ -50,11 +73,11 @@ ALIASES:
 	subArgs := args[1:]
 
 	switch subcmd {
-	case "add", "install":
+	case "add":
 		return a.runCatalogAdd(subArgs)
-	case "list", "ls":
+	case "list":
 		return a.runCatalogList(subArgs)
-	case "remove", "rm", "delete":
+	case "remove":
 		return a.runCatalogRemove(subArgs)
 	default:
 		_, _ = fmt.Fprintf(a.Stderr, "error: unknown catalog subcommand %q. Run 'kungfu catalog --help' for usage.\n", subcmd)
@@ -66,31 +89,32 @@ func (a *App) runCatalogAdd(args []string) int {
 	fs := flag.NewFlagSet("catalog add", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
 	var nameFlag, refFlag, subpathFlag string
-	var refreshFlag, jsonFlag, rawFlag bool
+	var forceFlag, jsonFlag bool
 
 	fs.StringVar(&nameFlag, "name", "", "Custom alias/name for the catalog")
 	fs.StringVar(&nameFlag, "n", "", "Custom alias/name for the catalog (shorthand)")
-	fs.StringVar(&refFlag, "ref", "main", "Branch or tag ref for git repository")
-	fs.StringVar(&refFlag, "b", "main", "Branch or tag ref (shorthand)")
-	fs.StringVar(&refFlag, "branch", "main", "Branch or tag ref (alias)")
+	fs.StringVar(&refFlag, "ref", "", "Branch or tag ref for git repository")
 	fs.StringVar(&subpathFlag, "subpath", "", "Subpath directory inside repository")
 	fs.StringVar(&subpathFlag, "p", "", "Subpath directory inside repository (shorthand)")
-	fs.BoolVar(&refreshFlag, "refresh", false, "Force fresh download bypassing cache")
-	fs.BoolVar(&refreshFlag, "r", false, "Force fresh download (shorthand)")
+	fs.BoolVar(&forceFlag, "force", false, "Overwrite an existing catalog with the same name")
+	fs.BoolVar(&forceFlag, "f", false, "Overwrite an existing catalog (shorthand)")
 	fs.BoolVar(&jsonFlag, "json", false, "Output in JSON format")
-	fs.BoolVar(&rawFlag, "raw", false, "Output in raw format")
 
 	posArgs, err := parseFlagsWithArgs(fs, args)
 	if err != nil {
 		return ExitUsage
 	}
 	if len(posArgs) == 0 {
-		_, _ = fmt.Fprintln(a.Stderr, "error: catalog add requires a source (GitHub repository 'owner/repo', HTTP URL, or local directory)")
+		_, _ = fmt.Fprintln(a.Stderr, "error: catalog add requires a source (GitHub repository 'owner/repo', HTTPS URL, or local directory)")
+		return ExitUsage
+	}
+	if len(posArgs) > 1 {
+		_, _ = fmt.Fprintf(a.Stderr, "error: catalog add accepts a single source argument (unexpected %q)\n", posArgs[1])
 		return ExitUsage
 	}
 
 	source := posArgs[0]
-	mode := a.resolveMode(jsonFlag, rawFlag)
+	mode := a.resolveMode(jsonFlag)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -98,68 +122,79 @@ func (a *App) runCatalogAdd(args []string) int {
 	var manifest *catalog.Manifest
 	var catType string
 	var catName string
+	var persistedSource string
 	var catURL string
 	var etag string
 
-	// 1. Check if source is a local filesystem path
 	isExplicitLocalPath := strings.HasPrefix(source, ".") || strings.HasPrefix(source, "/") || strings.HasPrefix(source, "~") || strings.HasPrefix(source, `\`)
-	if info, err := os.Stat(source); err == nil {
+	expandedSource := source
+	if isExplicitLocalPath {
+		exp, expErr := expandHomePath(source)
+		if expErr != nil {
+			_, _ = fmt.Fprintf(a.Stderr, "error: %v\n", expErr)
+			return ExitGeneral
+		}
+		expandedSource = exp
+	}
+
+	isHTTPURL := false
+	isGitHubURL := false
+	if u, uErr := url.Parse(source); uErr == nil && (u.Scheme == "http" || u.Scheme == "https") {
+		host := strings.ToLower(u.Hostname())
+		if host == "github.com" || host == "raw.githubusercontent.com" {
+			isGitHubURL = !strings.HasSuffix(strings.ToLower(u.Path), ".json")
+			isHTTPURL = !isGitHubURL
+		} else {
+			isHTTPURL = true
+		}
+	}
+
+	if info, statErr := os.Stat(expandedSource); statErr == nil {
 		if !info.IsDir() {
 			_, _ = fmt.Fprintf(a.Stderr, "error: local catalog source %q is a file, expected a directory\n", source)
 			return ExitUsage
 		}
-		catType = state.CatalogTypeLocal
-		absPath, _ := filepath.Abs(source)
+		absPath, absErr := filepath.Abs(expandedSource)
+		if absErr != nil {
+			_, _ = fmt.Fprintf(a.Stderr, "error: resolving path %q: %v\n", expandedSource, absErr)
+			return ExitGeneral
+		}
+		catType = "local"
+		persistedSource = absPath
 		catURL = absPath
 		catName = nameFlag
 		if catName == "" {
 			catName = filepath.Base(absPath)
 		}
-		m, err := catalog.DiscoverLocalCatalog(source)
-		if err != nil {
-			_, _ = fmt.Fprintf(a.Stderr, "error: discovering local catalog %s: %v\n", source, err)
-			return MapErrorToExitCode(err)
-		}
-		manifest = m
 	} else if isExplicitLocalPath {
-		_, _ = fmt.Fprintf(a.Stderr, "error: local catalog directory %q not found: %v\n", source, err)
-		return MapErrorToExitCode(err)
-	} else if (strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://")) && (!strings.Contains(source, "github.com") || strings.HasSuffix(strings.ToLower(source), ".json")) {
-		// 2. HTTP Manifest URL
-		catType = state.CatalogTypeHTTP
+		_, _ = fmt.Fprintf(a.Stderr, "error: local catalog directory %q not found: %v\n", source, statErr)
+		return MapErrorToExitCode(statErr)
+	} else if isHTTPURL {
+		catType = "http"
+		persistedSource = source
 		catURL = source
 		catName = nameFlag
 		if catName == "" {
-			catName = strings.TrimPrefix(strings.TrimPrefix(source, "https://"), "http://")
-			catName = strings.TrimSuffix(catName, "/.well-known/agent-skills/index.json")
-			catName = strings.TrimSuffix(catName, "/index.json")
-			catName = strings.TrimSuffix(catName, "/catalog.json")
-			catName = strings.TrimSuffix(catName, "/")
+			u, _ := url.Parse(source)
+			hostPath := u.Hostname() + strings.TrimRight(u.Path, "/")
+			hostPath = strings.TrimSuffix(hostPath, "/.well-known/agent-skills/index.json")
+			hostPath = strings.TrimSuffix(hostPath, "/index.json")
+			catName = strings.TrimRight(hostPath, "/")
 		}
-		if refreshFlag {
-			_ = catalog.DeleteNamedCatalogCacheIn(a.cacheRootDir(), catName)
-		}
-		m, tag, err := catalog.FetchHTTPCatalog(ctx, source, a.getHTTPClient())
-		if err != nil {
-			_, _ = fmt.Fprintf(a.Stderr, "error: fetching http catalog %s: %v\n", source, err)
-			return MapErrorToExitCode(err)
-		}
-		manifest = m
-		etag = tag
 	} else {
-		// 3. GitHub repository
 		target, ok := catalog.ParseGitHubTarget(source)
 		if !ok {
-			_, _ = fmt.Fprintf(a.Stderr, "error: invalid catalog source %q. Expected GitHub repository (e.g. google/skills), HTTP URL, or local directory path.\n", source)
+			_, _ = fmt.Fprintf(a.Stderr, "error: invalid catalog source %q. Expected GitHub repository (e.g. google/skills), HTTPS URL, or local directory path.\n", source)
 			return ExitUsage
 		}
-		if refFlag != "main" && refFlag != "" {
+		if refFlag != "" {
 			target.Ref = refFlag
 		}
 		if subpathFlag != "" {
 			target.Subpath = subpathFlag
 		}
-		catType = state.CatalogTypeGitHub
+		catType = "github"
+		persistedSource = target.CanonicalSource()
 		catURL = target.FullRepoURL()
 		catName = nameFlag
 		if catName == "" {
@@ -168,16 +203,27 @@ func (a *App) runCatalogAdd(args []string) int {
 				catName += "/" + target.Subpath
 			}
 		}
-		if refreshFlag {
-			_ = catalog.DeleteNamedCatalogCacheIn(a.cacheRootDir(), catName)
-		}
+	}
 
-		m, err := catalog.FetchGitHubCatalog(ctx, target, a.getHTTPClient())
-		if err != nil {
-			_, _ = fmt.Fprintf(a.Stderr, "error: fetching github catalog %s: %v\n", source, err)
-			return MapErrorToExitCode(err)
-		}
-		manifest = m
+	if err := validateCatalogName(catName); err != nil {
+		_, _ = fmt.Fprintf(a.Stderr, "error: %v\n", err)
+		return ExitUsage
+	}
+
+	if existingName, _, exists := a.lookupConfiguredCatalog(catName); exists && !forceFlag {
+		_, _ = fmt.Fprintf(a.Stderr, "error: catalog %q already exists; pass -f/--force to overwrite\n", existingName)
+		return ExitUsage
+	}
+
+	m, tag, resolvedType, fetchErr := catalog.FetchSource(ctx, persistedSource, a.getHTTPClient())
+	if fetchErr != nil {
+		_, _ = fmt.Fprintf(a.Stderr, "error: fetching %s catalog %s: %v\n", catType, source, fetchErr)
+		return MapErrorToExitCode(fetchErr)
+	}
+	manifest = m
+	etag = tag
+	if resolvedType != "" {
+		catType = resolvedType
 	}
 
 	if manifest == nil || len(manifest.Items) == 0 {
@@ -185,32 +231,27 @@ func (a *App) runCatalogAdd(args []string) int {
 		return ExitNotFound
 	}
 
-	// Save cache
-	if err := catalog.SaveNamedCatalogCacheIn(a.cacheRootDir(), catName, catURL, *manifest, etag); err != nil {
-		a.logError("saving catalog cache: %v", err)
+	// Persist catalog in config.yaml (single source of truth).
+	if a.Config == nil {
+		a.Config = config.DefaultConfig()
+	}
+	if a.Config.Catalogs == nil {
+		a.Config.Catalogs = make(map[string]string)
+	}
+	a.Config.Catalogs[catName] = persistedSource
+	if _, err := config.Save(a.Options.Config, a.Config); err != nil {
+		_, _ = fmt.Fprintf(a.Stderr, "error: saving catalog to config: %v\n", err)
+		return ExitGeneral
 	}
 
-	// Save state record
-	st := a.loadState()
-	rec := state.CatalogRecord{
-		Name:       catName,
-		Type:       catType,
-		Source:     source,
-		URL:        catURL,
-		Ref:        refFlag,
-		Subpath:    subpathFlag,
-		SkillCount: len(manifest.Items),
-		AddedAt:    time.Now().UTC(),
-		UpdatedAt:  time.Now().UTC(),
+	if cacheRoot := a.cacheRootDir(); cacheRoot != "" {
+		if err := catalog.SaveNamedCatalogCache(cacheRoot, catName, catURL, *manifest, etag); err != nil && a.Options.Verbose {
+			_, _ = fmt.Fprintf(a.Stderr, "warning: saving catalog cache: %v\n", err)
+		}
 	}
-	st.AddCatalog(rec)
-	a.saveState(st)
-
-	// Dynamically register into current store
 	a.Store.AddCatalogManifest(catName, manifest)
 
-	switch mode {
-	case OutputModeJSON:
+	if mode == OutputModeJSON {
 		type AddResult struct {
 			Name       string `json:"name"`
 			Type       string `json:"type"`
@@ -222,146 +263,136 @@ func (a *App) runCatalogAdd(args []string) int {
 		res := AddResult{
 			Name:       catName,
 			Type:       catType,
-			Source:     source,
+			Source:     persistedSource,
 			URL:        catURL,
 			SkillCount: len(manifest.Items),
 			Status:     "added",
 		}
-		enc := json.NewEncoder(a.Stdout)
-		enc.SetIndent("", "  ")
-		_ = enc.Encode(res)
-		return ExitSuccess
-	case OutputModeRaw:
-		_, _ = fmt.Fprintf(a.Stdout, "added\t%s\t%s\t%d\n",
-			sanitizeTSVField(catName),
-			sanitizeTSVField(catType),
-			len(manifest.Items),
-		)
-		return ExitSuccess
-	default:
-		_, _ = fmt.Fprintf(a.Stdout, "✓ Added catalog %q (%s, %d skills indexed)\n", catName, catType, len(manifest.Items))
-		for _, it := range manifest.Items {
-			_, _ = fmt.Fprintf(a.Stdout, "  • %-20s %s\n", it.Name, it.Description)
+		if err := writeJSON(a.Stdout, res); err != nil {
+			_, _ = fmt.Fprintf(a.Stderr, "error: writing JSON output: %v\n", err)
+			return ExitGeneral
 		}
 		return ExitSuccess
 	}
+
+	_, _ = fmt.Fprintf(a.Stdout, "✓ Added catalog %q (%s, %d skills indexed)\n", catName, catType, len(manifest.Items))
+	for _, it := range manifest.Items {
+		_, _ = fmt.Fprintf(a.Stdout, "  • %-20s %s\n", it.Name, singleLineDesc(it.Description))
+	}
+	return ExitSuccess
 }
 
 func (a *App) runCatalogList(args []string) int {
 	fs := flag.NewFlagSet("catalog list", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
-	var jsonFlag, rawFlag bool
+	var jsonFlag bool
 	fs.BoolVar(&jsonFlag, "json", false, "Output in JSON format")
-	fs.BoolVar(&rawFlag, "raw", false, "Output in raw format")
 
-	if _, err := parseFlagsWithArgs(fs, args); err != nil {
+	posArgs, err := parseFlagsWithArgs(fs, args)
+	if err != nil {
+		return ExitUsage
+	}
+	if len(posArgs) > 0 {
+		_, _ = fmt.Fprintf(a.Stderr, "error: catalog list does not accept positional arguments (got %q)\n", posArgs[0])
 		return ExitUsage
 	}
 
-	mode := a.resolveMode(jsonFlag, rawFlag)
-	st := a.loadState()
-	registered := st.GetCatalogs()
+	mode := a.resolveMode(jsonFlag)
+	configured := a.configuredCatalogs()
+	cachedMap, _ := catalog.LoadAllNamedCatalogCaches(a.cacheRootDir())
 
 	type CatalogView struct {
 		Name       string `json:"name"`
 		Type       string `json:"type"`
 		Source     string `json:"source"`
-		URL        string `json:"url,omitempty"`
 		SkillCount int    `json:"skill_count"`
 		UpdatedAt  string `json:"updated_at,omitempty"`
 	}
 
-	var views []CatalogView
-
-	defaultURL := a.resolveDefaultCatalogURL()
-
-	for _, c := range registered {
-		src := c.Source
-		if src == "" {
-			src = c.URL
+	names := make([]string, 0, len(configured))
+	for k := range configured {
+		names = append(names, k)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		if names[i] == "default" {
+			return true
 		}
-		if c.Name == "default" {
-			src = defaultURL
-			// Count skills in default catalog
-			defSkills := 0
-			if all := a.Store.All(); len(all) > 0 {
-				for _, it := range all {
-					if it.Source == "remote" || it.Source == "" || strings.Contains(it.Source, "skills.danicat.dev") || it.Source == "default" {
-						defSkills++
-					}
+		if names[j] == "default" {
+			return false
+		}
+		return names[i] < names[j]
+	})
+
+	views := make([]CatalogView, 0, len(names))
+	for _, name := range names {
+		src := configured[name]
+		catType := catalog.ClassifySource(src)
+		if name == "default" {
+			catType = "default"
+		}
+		skillCount := 0
+		upStr := ""
+		if c, ok := cachedMap[name]; ok && c != nil {
+			skillCount = len(c.Manifest.Items)
+			if !c.FetchedAt.IsZero() {
+				upStr = c.FetchedAt.Format("2006-01-02 15:04")
+			}
+		} else if name == "default" && a.Store != nil {
+			for _, it := range a.Store.All() {
+				if it.Source == "" || it.Source == "default" || it.Source == "remote" || it.Source == src {
+					skillCount++
 				}
 			}
-			if defSkills > 0 {
-				c.SkillCount = defSkills
-			}
 		}
 
-		upStr := ""
-		if !c.UpdatedAt.IsZero() {
-			upStr = c.UpdatedAt.Format("2006-01-02 15:04")
-		}
 		views = append(views, CatalogView{
-			Name:       c.Name,
-			Type:       c.Type,
+			Name:       name,
+			Type:       catType,
 			Source:     src,
-			URL:        c.URL,
-			SkillCount: c.SkillCount,
+			SkillCount: skillCount,
 			UpdatedAt:  upStr,
 		})
 	}
 
-	switch mode {
-	case OutputModeJSON:
-		enc := json.NewEncoder(a.Stdout)
-		enc.SetIndent("", "  ")
-		_ = enc.Encode(views)
-		return ExitSuccess
-	case OutputModeRaw:
-		for _, v := range views {
-			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%d\t%s\n",
-				sanitizeTSVField(v.Name),
-				sanitizeTSVField(v.Type),
-				sanitizeTSVField(v.Source),
-				v.SkillCount,
-				sanitizeTSVField(v.UpdatedAt),
-			)
-		}
-		return ExitSuccess
-	default:
-		nameW, typeW, srcW, skillsW, updatedW := 22, 10, 42, 8, 19
-		for _, v := range views {
-			nameW = max(nameW, len(v.Name))
-			typeW = max(typeW, len(v.Type))
-			dispSrc := formatDisplaySource(v.Source)
-			srcW = max(srcW, len(dispSrc))
-			skillsStr := fmt.Sprintf("%d", v.SkillCount)
-			skillsW = max(skillsW, len(skillsStr))
-			up := v.UpdatedAt
-			if up == "" {
-				up = "built-in"
-			}
-			updatedW = max(updatedW, len(up))
-		}
-
-		_, _ = fmt.Fprintf(a.Stdout, "CONFIGURED CATALOGS (%d total):\n\n", len(views))
-		_, _ = fmt.Fprintf(a.Stdout, "%-*s %-*s %-*s %-*s %s\n", nameW, "NAME", typeW, "TYPE", srcW, "SOURCE", skillsW, "SKILLS", "UPDATED")
-		_, _ = fmt.Fprintf(a.Stdout, "%s %s %s %s %s\n",
-			strings.Repeat("-", nameW),
-			strings.Repeat("-", typeW),
-			strings.Repeat("-", srcW),
-			strings.Repeat("-", skillsW),
-			strings.Repeat("-", updatedW),
-		)
-		for _, v := range views {
-			up := v.UpdatedAt
-			if up == "" {
-				up = "built-in"
-			}
-			dispSrc := formatDisplaySource(v.Source)
-			_, _ = fmt.Fprintf(a.Stdout, "%-*s %-*s %-*s %-*d %s\n", nameW, v.Name, typeW, v.Type, srcW, dispSrc, skillsW, v.SkillCount, up)
+	if mode == OutputModeJSON {
+		if err := writeJSON(a.Stdout, views); err != nil {
+			_, _ = fmt.Fprintf(a.Stderr, "error: writing JSON output: %v\n", err)
+			return ExitGeneral
 		}
 		return ExitSuccess
 	}
+
+	nameW, typeW, srcW, skillsW, updatedW := 22, 10, 42, 8, 19
+	for _, v := range views {
+		nameW = max(nameW, len(v.Name))
+		typeW = max(typeW, len(v.Type))
+		dispSrc := formatDisplaySource(v.Source)
+		srcW = max(srcW, len(dispSrc))
+		skillsW = max(skillsW, len(fmt.Sprintf("%d", v.SkillCount)))
+		up := v.UpdatedAt
+		if up == "" {
+			up = "built-in"
+		}
+		updatedW = max(updatedW, len(up))
+	}
+
+	_, _ = fmt.Fprintf(a.Stdout, "CONFIGURED CATALOGS (%d total):\n\n", len(views))
+	_, _ = fmt.Fprintf(a.Stdout, "%-*s %-*s %-*s %-*s %s\n", nameW, "NAME", typeW, "TYPE", srcW, "SOURCE", skillsW, "SKILLS", "UPDATED")
+	_, _ = fmt.Fprintf(a.Stdout, "%s %s %s %s %s\n",
+		strings.Repeat("-", nameW),
+		strings.Repeat("-", typeW),
+		strings.Repeat("-", srcW),
+		strings.Repeat("-", skillsW),
+		strings.Repeat("-", updatedW),
+	)
+	for _, v := range views {
+		up := v.UpdatedAt
+		if up == "" {
+			up = "built-in"
+		}
+		_, _ = fmt.Fprintf(a.Stdout, "%-*s %-*s %-*s %-*d %s\n", nameW, v.Name, typeW, v.Type, srcW, formatDisplaySource(v.Source), skillsW, v.SkillCount, up)
+	}
+	return ExitSuccess
 }
 
 func formatDisplaySource(src string) string {
@@ -373,9 +404,8 @@ func formatDisplaySource(src string) string {
 func (a *App) runCatalogRemove(args []string) int {
 	fs := flag.NewFlagSet("catalog remove", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
-	var jsonFlag, rawFlag bool
+	var jsonFlag bool
 	fs.BoolVar(&jsonFlag, "json", false, "Output in JSON format")
-	fs.BoolVar(&rawFlag, "raw", false, "Output in raw format")
 
 	posArgs, err := parseFlagsWithArgs(fs, args)
 	if err != nil {
@@ -386,49 +416,59 @@ func (a *App) runCatalogRemove(args []string) int {
 		return ExitUsage
 	}
 
-	mode := a.resolveMode(jsonFlag, rawFlag)
-	st := a.loadState()
-	var results []struct {
+	mode := a.resolveMode(jsonFlag)
+	if a.Config == nil {
+		a.Config = config.DefaultConfig()
+	}
+
+	type RemoveResult struct {
 		Name    string `json:"name"`
 		Status  string `json:"status"`
 		Message string `json:"message,omitempty"`
 	}
 
+	results := make([]RemoveResult, 0, len(posArgs))
 	hasNotFound := false
 	hasError := false
+	modified := false
+
 	for _, name := range posArgs {
-		if strings.EqualFold(name, "default") {
+		if config.IsBuiltinCatalog(name) {
 			hasError = true
-			results = append(results, struct {
-				Name    string `json:"name"`
-				Status  string `json:"status"`
-				Message string `json:"message,omitempty"`
-			}{
+			results = append(results, RemoveResult{
 				Name:    name,
 				Status:  "error",
-				Message: "cannot remove default catalog",
+				Message: fmt.Sprintf("cannot remove built-in catalog %q", name),
 			})
 			continue
 		}
 
-		if st.RemoveCatalog(name) {
-			_ = catalog.DeleteNamedCatalogCacheIn(a.cacheRootDir(), name)
-			a.Store.RemoveCatalogItems(name)
-			results = append(results, struct {
-				Name    string `json:"name"`
-				Status  string `json:"status"`
-				Message string `json:"message,omitempty"`
-			}{
-				Name:   name,
+		matchedKey := ""
+		if a.Config.Catalogs != nil {
+			if _, ok := a.Config.Catalogs[name]; ok {
+				matchedKey = name
+			} else {
+				for k := range a.Config.Catalogs {
+					if strings.EqualFold(k, name) {
+						matchedKey = k
+						break
+					}
+				}
+			}
+		}
+
+		if matchedKey != "" {
+			delete(a.Config.Catalogs, matchedKey)
+			modified = true
+			_ = catalog.DeleteNamedCatalogCache(a.cacheRootDir(), matchedKey)
+			a.Store.RemoveCatalogItems(matchedKey)
+			results = append(results, RemoveResult{
+				Name:   matchedKey,
 				Status: "removed",
 			})
 		} else {
 			hasNotFound = true
-			results = append(results, struct {
-				Name    string `json:"name"`
-				Status  string `json:"status"`
-				Message string `json:"message,omitempty"`
-			}{
+			results = append(results, RemoveResult{
 				Name:    name,
 				Status:  "not_found",
 				Message: "catalog not found",
@@ -436,36 +476,20 @@ func (a *App) runCatalogRemove(args []string) int {
 		}
 	}
 
-	a.saveState(st)
+	saveFailed := false
+	if modified {
+		if _, err := config.Save(a.Options.Config, a.Config); err != nil {
+			saveFailed = true
+			_, _ = fmt.Fprintf(a.Stderr, "error: saving config after catalog removal: %v\n", err)
+		}
+	}
 
-	switch mode {
-	case OutputModeJSON:
-		enc := json.NewEncoder(a.Stdout)
-		enc.SetIndent("", "  ")
-		_ = enc.Encode(results)
-		if hasError {
-			return ExitUsage
+	if mode == OutputModeJSON {
+		if err := writeJSON(a.Stdout, results); err != nil {
+			_, _ = fmt.Fprintf(a.Stderr, "error: writing JSON output: %v\n", err)
+			return ExitGeneral
 		}
-		if hasNotFound {
-			return ExitNotFound
-		}
-		return ExitSuccess
-	case OutputModeRaw:
-		for _, r := range results {
-			_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\n",
-				sanitizeTSVField(r.Status),
-				sanitizeTSVField(r.Name),
-				sanitizeTSVField(r.Message),
-			)
-		}
-		if hasError {
-			return ExitUsage
-		}
-		if hasNotFound {
-			return ExitNotFound
-		}
-		return ExitSuccess
-	default:
+	} else {
 		for _, r := range results {
 			switch r.Status {
 			case "removed":
@@ -476,18 +500,35 @@ func (a *App) runCatalogRemove(args []string) int {
 				_, _ = fmt.Fprintf(a.Stderr, "✗ Failed to remove catalog %q: %s\n", r.Name, r.Message)
 			}
 		}
-		if hasError {
-			return ExitUsage
-		}
-		if hasNotFound {
-			return ExitNotFound
-		}
-		return ExitSuccess
 	}
+
+	if saveFailed {
+		return ExitGeneral
+	}
+	if hasError {
+		return ExitUsage
+	}
+	if hasNotFound {
+		return ExitNotFound
+	}
+	return ExitSuccess
 }
 
-func (a *App) syncRegisteredCatalogs(ctx context.Context, st *state.State, mode OutputMode) int {
-	targets := st.GetCatalogs()
+func (a *App) syncRegisteredCatalogs(ctx context.Context, mode OutputMode) int {
+	configured := a.configuredCatalogs()
+	names := make([]string, 0, len(configured))
+	for k := range configured {
+		names = append(names, k)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		if names[i] == "default" {
+			return true
+		}
+		if names[j] == "default" {
+			return false
+		}
+		return names[i] < names[j]
+	})
 
 	type SyncResult struct {
 		Name       string `json:"name"`
@@ -497,78 +538,47 @@ func (a *App) syncRegisteredCatalogs(ctx context.Context, st *state.State, mode 
 		Message    string `json:"message,omitempty"`
 	}
 
-	var results []SyncResult
+	results := make([]SyncResult, 0, len(names))
 	errExitCode := ExitSuccess
-	for _, cat := range targets {
-		var m *catalog.Manifest
-		var etag string
-		var err error
+	cacheRoot := a.cacheRootDir()
 
-		switch cat.Type {
-		case state.CatalogTypeDefault:
-			defaultURL := a.resolveDefaultCatalogURL()
-			cat.Source = defaultURL
-			cat.URL = defaultURL
-			m, etag, err = catalog.FetchHTTPCatalog(ctx, defaultURL, a.getHTTPClient())
-			if err == nil && m != nil {
-				// Save to index.json cache
-				cachePath := a.catalogIndexCachePath()
-				_ = catalog.SaveCachedCatalog(cachePath, defaultURL, *m, etag)
-				if syncer, ok := a.Store.(interface {
-					Sync(context.Context, bool) error
-				}); ok {
-					_ = syncer.Sync(ctx, true)
-				}
-			}
-		case state.CatalogTypeGitHub:
-			target, ok := catalog.ParseGitHubTarget(cat.Source)
-			if ok {
-				if cat.Ref != "" {
-					target.Ref = cat.Ref
-				}
-				if cat.Subpath != "" {
-					target.Subpath = cat.Subpath
-				}
-				m, err = catalog.FetchGitHubCatalog(ctx, target, a.getHTTPClient())
-			}
-		case state.CatalogTypeHTTP:
-			m, etag, err = catalog.FetchHTTPCatalog(ctx, cat.Source, a.getHTTPClient())
-		case state.CatalogTypeLocal:
-			m, err = catalog.DiscoverLocalCatalog(cat.Source)
+	for _, name := range names {
+		src := configured[name]
+		m, etag, catType, err := catalog.FetchSource(ctx, src, a.getHTTPClient())
+		if name == "default" {
+			catType = "default"
 		}
-
 		if err != nil || m == nil {
+			msg := "empty catalog manifest"
 			if err != nil {
+				msg = err.Error()
 				if code := MapErrorToExitCode(err); errExitCode == ExitSuccess || errExitCode == ExitGeneral {
 					errExitCode = code
 				}
 			}
 			results = append(results, SyncResult{
-				Name:    cat.Name,
-				Type:    cat.Type,
+				Name:    name,
+				Type:    catType,
 				Status:  "error",
-				Message: fmt.Sprintf("%v", err),
+				Message: msg,
 			})
 			continue
 		}
 
-		if cat.Type != state.CatalogTypeDefault {
-			_ = catalog.SaveNamedCatalogCacheIn(a.cacheRootDir(), cat.Name, cat.URL, *m, etag)
-			a.Store.AddCatalogManifest(cat.Name, m)
+		if cacheRoot != "" {
+			_ = catalog.SaveNamedCatalogCache(cacheRoot, name, src, *m, etag)
 		}
-		cat.SkillCount = len(m.Items)
-		cat.UpdatedAt = time.Now().UTC()
-		st.AddCatalog(cat)
+		if a.Store != nil {
+			a.Store.AddCatalogManifest(name, m)
+		}
 
 		results = append(results, SyncResult{
-			Name:       cat.Name,
-			Type:       cat.Type,
+			Name:       name,
+			Type:       catType,
 			SkillCount: len(m.Items),
 			Status:     "synced",
 		})
 	}
-
-	a.saveState(st)
 
 	hasError := false
 	for _, r := range results {
@@ -604,9 +614,6 @@ func (a *App) syncRegisteredCatalogs(ctx context.Context, st *state.State, mode 
 	return exitCode
 }
 
-// pruneSkillCache cleans stale or orphaned entries under <cacheRoot>/skills/.
-// If removeOrphans is true (all registered catalogs synced cleanly), directories
-// not present in the active catalog store are removed.
 func (a *App) pruneSkillCache(removeOrphans bool) {
 	cacheRoot := a.cacheRootDir()
 	if cacheRoot == "" || a.Store == nil {
@@ -618,12 +625,14 @@ func (a *App) pruneSkillCache(removeOrphans bool) {
 		return
 	}
 
-	activeByName := make(map[string]catalog.Item)
+	activeByKey := make(map[string]catalog.Item)
 	for _, it := range a.Store.All() {
-		if it.Name != "" {
-			// Prefer archive or default catalog entry when duplicates exist across catalogs
-			if prev, exists := activeByName[it.Name]; !exists || catalog.IsArchiveItem(it) || prev.Type == "" {
-				activeByName[it.Name] = it
+		if key, err := catalog.SkillCacheKey(it.Name, it.Source); err == nil {
+			activeByKey[key] = it
+		}
+		if key, err := catalog.SkillCacheKey(it.Name, ""); err == nil {
+			if _, exists := activeByKey[key]; !exists {
+				activeByKey[key] = it
 			}
 		}
 	}
@@ -632,9 +641,9 @@ func (a *App) pruneSkillCache(removeOrphans bool) {
 		if !entry.IsDir() {
 			continue
 		}
-		name := entry.Name()
-		skillCachePath := filepath.Join(skillsDir, name)
-		it, exists := activeByName[name]
+		dirName := entry.Name()
+		skillCachePath := filepath.Join(skillsDir, dirName)
+		it, exists := activeByKey[dirName]
 		if !exists {
 			if removeOrphans {
 				_ = os.RemoveAll(skillCachePath)
@@ -644,15 +653,14 @@ func (a *App) pruneSkillCache(removeOrphans bool) {
 
 		if catalog.IsArchiveItem(it) {
 			expected := it.EffectiveDigest()
-			if expected != "" && !catalog.IsArchiveCachedWithDigest(cacheRoot, name, expected) {
+			if expected != "" && !catalog.IsArchiveCachedWithDigest(cacheRoot, it.Name, it.Source, expected) {
 				_ = os.RemoveAll(skillCachePath)
 			}
 			continue
 		}
 
 		if it.Type == catalog.ItemTypeSkillMD {
-			subEntries, sErr := os.ReadDir(skillCachePath)
-			if sErr == nil {
+			if subEntries, sErr := os.ReadDir(skillCachePath); sErr == nil {
 				for _, sub := range subEntries {
 					if sub.Name() != "SKILL.md" {
 						_ = os.RemoveAll(filepath.Join(skillCachePath, sub.Name()))

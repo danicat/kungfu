@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +17,9 @@ package catalog_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"testing"
 
@@ -56,6 +58,7 @@ func TestCatalogCache_ETagAndFailFast(t *testing.T) {
 	c1, err := catalog.NewCatalog(
 		catalog.WithRemoteURL(server.URL),
 		catalog.WithCacheDir(tmpDir),
+		catalog.WithLocalDiscovery(false),
 	)
 	if err != nil {
 		t.Fatalf("first NewCatalog failed: %v", err)
@@ -72,6 +75,7 @@ func TestCatalogCache_ETagAndFailFast(t *testing.T) {
 	c2, err := catalog.NewCatalog(
 		catalog.WithRemoteURL(server.URL),
 		catalog.WithCacheDir(tmpDir),
+		catalog.WithLocalDiscovery(false),
 	)
 	if err != nil {
 		t.Fatalf("second NewCatalog failed: %v", err)
@@ -88,6 +92,7 @@ func TestCatalogCache_ETagAndFailFast(t *testing.T) {
 		catalog.WithRemoteURL(server.URL),
 		catalog.WithCacheDir(tmpDir),
 		catalog.WithForceRefresh(),
+		catalog.WithLocalDiscovery(false),
 	)
 	if err != nil {
 		t.Fatalf("third NewCatalog failed: %v", err)
@@ -105,6 +110,7 @@ func TestCatalogCache_ETagAndFailFast(t *testing.T) {
 		catalog.WithRemoteURL(server.URL),
 		catalog.WithCacheDir(tmpDir),
 		catalog.WithForceRefresh(),
+		catalog.WithLocalDiscovery(false),
 	)
 	if err == nil {
 		t.Fatalf("expected NewCatalog to fail fast when server is closed with WithForceRefresh")
@@ -112,6 +118,8 @@ func TestCatalogCache_ETagAndFailFast(t *testing.T) {
 }
 
 func TestCatalogCache_SaveAndLoad(t *testing.T) {
+	t.Parallel()
+
 	tmpDir := t.TempDir()
 	cachePath := filepath.Join(tmpDir, "index.json")
 
@@ -121,22 +129,69 @@ func TestCatalogCache_SaveAndLoad(t *testing.T) {
 		},
 	}
 
-	err := catalog.SaveCachedCatalog(cachePath, "https://example.com/catalog.json", manifest, "etag-123")
+	err := catalog.SaveCachedCatalog(cachePath, "test-cat", "https://example.com/index.json", manifest, "etag-123")
 	if err != nil {
 		t.Fatalf("SaveCachedCatalog failed: %v", err)
+	}
+
+	if runtime.GOOS != "windows" {
+		fi, err := os.Stat(cachePath)
+		if err != nil {
+			t.Fatalf("stat cachePath: %v", err)
+		}
+		if fi.Mode().Perm() != 0600 {
+			t.Errorf("cache file permissions = %04o, want 0600", fi.Mode().Perm())
+		}
 	}
 
 	loaded, err := catalog.LoadCachedCatalog(cachePath)
 	if err != nil {
 		t.Fatalf("LoadCachedCatalog failed: %v", err)
 	}
+	if loaded.Name != "test-cat" {
+		t.Errorf("expected name test-cat, got: %s", loaded.Name)
+	}
 	if loaded.ETag != "etag-123" {
 		t.Errorf("expected etag-123, got: %s", loaded.ETag)
 	}
-	if loaded.URL != "https://example.com/catalog.json" {
-		t.Errorf("expected url https://example.com/catalog.json, got: %s", loaded.URL)
+	if loaded.URL != "https://example.com/index.json" {
+		t.Errorf("expected url https://example.com/index.json, got: %s", loaded.URL)
 	}
 	if len(loaded.Manifest.Items) != 1 || loaded.Manifest.Items[0].Name != "skill-1" {
 		t.Errorf("unexpected loaded manifest: %+v", loaded.Manifest)
+	}
+}
+
+func TestResolveCacheDir_Precedence(t *testing.T) {
+	customDir := filepath.Join(t.TempDir(), "override")
+	xdgDir := filepath.Join(t.TempDir(), "xdg-cache")
+	envDir := filepath.Join(t.TempDir(), "env-cache")
+
+	t.Setenv("XDG_CACHE_HOME", xdgDir)
+	t.Setenv("KUNGFU_CACHE_DIR", "")
+
+	got, err := catalog.ResolveCacheDir("")
+	if err != nil {
+		t.Fatalf("ResolveCacheDir(XDG) failed: %v", err)
+	}
+	if got != filepath.Join(xdgDir, "kungfu") {
+		t.Errorf("ResolveCacheDir(XDG) = %q, want %q", got, filepath.Join(xdgDir, "kungfu"))
+	}
+
+	t.Setenv("KUNGFU_CACHE_DIR", envDir)
+	got, err = catalog.ResolveCacheDir("")
+	if err != nil {
+		t.Fatalf("ResolveCacheDir(KUNGFU_CACHE_DIR) failed: %v", err)
+	}
+	if got != envDir {
+		t.Errorf("ResolveCacheDir(KUNGFU_CACHE_DIR) = %q, want %q", got, envDir)
+	}
+
+	got, err = catalog.ResolveCacheDir(customDir)
+	if err != nil {
+		t.Fatalf("ResolveCacheDir(override) failed: %v", err)
+	}
+	if got != customDir {
+		t.Errorf("ResolveCacheDir(override) = %q, want %q", got, customDir)
 	}
 }

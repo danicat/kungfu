@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,15 +15,16 @@
 package search
 
 import (
+	"slices"
 	"sort"
 	"strings"
-	"sync"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/danicat/kungfu/internal/catalog"
 )
 
-// Field weights for search ranking.
+// Field weights and bitmasks for search ranking.
 const (
 	WeightName        float32 = 4.0
 	WeightTitle       float32 = 4.0
@@ -39,6 +40,7 @@ const (
 
 	// DefaultRRFK is the smoothing constant for Reciprocal Rank Fusion.
 	DefaultRRFK = 60.0
+	maxDualRRF  = 2.0 / (DefaultRRFK + 1.0)
 )
 
 // Result represents a ranked search result item with scoring metadata.
@@ -49,47 +51,68 @@ type Result struct {
 	MatchFields []string     `json:"match_fields"`
 }
 
-// Indexer defines the core catalog search engine contract.
-type Indexer interface {
-	Index(items []catalog.Item) error
-	Search(query string, strategy string, limit int, threshold float32) []Result
+type precomputedTag struct {
+	lower   string
+	norm    string
+	compact string
 }
 
-// Engine is a pure Go high-throughput search engine supporting BM25, TF-IDF, Exact, and Hybrid RRF ranking.
+type indexedDoc struct {
+	lowName     string
+	normName    string
+	compName    string
+	lowTitle    string
+	normTitle   string
+	compTitle   string
+	lowID       string
+	normID      string
+	compID      string
+	lowDesc     string
+	normDesc    string
+	lowSource   string
+	trimSource  string
+	safeSource  string
+	safeTrimSrc string
+	tags        []precomputedTag
+}
+
+type docScore struct {
+	docID uint32
+	score float32
+	mask  uint8
+}
+
+// Engine is a pure Go search engine supporting BM25, Exact, and Hybrid RRF ranking.
+// After Index completes, Search is safe for concurrent read-only calls.
 type Engine struct {
-	mu          sync.RWMutex
-	tokenizer   *Tokenizer
-	items       []catalog.Item
-	docLengths  []float32
-	avgDocLen   float32
-	termToID    map[string]uint32
-	docTFs      []map[uint32]float32
-	docMasks    []map[uint32]uint8
-	docFreqs    map[uint32]uint32
-	bm25Scorer  *BM25Scorer
-	tfidfScorer *TFIDFScorer
+	tokenizer  *Tokenizer
+	items      []catalog.Item
+	docs       []indexedDoc
+	docLengths []float32
+	avgDocLen  float32
+	termToID   map[string]uint32
+	docTFs     []map[uint32]float32
+	docMasks   []map[uint32]uint8
+	docFreqs   map[uint32]uint32
+	bm25Scorer *BM25Scorer
 }
 
 // NewEngine initializes an empty search Engine.
 func NewEngine() *Engine {
 	return &Engine{
-		tokenizer:   NewTokenizer(),
-		termToID:    make(map[string]uint32),
-		docFreqs:    make(map[uint32]uint32),
-		bm25Scorer:  NewBM25Scorer(DefaultBM25K1, DefaultBM25B),
-		tfidfScorer: NewTFIDFScorer(),
+		tokenizer:  NewTokenizer(),
+		termToID:   make(map[string]uint32),
+		docFreqs:   make(map[uint32]uint32),
+		bm25Scorer: NewBM25Scorer(DefaultBM25K1, DefaultBM25B),
 	}
 }
 
-// Index indexes a collection of catalog items.
+// Index indexes a collection of catalog items and precomputes normalized fields.
 func (e *Engine) Index(items []catalog.Item) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	e.items = make([]catalog.Item, len(items))
-	copy(e.items, items)
-
 	numDocs := len(items)
+	e.items = make([]catalog.Item, numDocs)
+	copy(e.items, items)
+	e.docs = make([]indexedDoc, numDocs)
 	e.termToID = make(map[string]uint32)
 	e.docLengths = make([]float32, numDocs)
 	e.docTFs = make([]map[uint32]float32, numDocs)
@@ -99,12 +122,10 @@ func (e *Engine) Index(items []catalog.Item) error {
 	if numDocs == 0 {
 		e.avgDocLen = 0
 		e.bm25Scorer.Build(0, 0, nil, nil)
-		e.tfidfScorer.Build(0, nil, nil)
 		return nil
 	}
 
 	var totalLength float32
-
 	getTermID := func(term string) uint32 {
 		if id, ok := e.termToID[term]; ok {
 			return id
@@ -123,8 +144,7 @@ func (e *Engine) Index(items []catalog.Item) error {
 			if len(text) == 0 {
 				return
 			}
-			tokens := e.tokenizer.Tokenize(text)
-			for _, tok := range tokens {
+			for _, tok := range e.tokenizer.Tokenize(text) {
 				tid := getTermID(tok)
 				tfs[tid] += weight
 				masks[tid] |= mask
@@ -151,21 +171,52 @@ func (e *Engine) Index(items []catalog.Item) error {
 		for tid := range tfs {
 			e.docFreqs[tid]++
 		}
+
+		lowName := strings.ToLower(item.Name)
+		lowTitle := strings.ToLower(item.Title)
+		lowID := strings.ToLower(item.ID)
+		lowDesc := strings.ToLower(item.Description)
+		lowSrc := strings.ToLower(strings.TrimSpace(item.Source))
+		trimSrc := strings.TrimPrefix(lowSrc, "github:")
+
+		tags := make([]precomputedTag, len(item.Tags))
+		for i, tag := range item.Tags {
+			tags[i] = precomputedTag{
+				lower:   strings.ToLower(tag),
+				norm:    normalizeKey(tag),
+				compact: compactKey(tag),
+			}
+		}
+
+		e.docs[docID] = indexedDoc{
+			lowName:     lowName,
+			normName:    normalizeKey(lowName),
+			compName:    compactKey(lowName),
+			lowTitle:    lowTitle,
+			normTitle:   normalizeKey(lowTitle),
+			compTitle:   compactKey(lowTitle),
+			lowID:       lowID,
+			normID:      normalizeKey(lowID),
+			compID:      compactKey(lowID),
+			lowDesc:     lowDesc,
+			normDesc:    normalizeKey(lowDesc),
+			lowSource:   lowSrc,
+			trimSource:  trimSrc,
+			safeSource:  catalog.SafeCatalogFileName(lowSrc),
+			safeTrimSrc: catalog.SafeCatalogFileName(trimSrc),
+			tags:        tags,
+		}
 	}
 
 	e.avgDocLen = totalLength / float32(numDocs)
 	e.bm25Scorer.Build(numDocs, e.avgDocLen, e.docLengths, e.docFreqs)
-	e.tfidfScorer.Build(numDocs, e.docTFs, e.docFreqs)
-
 	return nil
 }
 
-// parsedFilter holds query directives like tag:y, type:z, catalog:w / @w.
 type parsedFilter struct {
 	cleanQuery string
-	tags       []string
-	itemType   string
 	catalog    string
+	safeCat    string
 }
 
 func parseQueryFilters(query string) parsedFilter {
@@ -174,16 +225,7 @@ func parseQueryFilters(query string) parsedFilter {
 	var filter parsedFilter
 
 	for _, p := range parts {
-		low := strings.ToLower(p)
-		if after, ok := strings.CutPrefix(low, "tag:"); ok {
-			filter.tags = append(filter.tags, after)
-		} else if after, ok := strings.CutPrefix(low, "type:"); ok {
-			filter.itemType = after
-		} else if after, ok := strings.CutPrefix(low, "catalog:"); ok {
-			filter.catalog = after
-		} else if after, ok := strings.CutPrefix(low, "source:"); ok {
-			filter.catalog = after
-		} else if idx := strings.LastIndex(p, "@"); idx != -1 && idx < len(p)-1 {
+		if idx := strings.LastIndex(p, "@"); idx != -1 && idx < len(p)-1 {
 			catPart := strings.ToLower(strings.TrimSpace(p[idx+1:]))
 			if catPart != "" {
 				filter.catalog = catPart
@@ -196,109 +238,61 @@ func parseQueryFilters(query string) parsedFilter {
 		}
 	}
 
+	if filter.catalog != "" {
+		filter.safeCat = catalog.SafeCatalogFileName(filter.catalog)
+	}
 	filter.cleanQuery = strings.Join(cleanParts, " ")
 	return filter
 }
 
-// matchesFilter checks whether a catalog Item satisfies extracted tag, type, or catalog constraints.
-func matchesFilter(item *catalog.Item, filter *parsedFilter) bool {
-	if len(filter.itemType) > 0 {
-		if !strings.EqualFold(string(item.Type), filter.itemType) {
-			return false
-		}
-	}
-	if len(filter.catalog) > 0 {
-		wantCat := strings.ToLower(strings.TrimSpace(filter.catalog))
-		src := strings.ToLower(strings.TrimSpace(item.Source))
-		srcTrimmed := strings.TrimPrefix(src, "github:")
-		safeWant := catalog.SafeCatalogFileName(wantCat)
+func matchesFilter(doc *indexedDoc, filter *parsedFilter) bool {
+	if filter.catalog != "" {
+		wantCat := filter.catalog
 		matched := false
-		if wantCat == "default" && (src == "" || src == "default" || src == "remote") {
+		if wantCat == "default" && (doc.lowSource == "" || doc.lowSource == "default" || doc.lowSource == "remote") {
 			matched = true
-		} else if src == wantCat || srcTrimmed == wantCat ||
-			(safeWant != "" && (catalog.SafeCatalogFileName(src) == safeWant || catalog.SafeCatalogFileName(srcTrimmed) == safeWant)) ||
-			strings.HasSuffix(srcTrimmed, "/"+wantCat) {
+		} else if doc.lowSource == wantCat || doc.trimSource == wantCat ||
+			(filter.safeCat != "" && (doc.safeSource == filter.safeCat || doc.safeTrimSrc == filter.safeCat)) ||
+			strings.HasSuffix(doc.trimSource, "/"+wantCat) {
 			matched = true
 		}
 		if !matched {
 			return false
 		}
 	}
-	if len(filter.tags) > 0 {
-		for _, reqTag := range filter.tags {
-			found := false
-			for _, itemTag := range item.Tags {
-				if strings.EqualFold(itemTag, reqTag) {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return false
-			}
-		}
-	}
 	return true
 }
 
-// Search searches the indexed catalog items using the specified strategy (hybrid, bm25, tfidf, exact).
-func (e *Engine) Search(query string, strategy string, limit int, threshold float32) []Result {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
+func (e *Engine) compareDocIDs(a, b uint32) bool {
+	ia, ib := &e.items[a], &e.items[b]
+	if ia.ID != ib.ID {
+		return ia.ID < ib.ID
+	}
+	if ia.Name != ib.Name {
+		return ia.Name < ib.Name
+	}
+	if ia.Source != ib.Source {
+		return ia.Source < ib.Source
+	}
+	return a < b
+}
 
+func (e *Engine) sortDocScores(scores []docScore) {
+	sort.Slice(scores, func(i, j int) bool {
+		if scores[i].score != scores[j].score {
+			return scores[i].score > scores[j].score
+		}
+		return e.compareDocIDs(scores[i].docID, scores[j].docID)
+	})
+}
+
+// Search searches indexed catalog items using the specified strategy (hybrid, bm25, exact).
+func (e *Engine) Search(query string, strategy string, limit int, threshold float32) []Result {
 	if len(e.items) == 0 {
 		return nil
 	}
-
 	if limit <= 0 {
 		limit = 10
-	}
-
-	filter := parseQueryFilters(query)
-	activeQuery := strings.TrimSpace(filter.cleanQuery)
-	hasFilter := filter.itemType != "" || len(filter.tags) > 0 || filter.catalog != ""
-
-	if activeQuery == "" && !hasFilter {
-		return nil
-	}
-
-	// Filter candidate documents
-	candidateDocIDs := make([]uint32, 0, len(e.items))
-	for docID := range e.items {
-		if matchesFilter(&e.items[docID], &filter) {
-			candidateDocIDs = append(candidateDocIDs, uint32(docID))
-		}
-	}
-
-	if len(candidateDocIDs) == 0 {
-		return nil
-	}
-
-	// If query text is empty after filtering directives, return matching candidate docs
-	if activeQuery == "" {
-		var matchFields []string
-		if len(filter.tags) > 0 {
-			matchFields = append(matchFields, "tags")
-		}
-		if filter.itemType != "" || filter.catalog != "" || len(matchFields) == 0 {
-			matchFields = append(matchFields, "other")
-		}
-		results := make([]Result, 0, len(candidateDocIDs))
-		for _, docID := range candidateDocIDs {
-			results = append(results, Result{
-				Item:        e.items[docID],
-				Score:       1.0,
-				Strategy:    strategy,
-				MatchFields: matchFields,
-			})
-		}
-		sort.Slice(results, func(i, j int) bool {
-			return results[i].Item.ID < results[j].Item.ID
-		})
-		if len(results) > limit {
-			results = results[:limit]
-		}
-		return results
 	}
 
 	strat := strings.ToLower(strings.TrimSpace(strategy))
@@ -306,21 +300,74 @@ func (e *Engine) Search(query string, strategy string, limit int, threshold floa
 		strat = "hybrid"
 	}
 
+	filter := parseQueryFilters(query)
+	activeQuery := strings.TrimSpace(filter.cleanQuery)
+	hasFilter := filter.catalog != ""
+
+	if activeQuery == "" && !hasFilter {
+		return nil
+	}
+
+	candidateDocIDs := make([]uint32, 0, len(e.items))
+	for docID := range e.items {
+		if matchesFilter(&e.docs[docID], &filter) {
+			candidateDocIDs = append(candidateDocIDs, uint32(docID))
+		}
+	}
+	if len(candidateDocIDs) == 0 {
+		return nil
+	}
+
+	if activeQuery == "" {
+		if 1.0 <= threshold {
+			return nil
+		}
+		baseFields := []string{"other"}
+		sort.Slice(candidateDocIDs, func(i, j int) bool {
+			return e.compareDocIDs(candidateDocIDs[i], candidateDocIDs[j])
+		})
+		if len(candidateDocIDs) > limit {
+			candidateDocIDs = candidateDocIDs[:limit]
+		}
+		results := make([]Result, 0, len(candidateDocIDs))
+		for _, docID := range candidateDocIDs {
+			results = append(results, Result{
+				Item:        e.items[docID],
+				Score:       1.0,
+				Strategy:    strat,
+				MatchFields: slices.Clone(baseFields),
+			})
+		}
+		return results
+	}
+
 	switch strat {
 	case "bm25":
-		return e.searchBM25(activeQuery, candidateDocIDs, limit, threshold)
-	case "tfidf":
-		return e.searchTFIDF(activeQuery, candidateDocIDs, limit, threshold)
+		return e.buildResults(e.scoreBM25(activeQuery, candidateDocIDs, threshold), "bm25", limit)
 	case "exact":
-		return e.searchExact(activeQuery, candidateDocIDs, limit, threshold)
-	case "hybrid":
-		fallthrough
+		return e.buildResults(e.scoreExact(activeQuery, candidateDocIDs, threshold), "exact", limit)
 	default:
 		return e.searchHybrid(activeQuery, candidateDocIDs, limit, threshold)
 	}
 }
 
-func (e *Engine) searchBM25(query string, candidateDocIDs []uint32, limit int, threshold float32) []Result {
+func (e *Engine) buildResults(scores []docScore, strategy string, limit int) []Result {
+	if len(scores) > limit {
+		scores = scores[:limit]
+	}
+	results := make([]Result, 0, len(scores))
+	for _, ds := range scores {
+		results = append(results, Result{
+			Item:        e.items[ds.docID],
+			Score:       ds.score,
+			Strategy:    strategy,
+			MatchFields: maskToFieldNames(ds.mask),
+		})
+	}
+	return results
+}
+
+func (e *Engine) scoreBM25(query string, candidateDocIDs []uint32, threshold float32) []docScore {
 	tokens := e.tokenizer.Tokenize(query)
 	if len(tokens) == 0 {
 		tokens = e.tokenizer.TokenizeRaw(query)
@@ -329,30 +376,25 @@ func (e *Engine) searchBM25(query string, candidateDocIDs []uint32, limit int, t
 		return nil
 	}
 
+	seenTerms := make(map[uint32]struct{}, len(tokens))
 	queryTermIDs := make([]uint32, 0, len(tokens))
-	queryWeights := make([]float32, 0, len(tokens))
 	for _, tok := range tokens {
 		if tid, ok := e.termToID[tok]; ok {
-			queryTermIDs = append(queryTermIDs, tid)
-			queryWeights = append(queryWeights, 1.0)
+			if _, dup := seenTerms[tid]; !dup {
+				seenTerms[tid] = struct{}{}
+				queryTermIDs = append(queryTermIDs, tid)
+			}
 		}
 	}
-
 	if len(queryTermIDs) == 0 {
 		return nil
 	}
 
-	type docScore struct {
-		docID uint32
-		score float32
-		mask  uint8
-	}
-
-	var scores []docScore
+	scores := make([]docScore, 0, len(candidateDocIDs))
 	for _, docID := range candidateDocIDs {
 		tfs := e.docTFs[docID]
 		masks := e.docMasks[docID]
-		score := e.bm25Scorer.Score(docID, queryTermIDs, queryWeights, tfs)
+		score := e.bm25Scorer.Score(docID, queryTermIDs, nil, tfs)
 		if score > threshold {
 			var combinedMask uint8
 			for _, tid := range queryTermIDs {
@@ -366,100 +408,14 @@ func (e *Engine) searchBM25(query string, candidateDocIDs []uint32, limit int, t
 		}
 	}
 
-	sort.Slice(scores, func(i, j int) bool {
-		if scores[i].score != scores[j].score {
-			return scores[i].score > scores[j].score
-		}
-		return e.items[scores[i].docID].ID < e.items[scores[j].docID].ID
-	})
-
-	if len(scores) > limit {
-		scores = scores[:limit]
-	}
-
-	results := make([]Result, 0, len(scores))
-	for _, ds := range scores {
-		results = append(results, Result{
-			Item:        e.items[ds.docID],
-			Score:       ds.score,
-			Strategy:    "bm25",
-			MatchFields: maskToFieldNames(ds.mask),
-		})
-	}
-	return results
+	e.sortDocScores(scores)
+	return scores
 }
 
-func (e *Engine) searchTFIDF(query string, candidateDocIDs []uint32, limit int, threshold float32) []Result {
-	tokens := e.tokenizer.Tokenize(query)
-	if len(tokens) == 0 {
-		tokens = e.tokenizer.TokenizeRaw(query)
-	}
-	if len(tokens) == 0 {
-		return nil
-	}
-
-	queryTFs := make(map[uint32]float32)
-	for _, tok := range tokens {
-		if tid, ok := e.termToID[tok]; ok {
-			queryTFs[tid] += 1.0
-		}
-	}
-
-	if len(queryTFs) == 0 {
-		return nil
-	}
-
-	type docScore struct {
-		docID uint32
-		score float32
-		mask  uint8
-	}
-
-	var scores []docScore
-	for _, docID := range candidateDocIDs {
-		tfs := e.docTFs[docID]
-		masks := e.docMasks[docID]
-		score := e.tfidfScorer.Score(docID, queryTFs, tfs)
-		if score > threshold {
-			var combinedMask uint8
-			for tid := range queryTFs {
-				combinedMask |= masks[tid]
-			}
-			scores = append(scores, docScore{
-				docID: docID,
-				score: score,
-				mask:  combinedMask,
-			})
-		}
-	}
-
-	sort.Slice(scores, func(i, j int) bool {
-		if scores[i].score != scores[j].score {
-			return scores[i].score > scores[j].score
-		}
-		return e.items[scores[i].docID].ID < e.items[scores[j].docID].ID
-	})
-
-	if len(scores) > limit {
-		scores = scores[:limit]
-	}
-
-	results := make([]Result, 0, len(scores))
-	for _, ds := range scores {
-		results = append(results, Result{
-			Item:        e.items[ds.docID],
-			Score:       ds.score,
-			Strategy:    "tfidf",
-			MatchFields: maskToFieldNames(ds.mask),
-		})
-	}
-	return results
-}
-
-// normalizeKey converts delimiters (hyphens, underscores, dots, slashes, colons) to spaces and collapses whitespace.
 func normalizeKey(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	var sb strings.Builder
+	sb.Grow(len(s))
 	for _, r := range s {
 		if r == '-' || r == '_' || r == '.' || r == '/' || r == ':' {
 			sb.WriteRune(' ')
@@ -470,10 +426,10 @@ func normalizeKey(s string) string {
 	return strings.Join(strings.Fields(sb.String()), " ")
 }
 
-// compactKey extracts all alphanumeric characters without whitespace or punctuation.
 func compactKey(s string) string {
 	s = strings.ToLower(s)
 	var sb strings.Builder
+	sb.Grow(len(s))
 	for _, r := range s {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			sb.WriteRune(r)
@@ -483,144 +439,128 @@ func compactKey(s string) string {
 }
 
 func normalizeRRFScore(rawScore float32) float32 {
-	// Raw score >= 2.0 indicates an exact identity match (+2.0 boost + RRF)
+	if rawScore <= 0 {
+		return 0
+	}
+	// Raw score >= 2.0 indicates an exact identity match (+2.0 boost + RRF).
 	if rawScore >= 2.0 {
-		val := 0.95 + 0.05*((rawScore-2.0)/0.0328)
+		val := 0.95 + 0.05*((rawScore-2.0)/maxDualRRF)
 		if val > 1.0 {
-			val = 1.0
+			return 1.0
 		}
 		return val
 	}
-	// Raw score >= 1.5 indicates 1-edit distance fuzzy match (+1.6 boost)
+	// Raw score >= 1.5 indicates 1-edit distance fuzzy match (+1.6 boost, capped < 1.95).
 	if rawScore >= 1.5 {
-		val := 0.90 + 0.05*((rawScore-1.5)/0.5)
-		if val > 0.95 {
-			val = 0.95
+		val := 0.90 + 0.049*((rawScore-1.5)/0.45)
+		if val > 0.949 {
+			return 0.949
 		}
 		return val
 	}
-	// Raw score >= 1.0 indicates prefix/substring or 2-edit distance match (+1.0 to +1.2 boost)
+	// Raw score >= 1.0 indicates prefix/substring or 2-edit distance match.
 	if rawScore >= 1.0 {
 		val := 0.80 + 0.10*((rawScore-1.0)/0.5)
 		if val > 0.90 {
-			val = 0.90
+			return 0.90
 		}
 		return val
 	}
-	// Raw score >= 0.7 indicates exact tag match (+0.8 boost)
+	// Raw score >= 0.7 indicates exact tag match (+0.8 boost).
 	if rawScore >= 0.7 {
 		val := 0.70 + 0.10*((rawScore-0.7)/0.3)
 		if val > 0.80 {
-			val = 0.80
+			return 0.80
 		}
 		return val
 	}
-	// Pure RRF ranking (max theoretical dual rank-1 is ~0.0328)
-	scaled := (rawScore / 0.0328) * 0.70
+	scaled := (rawScore / maxDualRRF) * 0.70
 	if scaled > 0.70 {
-		scaled = 0.70
+		return 0.70
 	}
 	if scaled < 0.01 {
-		scaled = 0.01
+		return 0.01
 	}
 	return scaled
 }
 
-func (e *Engine) searchExact(query string, candidateDocIDs []uint32, limit int, threshold float32) []Result {
+func (e *Engine) scoreExact(query string, candidateDocIDs []uint32, threshold float32) []docScore {
 	queryNorm := strings.ToLower(strings.TrimSpace(query))
-	if len(queryNorm) == 0 {
+	if queryNorm == "" {
 		return nil
 	}
 
 	normQuery := normalizeKey(queryNorm)
 	compQuery := compactKey(queryNorm)
+	compRuneLen := utf8.RuneCountInString(compQuery)
 	rawTokens := e.tokenizer.TokenizeRaw(queryNorm)
-
-	type docScore struct {
-		docID uint32
-		score float32
-		mask  uint8
+	rawTokNorms := make([]string, len(rawTokens))
+	for i, tok := range rawTokens {
+		rawTokNorms[i] = normalizeKey(tok)
 	}
 
-	var scores []docScore
+	scores := make([]docScore, 0, len(candidateDocIDs))
 	for _, docID := range candidateDocIDs {
-		item := &e.items[docID]
+		doc := &e.docs[docID]
 		var score float32
 		var mask uint8
 
-		itemName := strings.ToLower(item.Name)
-		itemTitle := strings.ToLower(item.Title)
-		itemID := strings.ToLower(item.ID)
-		itemDesc := strings.ToLower(item.Description)
-
-		normName := normalizeKey(itemName)
-		compName := compactKey(itemName)
-		normTitle := normalizeKey(itemTitle)
-		compTitle := compactKey(itemTitle)
-		normID := normalizeKey(itemID)
-		compID := compactKey(itemID)
-
-		// 1. Exact full or normalized matches
-		if itemID == queryNorm || itemName == queryNorm || itemTitle == queryNorm ||
-			(normQuery != "" && (normName == normQuery || normID == normQuery || normTitle == normQuery)) ||
-			(compQuery != "" && (compName == compQuery || compID == compQuery || compTitle == compQuery)) {
+		if doc.lowID == queryNorm || doc.lowName == queryNorm || doc.lowTitle == queryNorm ||
+			(normQuery != "" && (doc.normName == normQuery || doc.normID == normQuery || doc.normTitle == normQuery)) ||
+			(compQuery != "" && (doc.compName == compQuery || doc.compID == compQuery || doc.compTitle == compQuery)) {
 			score += 10.0 * WeightName
 			mask |= FieldMaskName | FieldMaskTitle
-		} else if strings.Contains(itemName, queryNorm) ||
-			(normQuery != "" && strings.Contains(normName, normQuery)) ||
-			(normQuery != "" && len(normTitle) > 0 && strings.Contains(normTitle, normQuery)) {
+		} else if strings.Contains(doc.lowName, queryNorm) ||
+			(normQuery != "" && strings.Contains(doc.normName, normQuery)) ||
+			(normQuery != "" && len(doc.normTitle) > 0 && strings.Contains(doc.normTitle, normQuery)) {
 			score += 5.0 * WeightName
 			mask |= FieldMaskName
-		} else if normQuery != "" && compQuery != "" {
-			// Fuzzy match (edit distance <= 2) on name/id
-			dist := Levenshtein(normQuery, normName)
-			distComp := Levenshtein(compQuery, compName)
+		} else if normQuery != "" && compQuery != "" && compRuneLen >= 3 {
+			// Fuzzy match (edit distance <= 2) on name.
+			dist := levenshteinNormalized(normQuery, doc.normName)
+			distComp := levenshteinNormalized(compQuery, doc.compName)
 			minDist := min(distComp, dist)
-			if minDist == 1 && len(compQuery) >= 3 {
+			if minDist == 1 {
 				score += 8.0 * WeightName
 				mask |= FieldMaskName
-			} else if minDist == 2 && len(compQuery) >= 4 {
+			} else if minDist == 2 && compRuneLen >= 4 {
 				score += 4.0 * WeightName
 				mask |= FieldMaskName
 			}
 		}
 
-		for _, tag := range item.Tags {
-			tagLow := strings.ToLower(tag)
-			normTag := normalizeKey(tag)
-			compTag := compactKey(tag)
-			if tagLow == queryNorm || (normQuery != "" && normTag == normQuery) || (compQuery != "" && compTag == compQuery) {
+		for _, tag := range doc.tags {
+			if tag.lower == queryNorm || (normQuery != "" && tag.norm == normQuery) || (compQuery != "" && tag.compact == compQuery) {
 				score += 8.0 * WeightTags
 				mask |= FieldMaskTags
-			} else if strings.Contains(tagLow, queryNorm) || (normQuery != "" && strings.Contains(normTag, normQuery)) {
+			} else if strings.Contains(tag.lower, queryNorm) || (normQuery != "" && strings.Contains(tag.norm, normQuery)) {
 				score += 3.0 * WeightTags
 				mask |= FieldMaskTags
 			}
 		}
 
-		if strings.Contains(itemDesc, queryNorm) || (normQuery != "" && strings.Contains(normalizeKey(itemDesc), normQuery)) {
+		if strings.Contains(doc.lowDesc, queryNorm) || (normQuery != "" && strings.Contains(doc.normDesc, normQuery)) {
 			score += 3.0 * WeightDescription
 			mask |= FieldMaskDescription
 		}
 
-		// Token presence match
 		matchedTokens := 0
-		for _, tok := range rawTokens {
-			tokNorm := normalizeKey(tok)
+		for i, tok := range rawTokens {
+			tokNorm := rawTokNorms[i]
 			tokFound := false
-			if strings.Contains(itemName, tok) || (tokNorm != "" && strings.Contains(normName, tokNorm)) || strings.Contains(itemTitle, tok) {
+			if strings.Contains(doc.lowName, tok) || (tokNorm != "" && strings.Contains(doc.normName, tokNorm)) || strings.Contains(doc.lowTitle, tok) {
 				score += WeightName
 				mask |= FieldMaskName
 				tokFound = true
 			}
-			for _, tag := range item.Tags {
-				if strings.Contains(strings.ToLower(tag), tok) || (tokNorm != "" && strings.Contains(normalizeKey(tag), tokNorm)) {
+			for _, tag := range doc.tags {
+				if strings.Contains(tag.lower, tok) || (tokNorm != "" && strings.Contains(tag.norm, tokNorm)) {
 					score += WeightTags
 					mask |= FieldMaskTags
 					tokFound = true
 				}
 			}
-			if strings.Contains(itemDesc, tok) {
+			if strings.Contains(doc.lowDesc, tok) {
 				score += WeightDescription
 				mask |= FieldMaskDescription
 				tokFound = true
@@ -631,7 +571,7 @@ func (e *Engine) searchExact(query string, candidateDocIDs []uint32, limit int, 
 		}
 
 		if len(rawTokens) > 0 && matchedTokens == len(rawTokens) {
-			score += 4.0 // full query token coverage bonus
+			score += 4.0
 		}
 
 		if score > threshold {
@@ -643,147 +583,87 @@ func (e *Engine) searchExact(query string, candidateDocIDs []uint32, limit int, 
 		}
 	}
 
-	sort.Slice(scores, func(i, j int) bool {
-		if scores[i].score != scores[j].score {
-			return scores[i].score > scores[j].score
-		}
-		return e.items[scores[i].docID].ID < e.items[scores[j].docID].ID
-	})
-
-	if len(scores) > limit {
-		scores = scores[:limit]
-	}
-
-	results := make([]Result, 0, len(scores))
-	for _, ds := range scores {
-		results = append(results, Result{
-			Item:        e.items[ds.docID],
-			Score:       ds.score,
-			Strategy:    "exact",
-			MatchFields: maskToFieldNames(ds.mask),
-		})
-	}
-	return results
+	e.sortDocScores(scores)
+	return scores
 }
 
 func (e *Engine) searchHybrid(query string, candidateDocIDs []uint32, limit int, threshold float32) []Result {
-	bm25Results := e.searchBM25(query, candidateDocIDs, len(candidateDocIDs), 0.0)
-	exactResults := e.searchExact(query, candidateDocIDs, len(candidateDocIDs), 0.0)
+	bm25Scores := e.scoreBM25(query, candidateDocIDs, 0.0)
+	exactScores := e.scoreExact(query, candidateDocIDs, 0.0)
 
-	rrfScores := make(map[string]float32)
-	matchMasks := make(map[string]uint8)
-	itemMap := make(map[string]catalog.Item)
+	rrfScores := make(map[uint32]float32, len(bm25Scores)+len(exactScores))
+	matchMasks := make(map[uint32]uint8, len(bm25Scores)+len(exactScores))
 
-	// RRF contribution from BM25
-	for rank, res := range bm25Results {
-		id := res.Item.ID
-		if id == "" {
-			id = res.Item.Name
-		}
-		rrfScores[id] += 1.0 / (DefaultRRFK + float32(rank+1))
-		itemMap[id] = res.Item
-		matchMasks[id] |= fieldNamesToMask(res.MatchFields)
+	for rank, ds := range bm25Scores {
+		rrfScores[ds.docID] += 1.0 / (DefaultRRFK + float32(rank+1))
+		matchMasks[ds.docID] |= ds.mask
+	}
+	for rank, ds := range exactScores {
+		rrfScores[ds.docID] += 1.0 / (DefaultRRFK + float32(rank+1))
+		matchMasks[ds.docID] |= ds.mask
 	}
 
-	// RRF contribution from Exact
-	for rank, res := range exactResults {
-		id := res.Item.ID
-		if id == "" {
-			id = res.Item.Name
-		}
-		rrfScores[id] += 1.0 / (DefaultRRFK + float32(rank+1))
-		itemMap[id] = res.Item
-		matchMasks[id] |= fieldNamesToMask(res.MatchFields)
-	}
-
-	normQuery := normalizeKey(query)
-	compQuery := compactKey(query)
 	queryNorm := strings.ToLower(strings.TrimSpace(query))
+	normQuery := normalizeKey(queryNorm)
+	compQuery := compactKey(queryNorm)
+	compRuneLen := utf8.RuneCountInString(compQuery)
 
-	// Exact, Normalized, and Edit Distance boosts
-	for id, item := range itemMap {
-		normName := normalizeKey(item.Name)
-		compName := compactKey(item.Name)
-		normID := normalizeKey(item.ID)
-		compID := compactKey(item.ID)
-		normTitle := normalizeKey(item.Title)
-		compTitle := compactKey(item.Title)
-
+	ranked := make([]docScore, 0, len(rrfScores))
+	for docID, rrf := range rrfScores {
+		doc := &e.docs[docID]
+		mask := matchMasks[docID]
+		var boost float32
 		isExact := false
-		// 1. Literal, Normalized, or Compact Exact Match on Name/ID/Title
-		if strings.EqualFold(item.Name, queryNorm) || strings.EqualFold(item.ID, queryNorm) || strings.EqualFold(item.Title, queryNorm) ||
-			(normQuery != "" && (normName == normQuery || normID == normQuery || normTitle == normQuery)) ||
-			(compQuery != "" && (compName == compQuery || compID == compQuery || compTitle == compQuery)) {
-			rrfScores[id] += 2.0 // Top boost for exact identity match
-			matchMasks[id] |= FieldMaskName
+
+		if doc.lowName == queryNorm || doc.lowID == queryNorm || doc.lowTitle == queryNorm ||
+			(normQuery != "" && (doc.normName == normQuery || doc.normID == normQuery || doc.normTitle == normQuery)) ||
+			(compQuery != "" && (doc.compName == compQuery || doc.compID == compQuery || doc.compTitle == compQuery)) {
+			boost = 2.0
+			mask |= FieldMaskName
 			isExact = true
-		} else if normQuery != "" && (strings.Contains(normName, normQuery) || strings.Contains(normTitle, normQuery)) {
-			rrfScores[id] += 1.2
-			matchMasks[id] |= FieldMaskName
-		} else {
-			// Fuzzy match (edit distance 1 or 2)
-			dist := Levenshtein(normQuery, normName)
-			distComp := Levenshtein(compQuery, compName)
+		} else if normQuery != "" && (strings.Contains(doc.normName, normQuery) || strings.Contains(doc.normTitle, normQuery)) {
+			boost = 1.2
+			mask |= FieldMaskName
+		} else if normQuery != "" && compQuery != "" && compRuneLen >= 3 {
+			dist := levenshteinNormalized(normQuery, doc.normName)
+			distComp := levenshteinNormalized(compQuery, doc.compName)
 			minDist := min(distComp, dist)
-			if minDist == 1 && len(compQuery) >= 3 {
-				rrfScores[id] += 1.6 // 1 edit distance away
-				matchMasks[id] |= FieldMaskName
-			} else if minDist == 2 && len(compQuery) >= 4 {
-				rrfScores[id] += 1.0 // 2 edit distance away
-				matchMasks[id] |= FieldMaskName
+			if minDist == 1 {
+				boost = 1.6
+				mask |= FieldMaskName
+			} else if minDist == 2 && compRuneLen >= 4 {
+				boost = 1.0
+				mask |= FieldMaskName
 			}
 		}
 
-		// Tags exact / normalized match
-		for _, tag := range item.Tags {
-			normTag := normalizeKey(tag)
-			compTag := compactKey(tag)
-			if strings.EqualFold(tag, queryNorm) || (normQuery != "" && normTag == normQuery) || (compQuery != "" && compTag == compQuery) {
+		for _, tag := range doc.tags {
+			if tag.lower == queryNorm || (normQuery != "" && tag.norm == normQuery) || (compQuery != "" && tag.compact == compQuery) {
 				if !isExact {
-					rrfScores[id] += 0.8
+					boost += 0.8
 				}
-				matchMasks[id] |= FieldMaskTags
+				mask |= FieldMaskTags
 				break
 			}
 		}
-	}
 
-	type scoredItem struct {
-		id    string
-		score float32
-	}
+		// Keep non-exact boost sums strictly below the exact identity match tier (< 1.95).
+		if !isExact && boost > 1.90 {
+			boost = 1.90
+		}
 
-	var ranked []scoredItem
-	for id, score := range rrfScores {
-		normScore := normalizeRRFScore(score)
-		if normScore >= threshold {
-			ranked = append(ranked, scoredItem{id: id, score: normScore})
+		normScore := normalizeRRFScore(rrf + boost)
+		if normScore > threshold {
+			ranked = append(ranked, docScore{
+				docID: docID,
+				score: normScore,
+				mask:  mask,
+			})
 		}
 	}
 
-	sort.Slice(ranked, func(i, j int) bool {
-		if ranked[i].score != ranked[j].score {
-			return ranked[i].score > ranked[j].score
-		}
-		return ranked[i].id < ranked[j].id
-	})
-
-	if len(ranked) > limit {
-		ranked = ranked[:limit]
-	}
-
-	results := make([]Result, 0, len(ranked))
-	for _, entry := range ranked {
-		item := itemMap[entry.id]
-		mask := matchMasks[entry.id]
-		results = append(results, Result{
-			Item:        item,
-			Score:       entry.score,
-			Strategy:    "hybrid",
-			MatchFields: maskToFieldNames(mask),
-		})
-	}
-	return results
+	e.sortDocScores(ranked)
+	return e.buildResults(ranked, "hybrid", limit)
 }
 
 func maskToFieldNames(mask uint8) []string {
@@ -804,23 +684,4 @@ func maskToFieldNames(mask uint8) []string {
 		fields = append(fields, "other")
 	}
 	return fields
-}
-
-func fieldNamesToMask(fields []string) uint8 {
-	var mask uint8
-	for _, f := range fields {
-		switch f {
-		case "name":
-			mask |= FieldMaskName
-		case "title":
-			mask |= FieldMaskTitle
-		case "tags":
-			mask |= FieldMaskTags
-		case "description":
-			mask |= FieldMaskDescription
-		case "other":
-			mask |= FieldMaskOther
-		}
-	}
-	return mask
 }

@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,14 +17,22 @@
 package runner
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 )
 
 func configureProcessGroup(cmd *exec.Cmd) {
 	cmd.Cancel = func() error {
 		if cmd.Process != nil && cmd.Process.Pid > 0 {
-			_ = exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(cmd.Process.Pid)).Run()
+			taskkill := "taskkill.exe"
+			if sysRoot := os.Getenv("SystemRoot"); sysRoot != "" {
+				taskkill = filepath.Join(sysRoot, "System32", "taskkill.exe")
+			}
+			if err := exec.Command(taskkill, "/F", "/T", "/PID", strconv.Itoa(cmd.Process.Pid)).Run(); err == nil {
+				return nil
+			}
 			return cmd.Process.Kill()
 		}
 		return nil

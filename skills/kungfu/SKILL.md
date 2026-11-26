@@ -11,7 +11,7 @@ metadata:
   category: agents
   tags: "gateway, agent-skills, discovery, search, catalog, cli, learn, jit"
   author: Daniela Petruzalek (daniela@danicat.dev)
-  version: "0.8.1"
+  version: "0.9.0"
   catalog: https://skills.danicat.dev
 ---
 
@@ -24,8 +24,8 @@ metadata:
 > **NEVER write, embed, or leak KungFu notation into any other `SKILL.md` definition, `README.md`, documentation file, code comment, commit message, article, or agent output text unless the user explicitly tells you otherwise.**
 
 > [!IMPORTANT]
-> **CLI Version Check (`v0.8.1`)**:
-> Compare `kungfu --version` against this skill's frontmatter `version` (`0.8.1`). If the installed `kungfu` binary is older than `0.8.1`, upgrade the CLI and synchronize all catalogs immediately:
+> **CLI Version Check (`v0.9.0`)**:
+> Compare `kungfu --version` against this skill's frontmatter `version` (`0.9.0`). If the installed `kungfu` binary is older than `0.9.0`, upgrade the CLI and synchronize all catalogs immediately:
 > ```bash
 > go install github.com/danicat/kungfu@latest && kungfu update
 > ```
@@ -105,7 +105,7 @@ Run scripts bundled in a skill's `scripts/` directory.
 > **Always use `kungfu run`**:
 > - Do not search the filesystem for script files.
 > - `kungfu learn` is not required; `kungfu run` fetches and caches scripts on demand.
-> - `kungfu run` selects the runtime (`uv`, `python3`, `bun`, `deno`, `node`, or `bash`) and runs in the current working directory.
+> - `kungfu run` selects the runtime (`uv`, `python3`, `bun`, `deno`, `tsx`, `node`, `bash`, `sh`, or bundled executables) and runs in the current working directory.
 
 ```bash
 kungfu run godoctor smart_build
@@ -161,13 +161,12 @@ KungFu uses a compact shortcut notation for human-agent pair programming. When t
 kungfu learn godoctor
 kungfu learn go@go-skills
 kungfu learn danicat/kungfu
-kungfu learn godoctor --load
 
 # List and inspect skills
 kungfu list
 kungfu show <skill>
 
-# Check installed skills and usage history
+# Check installed skills (and local usage counts when telemetry is enabled)
 kungfu status
 kungfu status -g
 

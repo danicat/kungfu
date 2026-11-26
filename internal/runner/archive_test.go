@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@ package runner_test
 
 import (
 	"archive/tar"
-	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -25,7 +24,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 
 	"github.com/danicat/kungfu/internal/catalog"
@@ -61,165 +59,9 @@ func createValidTarGz(t *testing.T, files map[string]string) []byte {
 	return buf.Bytes()
 }
 
-func createValidZip(t *testing.T, files map[string]string) []byte {
-	t.Helper()
-	var buf bytes.Buffer
-	zw := zip.NewWriter(&buf)
-
-	for name, content := range files {
-		w, err := zw.Create(name)
-		if err != nil {
-			t.Fatalf("zip create %s: %v", name, err)
-		}
-		if _, err := w.Write([]byte(content)); err != nil {
-			t.Fatalf("zip write %s: %v", name, err)
-		}
-	}
-
-	if err := zw.Close(); err != nil {
-		t.Fatalf("zip close: %v", err)
-	}
-	return buf.Bytes()
-}
-
-func TestUnpackArchive_TarGz_Success(t *testing.T) {
-	files := map[string]string{
-		"SKILL.md":            "---\nname: myarchive\ndescription: test\n---\n# My Archive",
-		"references/GUIDE.md": "# Guide content",
-		"scripts/run.sh":      "#!/bin/bash\necho hello",
-	}
-	data := createValidTarGz(t, files)
-
-	destDir := t.TempDir()
-	extracted, err := catalog.UnpackArchive(data, destDir, catalog.DefaultMaxUnpackedBytes)
-	if err != nil {
-		t.Fatalf("UnpackArchive failed: %v", err)
-	}
-
-	if len(extracted) != 3 {
-		t.Fatalf("expected 3 files extracted, got %d: %v", len(extracted), extracted)
-	}
-
-	skillMD, err := os.ReadFile(filepath.Join(destDir, "SKILL.md"))
-	if err != nil || !bytes.Contains(skillMD, []byte("# My Archive")) {
-		t.Errorf("SKILL.md content mismatch: %s, err: %v", skillMD, err)
-	}
-}
-
-func TestUnpackArchive_Zip_Success(t *testing.T) {
-	files := map[string]string{
-		"SKILL.md":           "---\nname: myzip\ndescription: test\n---\n# My Zip",
-		"references/DOCS.md": "# Docs content",
-	}
-	data := createValidZip(t, files)
-
-	destDir := t.TempDir()
-	extracted, err := catalog.UnpackArchive(data, destDir, catalog.DefaultMaxUnpackedBytes)
-	if err != nil {
-		t.Fatalf("UnpackArchive zip failed: %v", err)
-	}
-
-	if len(extracted) != 2 {
-		t.Fatalf("expected 2 files extracted, got %d: %v", len(extracted), extracted)
-	}
-
-	docs, err := os.ReadFile(filepath.Join(destDir, "references", "DOCS.md"))
-	if err != nil || !bytes.Contains(docs, []byte("# Docs content")) {
-		t.Errorf("DOCS.md content mismatch: %s, err: %v", docs, err)
-	}
-}
-
-func TestUnpackArchive_MissingSkillMD(t *testing.T) {
-	files := map[string]string{
-		"README.md": "# No skill file here",
-	}
-	data := createValidTarGz(t, files)
-
-	destDir := t.TempDir()
-	_, err := catalog.UnpackArchive(data, destDir, catalog.DefaultMaxUnpackedBytes)
-	if !errors.Is(err, catalog.ErrArchiveMissingSkillMD) {
-		t.Fatalf("expected ErrArchiveMissingSkillMD, got: %v", err)
-	}
-}
-
-func TestUnpackArchive_PathTraversal_Rejected(t *testing.T) {
-	var buf bytes.Buffer
-	gzw := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gzw)
-
-	hdr := &tar.Header{
-		Name: "../evil.txt",
-		Mode: 0644,
-		Size: 4,
-	}
-	_ = tw.WriteHeader(hdr)
-	_, _ = tw.Write([]byte("evil"))
-	_ = tw.Close()
-	_ = gzw.Close()
-
-	destDir := t.TempDir()
-	_, err := catalog.UnpackArchive(buf.Bytes(), destDir, catalog.DefaultMaxUnpackedBytes)
-	if !errors.Is(err, catalog.ErrArchiveTraversal) {
-		t.Fatalf("expected ErrArchiveTraversal for .., got: %v", err)
-	}
-
-	// Test absolute path
-	buf.Reset()
-	gzw = gzip.NewWriter(&buf)
-	tw = tar.NewWriter(gzw)
-	hdr = &tar.Header{
-		Name: "/etc/evil.txt",
-		Mode: 0644,
-		Size: 4,
-	}
-	_ = tw.WriteHeader(hdr)
-	_, _ = tw.Write([]byte("evil"))
-	_ = tw.Close()
-	_ = gzw.Close()
-
-	_, err = catalog.UnpackArchive(buf.Bytes(), destDir, catalog.DefaultMaxUnpackedBytes)
-	if !errors.Is(err, catalog.ErrArchiveTraversal) {
-		t.Fatalf("expected ErrArchiveTraversal for absolute path, got: %v", err)
-	}
-}
-
-func TestUnpackArchive_SymlinkEscape_Rejected(t *testing.T) {
-	var buf bytes.Buffer
-	gzw := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gzw)
-
-	hdr := &tar.Header{
-		Typeflag: tar.TypeSymlink,
-		Name:     "symlink_to_escape",
-		Linkname: "../../etc/passwd",
-	}
-	_ = tw.WriteHeader(hdr)
-	_ = tw.Close()
-	_ = gzw.Close()
-
-	destDir := t.TempDir()
-	_, err := catalog.UnpackArchive(buf.Bytes(), destDir, catalog.DefaultMaxUnpackedBytes)
-	if !errors.Is(err, catalog.ErrArchiveSymlinkEscapes) {
-		t.Fatalf("expected ErrArchiveSymlinkEscapes, got: %v", err)
-	}
-}
-
-func TestUnpackArchive_DecompressionBomb_Rejected(t *testing.T) {
-	files := map[string]string{
-		"SKILL.md":  "---\nname: bomb\n---\n# Bomb",
-		"large.txt": "01234567890123456789", // 20 bytes
-	}
-	data := createValidTarGz(t, files)
-
-	destDir := t.TempDir()
-	// limit to 10 bytes
-	_, err := catalog.UnpackArchive(data, destDir, 10)
-	if !errors.Is(err, catalog.ErrArchiveDecompressionBomb) {
-		t.Fatalf("expected ErrArchiveDecompressionBomb, got: %v", err)
-	}
-}
-
 func TestInstallSkillContext_Archive(t *testing.T) {
+	t.Parallel()
+
 	files := map[string]string{
 		"SKILL.md":           "---\nname: testarchive\ndescription: demo\n---\n# Demo Skill",
 		"references/arch.md": "# Architecture",
@@ -234,6 +76,9 @@ func TestInstallSkillContext_Archive(t *testing.T) {
 	}))
 	defer server.Close()
 
+	r := runner.New(t.TempDir(), server.Client())
+
+	// 1. Valid archive with matching digest installs cleanly.
 	item := catalog.Item{
 		Name:   "testarchive",
 		Type:   catalog.ItemTypeArchive,
@@ -241,12 +86,11 @@ func TestInstallSkillContext_Archive(t *testing.T) {
 		Digest: digest,
 	}
 
-	destDir := t.TempDir()
-	installed, err := runner.InstallSkillContext(context.Background(), item, destDir, "", nil, server.Client())
+	destDir := filepath.Join(t.TempDir(), "testarchive")
+	installed, err := r.InstallSkillContext(context.Background(), item, destDir, "", nil, server.Client())
 	if err != nil {
 		t.Fatalf("InstallSkillContext archive failed: %v", err)
 	}
-
 	if len(installed) != 2 {
 		t.Fatalf("expected 2 installed files, got %d: %v", len(installed), installed)
 	}
@@ -255,45 +99,14 @@ func TestInstallSkillContext_Archive(t *testing.T) {
 	if err != nil || !bytes.Contains(archData, []byte("# Architecture")) {
 		t.Errorf("arch.md content mismatch: %s, err: %v", archData, err)
 	}
-}
 
-func TestUnpackArchiveToCache_ConcurrentSafety(t *testing.T) {
-	files := map[string]string{
-		"SKILL.md":           "---\nname: parskill\ndescription: parallel safety\n---\n# Parallel Skill",
-		"references/arch.md": "# Parallel Reference",
-		"scripts/check.sh":   "#!/bin/sh\necho ok\n",
+	// 2. Archive with missing digest must fail closed with ErrMissingDigest.
+	unsignedItem := catalog.Item{
+		Name: "unsigned-archive",
+		Type: catalog.ItemTypeArchive,
+		URL:  server.URL + "/testarchive.tar.gz",
 	}
-	tarData := createValidTarGz(t, files)
-	digest := catalog.ComputeDigest(tarData)
-	cacheRoot := t.TempDir()
-
-	// Seed initial unpack so concurrent readers and unpackers overlap
-	if _, err := catalog.UnpackArchiveToCache(tarData, cacheRoot, "parskill", digest); err != nil {
-		t.Fatalf("initial UnpackArchiveToCache failed: %v", err)
-	}
-
-	var wg sync.WaitGroup
-	errCh := make(chan error, 20)
-	for i := 0; i < 10; i++ {
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			if _, err := catalog.UnpackArchiveToCache(tarData, cacheRoot, "parskill", digest); err != nil {
-				errCh <- err
-			}
-		}()
-		go func() {
-			defer wg.Done()
-			mdPath := filepath.Join(cacheRoot, "skills", "parskill", "SKILL.md")
-			if data, err := os.ReadFile(mdPath); err != nil || !bytes.Contains(data, []byte("# Parallel Skill")) {
-				errCh <- errors.New("concurrent read failed or returned partial SKILL.md")
-			}
-		}()
-	}
-	wg.Wait()
-	close(errCh)
-
-	for err := range errCh {
-		t.Errorf("concurrent UnpackArchiveToCache error: %v", err)
+	if _, err := r.InstallSkillContext(context.Background(), unsignedItem, filepath.Join(t.TempDir(), "unsigned"), "", nil, server.Client()); !errors.Is(err, catalog.ErrMissingDigest) {
+		t.Errorf("expected ErrMissingDigest for archive without digest, got: %v", err)
 	}
 }

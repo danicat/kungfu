@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,11 +16,9 @@ package commands
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,7 +28,6 @@ import (
 	"github.com/danicat/kungfu/internal/catalog"
 	"github.com/danicat/kungfu/internal/runner"
 	"github.com/danicat/kungfu/internal/search"
-	"github.com/danicat/kungfu/internal/state"
 )
 
 type loadTarget struct {
@@ -38,9 +35,32 @@ type loadTarget struct {
 	subpath string
 }
 
-const DefaultPageSize = 6000
-const MaxPageSize = 7000
+const (
+	DefaultPageSize = 6000
+	MaxPageSize     = 7000
+)
 
+func detectFenceMarker(line string) (marker string, fullLine string, ok bool) {
+	trimmed := strings.TrimLeft(line, " \t")
+	if len(trimmed) < 3 {
+		return "", "", false
+	}
+	ch := trimmed[0]
+	if ch != '`' && ch != '~' {
+		return "", "", false
+	}
+	count := 0
+	for count < len(trimmed) && trimmed[count] == ch {
+		count++
+	}
+	if count < 3 {
+		return "", "", false
+	}
+	return trimmed[:count], trimmed, true
+}
+
+// paginateContent splits content into byte-bounded pages without dropping blank lines,
+// severing UTF-8 runes, or leaving unclosed Markdown code fences across page breaks.
 func paginateContent(content string, pageSize int) []string {
 	if pageSize <= 0 || len(content) <= pageSize {
 		return []string{content}
@@ -49,25 +69,54 @@ func paginateContent(content string, pageSize int) []string {
 	lines := strings.Split(content, "\n")
 	var pages []string
 	var cur strings.Builder
+	hasLines := false
 
-	for i, line := range lines {
+	var openFenceMarker string
+	var openFenceHeader string
+
+	flushPage := func() {
+		if !hasLines {
+			return
+		}
+		if openFenceMarker != "" {
+			cur.WriteString("\n")
+			cur.WriteString(openFenceMarker)
+		}
+		pages = append(pages, cur.String())
+		cur.Reset()
+		hasLines = false
+		if openFenceMarker != "" {
+			cur.WriteString(openFenceHeader)
+			hasLines = true
+		}
+	}
+
+	for _, line := range lines {
+		// Reserve space for closing fence if currently inside a code block.
+		closeReserve := 0
+		if openFenceMarker != "" {
+			closeReserve = len(openFenceMarker) + 2
+		}
+
 		toAdd := len(line)
-		if i > 0 && cur.Len() > 0 {
+		if hasLines {
 			toAdd += 2 // account for "\r\n" in PTY line disciplines
 		}
 
-		if cur.Len() > 0 && cur.Len()+toAdd > pageSize {
-			pages = append(pages, cur.String())
-			cur.Reset()
+		if hasLines && cur.Len()+toAdd+closeReserve > pageSize {
+			flushPage()
 		}
 
-		// Handle lines longer than pageSize without severing UTF-8 runes
-		for len(line) > pageSize {
-			if cur.Len() > 0 {
-				pages = append(pages, cur.String())
-				cur.Reset()
+		// Handle single lines longer than pageSize without severing UTF-8 runes.
+		maxChunk := pageSize - closeReserve
+		if maxChunk < 1 {
+			maxChunk = pageSize
+		}
+		for len(line) > maxChunk {
+			if hasLines {
+				flushPage()
 			}
-			splitIdx := pageSize
+			splitIdx := maxChunk
 			for splitIdx > 0 && !utf8.RuneStart(line[splitIdx]) {
 				splitIdx--
 			}
@@ -75,24 +124,41 @@ func paginateContent(content string, pageSize int) []string {
 				_, size := utf8.DecodeRuneInString(line)
 				splitIdx = size
 			}
-			pages = append(pages, line[:splitIdx])
+			chunk := line[:splitIdx]
+			if hasLines {
+				cur.WriteString("\n")
+			}
+			cur.WriteString(chunk)
+			hasLines = true
+			flushPage()
 			line = line[splitIdx:]
 		}
 
-		if cur.Len() > 0 {
+		if hasLines {
 			cur.WriteString("\n")
 		}
 		cur.WriteString(line)
+		hasLines = true
+
+		// Update open Markdown code fence state after appending line.
+		if marker, full, ok := detectFenceMarker(line); ok {
+			if openFenceMarker == "" {
+				openFenceMarker = marker
+				openFenceHeader = full
+			} else if marker[0] == openFenceMarker[0] && len(marker) >= len(openFenceMarker) && strings.TrimSpace(full[len(marker):]) == "" {
+				openFenceMarker = ""
+				openFenceHeader = ""
+			}
+		}
 	}
 
-	if cur.Len() > 0 {
+	if hasLines {
 		pages = append(pages, cur.String())
 	}
 
 	if len(pages) == 0 {
 		return []string{content}
 	}
-
 	return pages
 }
 
@@ -104,7 +170,7 @@ func (a *App) RunLoad(args []string) int {
 	var pageFlag, pageSizeFlag int
 
 	fs.BoolVar(&jsonFlag, "json", false, "Output loaded content as JSON")
-	fs.BoolVar(&rawFlag, "raw", false, "Output raw verbatim markdown content without extra formatting")
+	fs.BoolVar(&rawFlag, "raw", false, "Output raw verbatim markdown content including frontmatter")
 	fs.BoolVar(&localFlag, "local", false, "Use locally cached or installed copy without checking remote upstream")
 	fs.BoolVar(&updateFlag, "update", false, "Check remote upstream and update cached copy before loading")
 	fs.BoolVar(&updateFlag, "u", false, "Check remote upstream and update cached copy before loading (shorthand)")
@@ -120,7 +186,34 @@ func (a *App) RunLoad(args []string) int {
 		return ExitUsage
 	}
 
-	mode := a.resolveMode(jsonFlag, rawFlag)
+	pageExplicit := false
+	pageSizeExplicit := false
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "page", "p":
+			pageExplicit = true
+		case "page-size":
+			pageSizeExplicit = true
+		}
+	})
+
+	if (jsonFlag || a.Options.Mode == OutputModeJSON) && rawFlag {
+		_, _ = fmt.Fprintln(a.Stderr, "error: cannot combine --json and --raw")
+		return ExitUsage
+	}
+	if localFlag && updateFlag {
+		_, _ = fmt.Fprintln(a.Stderr, "error: cannot combine --local and --update")
+		return ExitUsage
+	}
+	if localFlag && forceFlag {
+		_, _ = fmt.Fprintln(a.Stderr, "error: cannot combine --local and --force")
+		return ExitUsage
+	}
+
+	mode := a.resolveMode(jsonFlag)
+	if rawFlag {
+		mode = OutputModeRaw
+	}
 
 	if len(posArgs) == 0 {
 		_, _ = fmt.Fprintln(a.Stderr, "error: load requires a skill name or subpath (e.g. 'kungfu load git/reference')")
@@ -143,32 +236,48 @@ func (a *App) RunLoad(args []string) int {
 		return ExitUsage
 	}
 
-	spec := posArgs[0]
-	parts := strings.SplitN(spec, "/", 2)
-	skillName := parts[0]
-	subpath := ""
-	if len(parts) == 2 {
-		subpath = parts[1]
-	}
+	// Default --raw to unpaginated so raw output never silently truncates unless caller asks for pages.
+	effectiveFull := fullFlag || (mode == OutputModeRaw && !pageExplicit && !pageSizeExplicit)
 
-	item, err := a.resolveSkill(skillName)
-	if err != nil && localFlag && skillName != "" {
-		cleanName := filepath.Base(filepath.Clean(skillName))
-		if cacheRoot := a.cacheRootDir(); cacheRoot != "" && cleanName != "." && cleanName != ".." {
-			cachedMD := filepath.Join(cacheRoot, "skills", cleanName, "SKILL.md")
-			if data, readErr := os.ReadFile(cachedMD); readErr == nil && len(data) > 0 {
-				synth := catalog.Item{
-					ID:     cleanName,
-					Name:   cleanName,
-					Source: "cache",
+	spec := posArgs[0]
+	lookupSpec, baseSkill, subpath, catQual := parseLoadSpec(spec)
+
+	item, err := a.resolveSkill(lookupSpec)
+	if err != nil && localFlag && baseSkill != "" {
+		cacheCat := catQual
+		if cacheCat != "" {
+			if resolvedCat, _, ok, rErr := a.resolveConfiguredCatalog(cacheCat); rErr != nil {
+				_, _ = fmt.Fprintf(a.Stderr, "error: %v\n", rErr)
+				return MapErrorToExitCode(rErr)
+			} else if ok {
+				cacheCat = resolvedCat
+			}
+		}
+		if cacheRoot := a.cacheRootDir(); cacheRoot != "" {
+			if skillDir, findErr := catalog.FindCachedSkillDir(cacheRoot, baseSkill, cacheCat); findErr == nil {
+				cachedMD := filepath.Join(skillDir, "SKILL.md")
+				if f, openErr := os.Open(cachedMD); openErr == nil {
+					data, readErr := catalog.ReadBounded(f, catalog.DefaultMaxSkillMDBytes)
+					_ = f.Close()
+					if readErr == nil && len(data) > 0 {
+						synth := catalog.Item{
+							ID:     baseSkill,
+							Name:   baseSkill,
+							Source: cacheCat,
+							Path:   skillDir,
+						}
+						if synth.Source == "" {
+							synth.Source = "cache"
+						}
+						catalog.EnrichItemFromSkillMD(&synth, data)
+						item = &synth
+						err = nil
+					}
 				}
-				catalog.EnrichItemFromSkillMD(&synth, data)
-				item = &synth
-				err = nil
 			}
 		}
 	}
-	if err != nil && !localFlag && shouldProbeGitHubOnLoad(spec, subpath) {
+	if err != nil && errors.Is(err, catalog.ErrItemNotFound) && !localFlag && shouldProbeGitHubOnLoad(spec, subpath) {
 		if ghTarget, ok := catalog.ParseGitHubTarget(spec); ok {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			ghItem, ghErr := catalog.FetchGitHubSkill(ctx, ghTarget, a.getHTTPClient())
@@ -177,22 +286,25 @@ func (a *App) RunLoad(args []string) int {
 				item = ghItem
 				subpath = ""
 				err = nil
-			} else if ghErr != nil {
-				if code := MapErrorToExitCode(ghErr); code == ExitNetwork || code == ExitIntegrity {
-					_, _ = fmt.Fprintf(a.Stderr, "error: fetching skill from github %q: %v\n", spec, ghErr)
-					return code
-				}
+			} else if ghErr != nil && !errors.Is(ghErr, catalog.ErrItemNotFound) {
+				_, _ = fmt.Fprintf(a.Stderr, "error: fetching skill from github %q: %v\n", spec, ghErr)
+				return MapErrorToExitCode(ghErr)
 			}
 		}
 	}
 	if err != nil {
+		if !errors.Is(err, catalog.ErrItemNotFound) {
+			_, _ = fmt.Fprintf(a.Stderr, "error: resolving skill %q: %v\n", spec, err)
+			return MapErrorToExitCode(err)
+		}
 		suggestQuery := spec
 		if isBundledSubpath(subpath) {
-			suggestQuery = skillName
+			suggestQuery = baseSkill
 		}
 		a.printNotFoundWithSuggestions("load", suggestQuery)
 		return ExitNotFound
 	}
+
 	target := loadTarget{
 		item:    *item,
 		subpath: subpath,
@@ -202,6 +314,7 @@ func (a *App) RunLoad(args []string) int {
 	var loadErr error
 
 	if target.subpath != "" {
+		a.warnIfLocalCopyOutdated(target.item, true)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
@@ -211,7 +324,7 @@ func (a *App) RunLoad(args []string) int {
 			subpathItem.Metadata = nil
 		}
 
-		content, loadErr = runner.ReadFileContext(ctx, subpathItem, target.subpath, a.getHTTPClient())
+		content, loadErr = a.getRunner().ReadFileContext(ctx, subpathItem, target.subpath, a.getHTTPClient())
 		if loadErr != nil {
 			if errors.Is(loadErr, runner.ErrInvalidPath) {
 				_, _ = fmt.Fprintf(a.Stderr, "error: invalid path traversal in %q\n", target.subpath)
@@ -224,16 +337,25 @@ func (a *App) RunLoad(args []string) int {
 				}
 				_, _ = fmt.Fprintf(a.Stderr, "error: subpath %q not found in skill %q.\n", target.subpath, target.item.Name)
 				var candidates []string
-				for _, ref := range a.listReferences(target.item) {
-					candidates = append(candidates, ref, "references/"+ref)
+				seen := make(map[string]struct{})
+				addCand := func(c string) {
+					if _, ok := seen[c]; !ok {
+						seen[c] = struct{}{}
+						candidates = append(candidates, c)
+					}
 				}
-				for _, refFile := range a.listReferenceFiles(target.item) {
-					candidates = append(candidates, refFile, "references/"+refFile)
+				for _, ref := range a.collectReferences(target.item, true) {
+					addCand(ref)
+					addCand("references/" + ref)
+				}
+				for _, refFile := range a.collectReferences(target.item, false) {
+					addCand(refFile)
+					addCand("references/" + refFile)
 				}
 				for _, scr := range a.listScripts(target.item) {
-					candidates = append(candidates, scr, "scripts/"+scr)
+					addCand(scr)
+					addCand("scripts/" + scr)
 				}
-				candidates = uniqueStrings(candidates)
 				if len(candidates) > 0 {
 					suggs := search.Suggest(target.subpath, candidates, 3)
 					if len(suggs) > 0 {
@@ -249,7 +371,7 @@ func (a *App) RunLoad(args []string) int {
 			return MapErrorToExitCode(loadErr)
 		}
 	} else {
-		rawContent, err := a.loadItemContentWithOpts(&target.item, localFlag, updateFlag, forceFlag)
+		rawContent, err := a.loadItemContentWithOpts(&target.item, localFlag, updateFlag, forceFlag, mode)
 		if err != nil {
 			_, _ = fmt.Fprintf(a.Stderr, "error: loading skill %q: %v\n", target.item.Name, err)
 			if errors.Is(err, catalog.ErrDigestMismatch) {
@@ -266,10 +388,11 @@ func (a *App) RunLoad(args []string) int {
 		} else {
 			content = stripFrontmatter(rawContent)
 		}
+		a.warnIfLocalCopyOutdated(target.item, localFlag)
 	}
 
 	var pages []string
-	if fullFlag {
+	if effectiveFull {
 		pages = []string{content}
 	} else {
 		pages = paginateContent(content, pageSizeFlag)
@@ -285,25 +408,13 @@ func (a *App) RunLoad(args []string) int {
 	a.recordSkillLoad(target.item, target.subpath, pageFlag)
 
 	if mode == OutputModeJSON {
-		ver := target.item.Version
-		if ver == "" && target.item.Metadata != nil {
-			ver = target.item.Metadata["version"]
-		}
-
-		pageNum := 0
-		totPages := 0
-		if totalPages > 1 && !fullFlag {
-			pageNum = pageFlag
-			totPages = totalPages
-		}
-
 		type LoadResultItem struct {
 			Name        string `json:"name"`
 			Subpath     string `json:"subpath,omitempty"`
 			Version     string `json:"version,omitempty"`
 			Description string `json:"description"`
-			Page        int    `json:"page,omitempty"`
-			TotalPages  int    `json:"total_pages,omitempty"`
+			Page        int    `json:"page"`
+			TotalPages  int    `json:"total_pages"`
 			Content     string `json:"content"`
 			Digest      string `json:"digest,omitempty"`
 			Source      string `json:"source,omitempty"`
@@ -312,23 +423,23 @@ func (a *App) RunLoad(args []string) int {
 		res := LoadResultItem{
 			Name:        target.item.Name,
 			Subpath:     target.subpath,
-			Version:     ver,
+			Version:     itemVersion(target.item),
 			Description: target.item.Description,
-			Page:        pageNum,
-			TotalPages:  totPages,
+			Page:        pageFlag,
+			TotalPages:  totalPages,
 			Content:     currentPageContent,
 			Digest:      target.item.Digest,
 			Source:      target.item.Source,
 		}
-
-		enc := json.NewEncoder(a.Stdout)
-		enc.SetIndent("", "  ")
-		_ = enc.Encode(res)
+		if err := writeJSON(a.Stdout, res); err != nil {
+			_, _ = fmt.Fprintf(a.Stderr, "error: writing JSON output: %v\n", err)
+			return ExitGeneral
+		}
 		return ExitSuccess
 	}
 
 	var sb strings.Builder
-	if totalPages > 1 && !fullFlag && pageFlag > 1 && mode != OutputModeRaw {
+	if totalPages > 1 && !effectiveFull && pageFlag > 1 && mode != OutputModeRaw {
 		_, _ = fmt.Fprintf(&sb, "[Page %d of %d (continued)]\n\n", pageFlag, totalPages)
 	}
 
@@ -337,7 +448,7 @@ func (a *App) RunLoad(args []string) int {
 		sb.WriteString("\n")
 	}
 
-	if totalPages > 1 && !fullFlag && mode != OutputModeRaw {
+	if totalPages > 1 && !effectiveFull && mode != OutputModeRaw {
 		sb.WriteString("\n---\n")
 		if pageFlag < totalPages {
 			_, _ = fmt.Fprintf(&sb, "[Page %d of %d • Next: kungfu load %s -p %d]\n", pageFlag, totalPages, spec, pageFlag+1)
@@ -350,58 +461,82 @@ func (a *App) RunLoad(args []string) int {
 	return ExitSuccess
 }
 
-func uniqueStrings(slice []string) []string {
-	seen := make(map[string]bool)
-	var res []string
-	for _, s := range slice {
-		if !seen[s] {
-			seen[s] = true
-			res = append(res, s)
-		}
+func (a *App) cacheSkillMD(item catalog.Item, content string) {
+	if item.Name == "" || content == "" {
+		return
 	}
-	return res
+	cacheRoot := a.cacheRootDir()
+	if cacheRoot == "" {
+		return
+	}
+	skillDir, err := catalog.SkillCacheDir(cacheRoot, item.Name, item.Source)
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(skillDir, 0700); err != nil {
+		return
+	}
+	targetPath := filepath.Join(skillDir, "SKILL.md")
+	if !catalog.IsPathContained(skillDir, targetPath) {
+		return
+	}
+	tmpFile, err := os.CreateTemp(skillDir, ".SKILL.md-*.tmp")
+	if err != nil {
+		return
+	}
+	tmpPath := tmpFile.Name()
+	if _, err := tmpFile.WriteString(content); err == nil && tmpFile.Chmod(0600) == nil && tmpFile.Sync() == nil && tmpFile.Close() == nil {
+		_ = os.Rename(tmpPath, targetPath)
+		return
+	}
+	_ = tmpFile.Close()
+	_ = os.Remove(tmpPath)
 }
 
-func (a *App) loadItemContentWithOpts(item *catalog.Item, localOnly, forceUpdate, forceDigest bool) (string, error) {
-	// 1. If --local is specified, attempt to load from local cache or workspace immediately
+func (a *App) loadItemContentWithOpts(item *catalog.Item, localOnly, forceUpdate, forceDigest bool, mode OutputMode) (string, error) {
 	if localOnly {
-		// Check workspace installation
 		if item.Path != "" {
-			skillMD := filepath.Join(item.Path, "SKILL.md")
-			if data, err := os.ReadFile(skillMD); err == nil && len(data) > 0 {
-				return string(data), nil
+			var skillMD string
+			if fi, err := os.Stat(item.Path); err == nil {
+				if fi.IsDir() {
+					skillMD = filepath.Join(item.Path, "SKILL.md")
+				} else {
+					skillMD = item.Path
+				}
 			}
-			if fi, err := os.Stat(item.Path); err == nil && !fi.IsDir() {
-				if data, err := os.ReadFile(item.Path); err == nil && len(data) > 0 {
-					return string(data), nil
+			if skillMD != "" {
+				if f, err := os.Open(skillMD); err == nil {
+					data, readErr := catalog.ReadBounded(f, catalog.DefaultMaxSkillMDBytes)
+					_ = f.Close()
+					if readErr == nil && len(data) > 0 {
+						return string(data), nil
+					}
 				}
 			}
 		}
 
-		// Check local disk cache (<cacheRoot>/skills/<name>/SKILL.md)
 		cacheRoot := a.cacheRootDir()
 		if cacheRoot == "" {
 			return "", fmt.Errorf("load --local: unable to determine cache directory")
 		}
-		cachedMD := filepath.Join(cacheRoot, "skills", item.Name, "SKILL.md")
-		if data, err := os.ReadFile(cachedMD); err == nil && len(data) > 0 {
-			return string(data), nil
+		if skillDir, err := catalog.FindCachedSkillDir(cacheRoot, item.Name, item.Source); err == nil {
+			if f, err := os.Open(filepath.Join(skillDir, "SKILL.md")); err == nil {
+				data, readErr := catalog.ReadBounded(f, catalog.DefaultMaxSkillMDBytes)
+				_ = f.Close()
+				if readErr == nil && len(data) > 0 {
+					return string(data), nil
+				}
+			}
 		}
-		return "", fmt.Errorf("skill %q not found in local cache. Run 'kungfu load %s' to fetch from remote", item.Name, item.Name)
-	}
-
-	// 2. Normal load or update load
-	autoUpdate := true
-	if a.Config != nil {
-		autoUpdate = a.Config.IsAutoUpdate()
+		return "", fmt.Errorf("%w: skill %q not found in local cache; run 'kungfu load %s' to fetch from remote", catalog.ErrItemNotFound, item.Name, item.Name)
 	}
 
 	if forceUpdate {
 		if cacheRoot := a.cacheRootDir(); cacheRoot != "" && item.Name != "" {
-			cleanName := filepath.Base(filepath.Clean(item.Name))
-			if cleanName != "" && cleanName != "." && cleanName != ".." {
-				_ = os.Remove(filepath.Join(cacheRoot, "skills", cleanName, ".digest"))
-				_ = os.Remove(filepath.Join(cacheRoot, "skills", cleanName, "SKILL.md"))
+			if skillDir, err := catalog.SkillCacheDir(cacheRoot, item.Name, item.Source); err == nil {
+				_ = os.Remove(filepath.Join(skillDir, ".digest"))
+				_ = os.Remove(filepath.Join(skillDir, ".skillmd.digest"))
+				_ = os.Remove(filepath.Join(skillDir, "SKILL.md"))
 			}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -416,83 +551,45 @@ func (a *App) loadItemContentWithOpts(item *catalog.Item, localOnly, forceUpdate
 		}
 	}
 
-	// Try standard loadContent
-	content, err := a.loadItemContent(item)
+	content, err := a.Store.LoadContent(item)
 	if err == nil {
-		// Save to cache for offline/local access
-		if item.Name != "" {
-			runner.CacheSkillFile(item.Name, "SKILL.md", []byte(content))
+		if !catalog.IsArchiveItem(*item) {
+			a.cacheSkillMD(*item, content)
 		}
 		return content, nil
 	}
 
-	// If error is not digest mismatch or remote is not reachable, check if forceDigest is set
-	if errors.Is(err, catalog.ErrDigestMismatch) {
-		// Case A: Upstream may have updated! Check remote catalog index to see if catalog has a new digest
+	if errors.Is(err, catalog.ErrDigestMismatch) || errors.Is(err, catalog.ErrMissingDigest) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-
 		freshItem := a.refreshCatalogForItem(ctx, item, a.resolveDefaultCatalogURL())
+		cancel()
 		if freshItem != nil {
-			// Re-fetch content using the fresh digest
 			tempItem := *freshItem
 			if tempItem.URL == "" && item.URL != "" {
 				tempItem.URL = item.URL
 			}
-			freshContent, freshContentErr := a.loadItemContent(&tempItem)
+			freshContent, freshContentErr := a.Store.LoadContent(&tempItem)
 			if freshContentErr == nil {
-				// The new catalog manifest acknowledges this content!
-				if autoUpdate || forceUpdate {
-					runner.CacheSkillFile(freshItem.Name, "SKILL.md", []byte(freshContent))
-					*item = tempItem
-
-					if !a.Options.NoColor && a.Options.Mode != OutputModeJSON && a.Options.Mode != OutputModeRaw {
-						_, _ = fmt.Fprintf(a.Stderr, "✓ Detected upstream update for %q; cache updated.\n", item.Name)
-					}
-					return freshContent, nil
+				if !catalog.IsArchiveItem(tempItem) {
+					a.cacheSkillMD(tempItem, freshContent)
 				}
-				return "", fmt.Errorf("%w: upstream content for %q has changed (new digest %s); run 'kungfu load %s --update' to update", catalog.ErrDigestMismatch, item.Name, freshItem.Digest, item.Name)
+				*item = tempItem
+				if mode == OutputModeHuman {
+					_, _ = fmt.Fprintf(a.Stderr, "✓ Detected upstream update for %q; cache updated.\n", item.Name)
+				}
+				return freshContent, nil
 			}
 		}
 
-		// If forceDigest was passed, bypass verification without poisoning the local cache
 		if forceDigest {
-			_, _ = fmt.Fprintf(a.Stderr, "warning: bypassing integrity verification for %q (--force)\n", item.Name)
-			// Fetch raw bytes without verify
-			remoteURL := item.URL
-			if remoteURL == "" && item.Metadata != nil {
-				remoteURL = item.Metadata["canonical"]
+			forceCtx, forceCancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer forceCancel()
+			forcedContent, forceErr := a.Store.LoadContentContext(forceCtx, item, true)
+			if forceErr == nil {
+				_, _ = fmt.Fprintf(a.Stderr, "warning: bypassed integrity verification for %q (--force)\n", item.Name)
+				return forcedContent, nil
 			}
-			if remoteURL != "" {
-				reqCtx, reqCancel := context.WithTimeout(context.Background(), 15*time.Second)
-				defer reqCancel()
-				req, reqErr := http.NewRequestWithContext(reqCtx, http.MethodGet, remoteURL, nil)
-				if reqErr != nil {
-					return "", fmt.Errorf("creating force-refresh request for %s: %w", remoteURL, reqErr)
-				}
-				resp, rErr := a.getHTTPClient().Do(req)
-				if rErr != nil {
-					return "", fmt.Errorf("fetching %s (--force): %w", remoteURL, rErr)
-				}
-				defer func() { _ = resp.Body.Close() }()
-				if resp.StatusCode != http.StatusOK {
-					return "", fmt.Errorf("fetching %s (--force): HTTP %d", remoteURL, resp.StatusCode)
-				}
-				b, readErr := catalog.ReadBounded(resp.Body, catalog.DefaultMaxUnpackedBytes)
-				if readErr != nil {
-					return "", fmt.Errorf("reading %s (--force): %w", remoteURL, readErr)
-				}
-				if len(b) > 0 {
-					if catalog.IsArchiveItem(*item) || catalog.DetectArchiveFormat(b, remoteURL) != "" {
-						md, exErr := catalog.ExtractSkillMDFromArchive(b)
-						if exErr != nil {
-							return "", fmt.Errorf("extracting SKILL.md from archive %s (--force): %w", remoteURL, exErr)
-						}
-						return md, nil
-					}
-					return string(b), nil
-				}
-			}
+			return "", forceErr
 		}
 	}
 
@@ -517,62 +614,45 @@ func (a *App) refreshCatalogForItem(ctx context.Context, item *catalog.Item, def
 		return nil
 	}
 
-	// 1. Check if item comes from a registered named catalog (e.g. "kungfu" -> github:danicat/kungfu)
-	st := a.loadState()
 	candidateCats := []string{
 		item.Source,
 		strings.TrimPrefix(item.Source, "github:"),
 	}
-	if os.Getenv("KUNGFU_URL") == "" && os.Getenv("KUNGFU_REMOTE_URL") == "" {
+	if strings.TrimSpace(os.Getenv("KUNGFU_URL")) == "" {
 		candidateCats = append(candidateCats, item.Name)
 	}
 	seenCats := make(map[string]bool)
 	for _, cand := range candidateCats {
 		cand = strings.TrimSpace(cand)
-		if cand == "" || cand == "default" || seenCats[cand] {
+		if cand == "" || strings.EqualFold(cand, "default") || seenCats[cand] {
 			continue
 		}
 		seenCats[cand] = true
-		catRec, ok := st.GetCatalog(cand)
-		if !ok || catRec.Type == state.CatalogTypeDefault {
+		catName, src, ok, rErr := a.resolveConfiguredCatalog(cand)
+		if rErr != nil || !ok || strings.EqualFold(catName, "default") {
 			continue
 		}
-		switch catRec.Type {
-		case state.CatalogTypeGitHub:
-			if target, okTarget := catalog.ParseGitHubTarget(catRec.Source); okTarget {
-				if catRec.Ref != "" {
-					target.Ref = catRec.Ref
-				}
-				if freshManifest, err := catalog.FetchGitHubCatalog(ctx, target, a.getHTTPClient()); err == nil && freshManifest != nil {
-					_ = catalog.SaveNamedCatalogCacheIn(a.cacheRootDir(), catRec.Name, catRec.URL, *freshManifest, "")
-					if cat, ok := a.Store.(*catalog.Catalog); ok {
-						cat.AddCatalogManifest(catRec.Name, freshManifest)
-					}
-					if found := findInManifest(freshManifest); found != nil {
-						return found
-					}
-				}
+		freshManifest, freshETag, _, err := catalog.FetchSource(ctx, src, a.getHTTPClient())
+		if err == nil && freshManifest != nil {
+			if cacheRoot := a.cacheRootDir(); cacheRoot != "" {
+				_ = catalog.SaveNamedCatalogCache(cacheRoot, catName, src, *freshManifest, freshETag)
 			}
-		case state.CatalogTypeHTTP:
-			if freshManifest, freshETag, err := catalog.FetchHTTPCatalog(ctx, catRec.Source, a.getHTTPClient()); err == nil && freshManifest != nil {
-				_ = catalog.SaveNamedCatalogCacheIn(a.cacheRootDir(), catRec.Name, catRec.URL, *freshManifest, freshETag)
-				if cat, ok := a.Store.(*catalog.Catalog); ok {
-					cat.AddCatalogManifest(catRec.Name, freshManifest)
-				}
-				if found := findInManifest(freshManifest); found != nil {
-					return found
-				}
+			a.Store.AddCatalogManifest(catName, freshManifest)
+			if found := findInManifest(freshManifest); found != nil {
+				found.Source = catName
+				return found
 			}
 		}
 	}
 
-	// 2. Refresh default catalog
-	if freshManifest, freshETag, fetchErr := catalog.FetchHTTPCatalog(ctx, defaultCatURL, a.getHTTPClient()); fetchErr == nil && freshManifest != nil {
-		if cachePath := a.catalogIndexCachePath(); cachePath != "" {
-			_ = catalog.SaveCachedCatalog(cachePath, defaultCatURL, *freshManifest, freshETag)
-		}
-		if found := findInManifest(freshManifest); found != nil {
-			return found
+	if defaultCatURL != "" {
+		if freshManifest, freshETag, err := catalog.FetchHTTPCatalog(ctx, defaultCatURL, a.getHTTPClient()); err == nil && freshManifest != nil {
+			if cacheRoot := a.cacheRootDir(); cacheRoot != "" {
+				_ = catalog.SaveNamedCatalogCache(cacheRoot, "default", defaultCatURL, *freshManifest, freshETag)
+			}
+			if found := findInManifest(freshManifest); found != nil {
+				return found
+			}
 		}
 	}
 

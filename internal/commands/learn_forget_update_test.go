@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -68,29 +68,33 @@ func TestRunLearnAndForget(t *testing.T) {
 	t.Setenv("KUNGFU_URL", server.URL)
 
 	var stdout, stderr bytes.Buffer
-	app, err := NewApp(GlobalOptions{}, &stdout, &stderr)
+	app, err := NewApp(GlobalOptions{CacheDir: t.TempDir()}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("NewApp failed: %v", err)
 	}
 
-	// 1. Learn skill into workspace
+	// 1. Removed --load flag must be rejected
+	if code := app.RunLearn([]string{"kungfu", "--load"}); code != ExitUsage {
+		t.Fatalf("RunLearn(--load) = %d, want ExitUsage", code)
+	}
+
+	// 2. Learn skill into workspace
 	stdout.Reset()
 	stderr.Reset()
 	code := app.RunLearn([]string{"kungfu"})
 	if code != ExitSuccess {
 		t.Fatalf("RunLearn(kungfu) = %d; stderr: %s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "Learned skill \"kungfu\"") {
+	if !strings.Contains(stdout.String(), `Learned skill "kungfu"`) {
 		t.Errorf("expected learned confirmation, got: %s", stdout.String())
 	}
 
-	// Verify file exists on disk
 	installedMD := filepath.Join(tmpDir, ".agents", "skills", "kungfu", "SKILL.md")
 	if _, err := os.Stat(installedMD); err != nil {
 		t.Fatalf("expected installed SKILL.md at %s, got: %v", installedMD, err)
 	}
 
-	// 2. Status shows skill installed
+	// 3. Status shows skill installed
 	stdout.Reset()
 	stderr.Reset()
 	code = app.RunStatus([]string{})
@@ -101,20 +105,35 @@ func TestRunLearnAndForget(t *testing.T) {
 		t.Errorf("expected kungfu in status output, got: %s", stdout.String())
 	}
 
-	// 3. Forget skill
+	// 4. Forget skill
 	stdout.Reset()
 	stderr.Reset()
 	code = app.RunForget([]string{"kungfu"})
 	if code != ExitSuccess {
 		t.Fatalf("RunForget(kungfu) = %d; stderr: %s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "Forgot skill \"kungfu\"") {
+	if !strings.Contains(stdout.String(), `Forgot skill "kungfu"`) {
 		t.Errorf("expected forgot confirmation, got: %s", stdout.String())
 	}
 
-	// Verify file deleted
 	if _, err := os.Stat(installedMD); !os.IsNotExist(err) {
 		t.Errorf("expected %s to be removed, but stat returned: %v", installedMD, err)
+	}
+
+	// 5. Malicious skill name with traversal must be rejected before touching disk
+	app.Store.AddItem(catalog.Item{
+		ID:   "../escape",
+		Name: "../escape",
+		Body: "---\nname: ../escape\n---\n# Evil\n",
+	})
+	stdout.Reset()
+	stderr.Reset()
+	code = app.RunLearn([]string{"../escape"})
+	if code == ExitSuccess {
+		t.Fatalf("expected RunLearn(../escape) to fail, got ExitSuccess")
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, ".agents", "escape")); !os.IsNotExist(err) {
+		t.Errorf("malicious traversal directory was created!")
 	}
 }
 
@@ -132,22 +151,28 @@ func TestRunUpdate(t *testing.T) {
 	t.Setenv("KUNGFU_URL", server.URL)
 
 	var stdout, stderr bytes.Buffer
-	app, err := NewApp(GlobalOptions{}, &stdout, &stderr)
+	app, err := NewApp(GlobalOptions{CacheDir: t.TempDir()}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("NewApp failed: %v", err)
 	}
+	// Point built-in kungfu catalog at mock server so tests never hit live GitHub.
+	app.Config.Catalogs["kungfu"] = server.URL
+
+	// Removed --yes flag must be rejected
+	if code := app.RunUpdate([]string{"--yes"}); code != ExitUsage {
+		t.Fatalf("RunUpdate(--yes) = %d, want ExitUsage", code)
+	}
 
 	// Learn skill first
-	code := app.RunLearn([]string{"kungfu"})
-	if code != ExitSuccess {
+	if code := app.RunLearn([]string{"kungfu"}); code != ExitSuccess {
 		t.Fatalf("RunLearn = %d; stderr: %s", code, stderr.String())
 	}
 
-	// Check update (dry-run) even if legacy telemetry config or KUNGFU_TELEMETRY=1 is present
+	// Dry-run update works cleanly even when local telemetry env var is set
 	t.Setenv("KUNGFU_TELEMETRY", "1")
 	stdout.Reset()
 	stderr.Reset()
-	code = app.RunUpdate([]string{})
+	code := app.RunUpdate([]string{})
 	if code != ExitSuccess {
 		t.Fatalf("RunUpdate dry-run = %d; stderr: %s", code, stderr.String())
 	}
@@ -155,7 +180,7 @@ func TestRunUpdate(t *testing.T) {
 		t.Errorf("expected kungfu in update check, got: %s", stdout.String())
 	}
 	if strings.Contains(stdout.String(), "telemetry") || strings.Contains(stderr.String(), "telemetry") {
-		t.Errorf("RunUpdate should not run or mention telemetry: stdout=%q stderr=%q", stdout.String(), stderr.String())
+		t.Errorf("RunUpdate should not run or mention remote telemetry: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }
 
@@ -173,10 +198,11 @@ func TestRunUpdate_ConflictAndForce(t *testing.T) {
 	t.Setenv("KUNGFU_URL", server.URL)
 
 	var stdout, stderr bytes.Buffer
-	app, err := NewApp(GlobalOptions{}, &stdout, &stderr)
+	app, err := NewApp(GlobalOptions{CacheDir: t.TempDir()}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("NewApp failed: %v", err)
 	}
+	app.Config.Catalogs["kungfu"] = server.URL
 
 	// 1. Learn skill
 	if code := app.RunLearn([]string{"kungfu"}); code != ExitSuccess {
@@ -215,7 +241,7 @@ func TestRunUpdate_ConflictAndForce(t *testing.T) {
 	if code := app.RunUpdate([]string{"-f", "kungfu"}); code != ExitSuccess {
 		t.Fatalf("RunUpdate with -f failed = %d; stderr: %s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "Updated skill \"kungfu\"") {
+	if !strings.Contains(stdout.String(), `Updated skill "kungfu"`) {
 		t.Errorf("expected successful update message, got: %s", stdout.String())
 	}
 }
@@ -232,7 +258,6 @@ func TestRunLearn_KungfuOutOfTheBox(t *testing.T) {
 	t.Setenv("KUNGFU_STATE_PATH", filepath.Join(tmpDir, ".config", "kungfu", "state.json"))
 	t.Setenv("KUNGFU_CACHE_DIR", cacheDir)
 
-	// Default catalog does NOT include "kungfu" (matches skills.danicat.dev on a fresh install).
 	emptyDefaultServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"$schema":"https://schemas.agentskills.io/discovery/0.2.0/schema.json","skills":[]}`))
@@ -240,7 +265,6 @@ func TestRunLearn_KungfuOutOfTheBox(t *testing.T) {
 	defer emptyDefaultServer.Close()
 	t.Setenv("KUNGFU_URL", emptyDefaultServer.URL)
 
-	// Built-in "kungfu" catalog serves the kungfu skill.
 	kungfuCatServer, _ := startMockKungfuServer(t)
 	defer kungfuCatServer.Close()
 
@@ -251,7 +275,6 @@ func TestRunLearn_KungfuOutOfTheBox(t *testing.T) {
 	}
 	app.Config.Catalogs["kungfu"] = kungfuCatServer.URL
 
-	// On a clean install before `kungfu update`, `kungfu learn kungfu` should work out of the box.
 	code := app.RunLearn([]string{"kungfu"})
 	if code != ExitSuccess {
 		t.Fatalf("RunLearn(kungfu) on fresh install = %d; stdout=%s stderr=%s", code, stdout.String(), stderr.String())
@@ -265,7 +288,7 @@ func TestRunLearn_KungfuOutOfTheBox(t *testing.T) {
 		t.Fatalf("expected installed SKILL.md at %s, got: %v", installedMD, err)
 	}
 
-	cachedCat := filepath.Join(cacheDir, "catalogs", "kungfu.json")
+	cachedCat := filepath.Join(cacheDir, "catalogs", catalog.SafeCatalogFileName("kungfu"))
 	if _, err := os.Stat(cachedCat); err != nil {
 		t.Fatalf("expected built-in kungfu catalog to be cached at %s, got: %v", cachedCat, err)
 	}

@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2026 Daniela Petruzalek
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,8 +15,10 @@
 package state_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -27,20 +29,28 @@ import (
 
 func TestMain(m *testing.M) {
 	tempHome, err := os.MkdirTemp("", "kungfu-state-test-*")
-	if err == nil {
-		_ = os.Setenv("HOME", tempHome)
-		_ = os.Setenv("KUNGFU_CONFIG_DIR", filepath.Join(tempHome, ".config", "kungfu"))
-		_ = os.Setenv("KUNGFU_STATE_PATH", filepath.Join(tempHome, ".config", "kungfu", "state.json"))
-		_ = os.Setenv("KUNGFU_CONFIG", "")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create temp test home: %v\n", err)
+		os.Exit(1)
 	}
+	_ = os.Setenv("HOME", tempHome)
+	_ = os.Setenv("USERPROFILE", tempHome)
+	_ = os.Setenv("APPDATA", filepath.Join(tempHome, "AppData", "Roaming"))
+	_ = os.Setenv("LOCALAPPDATA", filepath.Join(tempHome, "AppData", "Local"))
+	_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(tempHome, ".config"))
+	_ = os.Setenv("XDG_CACHE_HOME", filepath.Join(tempHome, ".cache"))
+	_ = os.Setenv("KUNGFU_CONFIG_DIR", filepath.Join(tempHome, ".config", "kungfu"))
+	_ = os.Setenv("KUNGFU_STATE_PATH", filepath.Join(tempHome, ".config", "kungfu", "state.json"))
+	_ = os.Setenv("KUNGFU_CONFIG", "")
+
 	code := m.Run()
-	if tempHome != "" {
-		_ = os.RemoveAll(tempHome)
-	}
+	_ = os.RemoveAll(tempHome)
 	os.Exit(code)
 }
 
 func TestState_LifecycleAndPersistence(t *testing.T) {
+	t.Parallel()
+
 	tmpDir := t.TempDir()
 	stateFile := filepath.Join(tmpDir, "state.json")
 
@@ -74,12 +84,21 @@ func TestState_LifecycleAndPersistence(t *testing.T) {
 	})
 
 	// 4. Record load history
-	s.RecordLoad("godoctor")
-	s.RecordLoad("godoctor")
+	s.RecordLoad("godoctor", "default", "", 1)
+	s.RecordLoad("godoctor", "default", "", 1)
 
-	// 5. Save state atomically
+	// 5. Save state atomically with restricted permissions
 	if err := state.SaveState(stateFile, s); err != nil {
 		t.Fatalf("SaveState failed: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		fi, err := os.Stat(stateFile)
+		if err != nil {
+			t.Fatalf("stat stateFile: %v", err)
+		}
+		if fi.Mode().Perm() != 0600 {
+			t.Errorf("state.json mode = %04o, want 0600", fi.Mode().Perm())
+		}
 	}
 
 	// 6. Reload from disk and verify
@@ -102,34 +121,26 @@ func TestState_LifecycleAndPersistence(t *testing.T) {
 		t.Errorf("unexpected history record: %+v", hist)
 	}
 
-	// 7. Test Soft Delete (Forget)
-	ok := reloaded.RecordForget(state.ScopeWorkspace, wsDir, "social-copy")
-	if !ok {
+	// 7. Forget removes workspace skill cleanly
+	if !reloaded.RecordForget(state.ScopeWorkspace, wsDir, "social-copy") {
 		t.Fatalf("RecordForget returned false")
 	}
-
-	installedAfterForget := reloaded.GetInstalledSkills(state.ScopeWorkspace, wsDir)
-	if len(installedAfterForget) != 0 {
-		t.Errorf("expected 0 installed skills after forget, got %d", len(installedAfterForget))
+	if got := reloaded.GetInstalledSkills(state.ScopeWorkspace, wsDir); len(got) != 0 {
+		t.Errorf("expected 0 installed skills after forget, got %d", len(got))
 	}
 
-	forgotten := reloaded.GetForgottenSkills(state.ScopeWorkspace, wsDir)
-	if len(forgotten) != 1 || forgotten["social-copy"].Status != state.StatusUninstalled || forgotten["social-copy"].UninstalledAt == nil {
-		t.Errorf("unexpected forgotten skills: %+v", forgotten)
-	}
-
-	// 8. Test Global Soft Delete
-	ok = reloaded.RecordForget(state.ScopeGlobal, "", "buffer")
-	if !ok {
+	// 8. Forget removes global skill cleanly
+	if !reloaded.RecordForget(state.ScopeGlobal, "", "buffer") {
 		t.Fatalf("RecordForget global returned false")
 	}
-	forgottenGlobal := reloaded.GetForgottenSkills(state.ScopeGlobal, "")
-	if len(forgottenGlobal) != 1 || forgottenGlobal["buffer"].Status != state.StatusUninstalled {
-		t.Errorf("unexpected global forgotten skills: %+v", forgottenGlobal)
+	if got := reloaded.GetInstalledSkills(state.ScopeGlobal, ""); len(got) != 0 {
+		t.Errorf("expected 0 global skills after forget, got %d", len(got))
 	}
 }
 
 func TestComputePackageDigest(t *testing.T) {
+	t.Parallel()
+
 	tmpDir := t.TempDir()
 
 	_ = os.WriteFile(filepath.Join(tmpDir, "SKILL.md"), []byte("# Title"), 0644)
@@ -157,35 +168,58 @@ func TestComputePackageDigest(t *testing.T) {
 	if err != nil || d1 == d3 {
 		t.Fatalf("expected different digest when content changes, got %s vs %s", d1, d3)
 	}
+
+	// Path traversal must be rejected
+	if _, err := state.ComputePackageDigest(tmpDir, []string{"../outside.txt"}); err == nil {
+		t.Errorf("expected ComputePackageDigest to reject ../ traversal")
+	}
+
+	// Symlink escaping tmpDir must be rejected
+	outsideFile := filepath.Join(t.TempDir(), "secret.txt")
+	_ = os.WriteFile(outsideFile, []byte("secret"), 0644)
+	if err := os.Symlink(outsideFile, filepath.Join(tmpDir, "escape.md")); err == nil {
+		if _, err := state.ComputePackageDigest(tmpDir, []string{"escape.md"}); err == nil {
+			t.Errorf("expected ComputePackageDigest to reject symlink escape")
+		}
+	}
 }
 
-func TestState_ConcurrentAccess(t *testing.T) {
-	s := state.NewState()
+func TestState_ConcurrentLockedAccess(t *testing.T) {
+	t.Parallel()
+
+	stateFile := filepath.Join(t.TempDir(), "state.json")
 	var wg sync.WaitGroup
 
-	for i := range 50 {
-		wg.Add(2)
-		go func(id int) {
-			defer wg.Done()
-			s.RecordLoad("skill-a")
-			s.RecordInstall(state.ScopeWorkspace, "/workspace", state.SkillRecord{
-				Name:        "skill-a",
-				Version:     "1.0",
-				InstalledAt: time.Now(),
-			})
-		}(i)
-
-		go func(id int) {
-			defer wg.Done()
-			_ = s.GetInstalledSkills(state.ScopeWorkspace, "/workspace")
-			s.GetSkill(state.ScopeWorkspace, "/workspace", "skill-a")
-		}(i)
+	for range 20 {
+		wg.Go(func() {
+			if err := state.WithLockedState(stateFile, func(s *state.State) error {
+				s.RecordLoad("skill-a", "default", "", 1)
+				s.RecordInstall(state.ScopeWorkspace, "/workspace", state.SkillRecord{
+					Name:        "skill-a",
+					Version:     "1.0",
+					InstalledAt: time.Now(),
+				})
+				return nil
+			}); err != nil {
+				t.Errorf("WithLockedState failed: %v", err)
+			}
+		})
 	}
 
 	wg.Wait()
+
+	loaded, err := state.LoadState(stateFile)
+	if err != nil {
+		t.Fatalf("LoadState failed: %v", err)
+	}
+	if loaded.History["skill-a"] == nil || loaded.History["skill-a"].LoadCount != 20 {
+		t.Errorf("expected LoadCount=20, got %+v", loaded.History["skill-a"])
+	}
 }
 
 func TestState_ReconcileDisk(t *testing.T) {
+	t.Parallel()
+
 	wsDir := t.TempDir()
 	globalDir := t.TempDir()
 
@@ -265,42 +299,38 @@ version: "2.1.0"
 		t.Errorf("expected reconciled version 2.1.0, got %q", gotVer)
 	}
 
-	// Now delete godoctor from disk and test reconciliation
+	// Delete godoctor from disk and test reconciliation removes it cleanly
 	_ = os.RemoveAll(globalSkillDir)
 	changed = s.ReconcileDisk(wsDir, globalDir, isKnown)
 	if !changed {
 		t.Fatalf("expected ReconcileDisk to return true when skills deleted from disk")
 	}
-	gSkillsAfter := s.GetInstalledSkills(state.ScopeGlobal, "")
-	if len(gSkillsAfter) != 0 {
+	if gSkillsAfter := s.GetInstalledSkills(state.ScopeGlobal, ""); len(gSkillsAfter) != 0 {
 		t.Fatalf("expected 0 global skills after deletion, got %d", len(gSkillsAfter))
-	}
-	gForgotten := s.GetForgottenSkills(state.ScopeGlobal, "")
-	if len(gForgotten) != 1 || gForgotten["godoctor"].Status != state.StatusUninstalled {
-		t.Errorf("expected godoctor to be marked uninstalled in forgotten skills: %+v", gForgotten)
 	}
 }
 
 func TestState_WithLockedStateAndDetailedHistory(t *testing.T) {
+	t.Parallel()
+
 	tmpDir := t.TempDir()
 	stateFile := filepath.Join(tmpDir, "state.json")
 
-	// Parallel WithLockedState invocations simulating concurrent ::parallel(N subagent loads
 	var wg sync.WaitGroup
 	for i := range 20 {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
 			err := state.WithLockedState(stateFile, func(s *state.State) error {
-				s.RecordLoadDetailed("godoctor", "", 1)
+				s.RecordLoad("godoctor", "default", "", 1)
 				if idx%2 == 0 {
-					s.RecordLoadDetailed("godoctor", "", 2)
+					s.RecordLoad("godoctor", "default", "", 2)
 				}
 				if idx%4 == 0 {
-					s.RecordLoadDetailed("godoctor", "references/arch.md", 1)
+					s.RecordLoad("godoctor", "default", "references/arch.md", 1)
 				}
 				if idx%5 == 0 {
-					s.RecordRun("godoctor")
+					s.RecordRun("godoctor", "default")
 				}
 				return nil
 			})
@@ -333,11 +363,12 @@ func TestState_WithLockedStateAndDetailedHistory(t *testing.T) {
 	}
 }
 
-func TestState_RecordInstallClearsDirtyDigestAndMergeInto(t *testing.T) {
+func TestState_RecordInstallClearsDirtyDigest(t *testing.T) {
+	t.Parallel()
+
 	s := state.NewState()
 	wsDir := "/tmp/ws"
 
-	// Initial install
 	s.RecordInstall(state.ScopeWorkspace, wsDir, state.SkillRecord{
 		Name:            "alpha",
 		Scope:           state.ScopeWorkspace,
@@ -346,14 +377,12 @@ func TestState_RecordInstallClearsDirtyDigestAndMergeInto(t *testing.T) {
 		InstalledDigest: "sha256:1111",
 	})
 
-	// Simulate local edit making Digest != InstalledDigest
 	wsSkills := s.GetInstalledSkills(state.ScopeWorkspace, wsDir)
 	dirtyRec := wsSkills["alpha"]
 	dirtyRec.Digest = "sha256:dirty"
 	s.RecordInstall(state.ScopeWorkspace, wsDir, dirtyRec)
 
-	// Wait: when RecordInstall is called during `update -f` with a new upstream digest,
-	// InstalledDigest must be updated to match the newly installed Digest so the skill is no longer dirty.
+	// RecordInstall during update -f with new upstream digest updates InstalledDigest too.
 	updatedRec := s.GetInstalledSkills(state.ScopeWorkspace, wsDir)["alpha"]
 	updatedRec.Version = "1.1.0"
 	updatedRec.Digest = "sha256:2222"
@@ -363,34 +392,19 @@ func TestState_RecordInstallClearsDirtyDigestAndMergeInto(t *testing.T) {
 	if finalRec.InstalledDigest != "sha256:2222" {
 		t.Errorf("expected InstalledDigest to be updated to sha256:2222, got %q", finalRec.InstalledDigest)
 	}
-
-	// Test MergeInto preserves concurrent history and honors catalog deletions
-	s.AddCatalog(state.CatalogRecord{Name: "cat-a", Type: state.CatalogTypeGitHub, Source: "org/a"})
-	s.AddCatalog(state.CatalogRecord{Name: "cat-b", Type: state.CatalogTypeGitHub, Source: "org/b"})
-
-	disk := state.NewState()
-	disk.AddCatalog(state.CatalogRecord{Name: "cat-a", Type: state.CatalogTypeGitHub, Source: "org/a"})
-	disk.AddCatalog(state.CatalogRecord{Name: "cat-b", Type: state.CatalogTypeGitHub, Source: "org/b"})
-	disk.RecordLoadDetailed("concurrent-skill", "", 1)
-
-	// Remove cat-a in s and merge into disk
-	s.RemoveCatalog("cat-a")
-	s.MergeInto(disk)
-
-	if _, ok := disk.GetCatalog("cat-a"); ok {
-		t.Errorf("expected cat-a to be removed from disk state after MergeInto")
-	}
-	if _, ok := disk.GetCatalog("cat-b"); !ok {
-		t.Errorf("expected cat-b to remain in disk state after MergeInto")
-	}
-	if disk.History["concurrent-skill"] == nil || disk.History["concurrent-skill"].LoadCount != 1 {
-		t.Errorf("expected concurrent-skill history to be preserved in disk state, got %+v", disk.History["concurrent-skill"])
-	}
 }
 
-func TestState_ReconcileDiskSymlinkAndMissingSkillMD(t *testing.T) {
+func TestState_ReconcileDiskSkipsEscapingSymlinkAndDetectsMissingSkillMD(t *testing.T) {
+	t.Parallel()
+
 	tmpDir := t.TempDir()
 	wsDir := filepath.Join(tmpDir, "workspace")
+	skillsBase := filepath.Join(wsDir, ".agents", "skills")
+	if err := os.MkdirAll(skillsBase, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Symlink pointing outside skillsBase must be skipped for security.
 	externalSkillTarget := filepath.Join(tmpDir, "external-skill")
 	if err := os.MkdirAll(externalSkillTarget, 0755); err != nil {
 		t.Fatal(err)
@@ -398,31 +412,36 @@ func TestState_ReconcileDiskSymlinkAndMissingSkillMD(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(externalSkillTarget, "SKILL.md"), []byte("---\nname: linked-skill\nversion: \"3.0.0\"\n---\n# Linked"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Symlink(externalSkillTarget, filepath.Join(skillsBase, "linked-skill")); err == nil {
+		s := state.NewState()
+		s.ReconcileDisk(wsDir, "", nil)
+		if _, found := s.GetInstalledSkills(state.ScopeWorkspace, wsDir)["linked-skill"]; found {
+			t.Errorf("expected ReconcileDisk to skip symlinked skill directory pointing outside skills root")
+		}
+	}
 
-	skillsBase := filepath.Join(wsDir, ".agents", "skills")
-	if err := os.MkdirAll(skillsBase, 0755); err != nil {
+	// 2. Regular skill directory is discovered and removed when SKILL.md is deleted.
+	realSkillDir := filepath.Join(skillsBase, "real-skill")
+	if err := os.MkdirAll(realSkillDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	symlinkPath := filepath.Join(skillsBase, "linked-skill")
-	if err := os.Symlink(externalSkillTarget, symlinkPath); err != nil {
-		t.Skipf("symlinks not supported: %v", err)
+	if err := os.WriteFile(filepath.Join(realSkillDir, "SKILL.md"), []byte("---\nname: real-skill\nversion: \"3.0.0\"\n---\n# Real"), 0644); err != nil {
+		t.Fatal(err)
 	}
 
 	s := state.NewState()
 	if !s.ReconcileDisk(wsDir, "", nil) {
-		t.Fatalf("expected ReconcileDisk to discover symlinked skill directory")
+		t.Fatalf("expected ReconcileDisk to discover real-skill")
 	}
-	installed := s.GetInstalledSkills(state.ScopeWorkspace, wsDir)
-	if rec, ok := installed["linked-skill"]; !ok || rec.Version != "3.0.0" {
-		t.Fatalf("expected linked-skill v3.0.0 to be installed, got %+v", installed)
+	if rec, ok := s.GetInstalledSkills(state.ScopeWorkspace, wsDir)["real-skill"]; !ok || rec.Version != "3.0.0" {
+		t.Fatalf("expected real-skill v3.0.0 to be installed, got %+v", rec)
 	}
 
-	// Remove SKILL.md inside the target directory while leaving the directory intact
-	_ = os.Remove(filepath.Join(externalSkillTarget, "SKILL.md"))
+	_ = os.Remove(filepath.Join(realSkillDir, "SKILL.md"))
 	if !s.ReconcileDisk(wsDir, "", nil) {
 		t.Fatalf("expected ReconcileDisk to detect missing SKILL.md")
 	}
 	if len(s.GetInstalledSkills(state.ScopeWorkspace, wsDir)) != 0 {
-		t.Errorf("expected linked-skill to be marked uninstalled when SKILL.md is removed")
+		t.Errorf("expected real-skill to be removed when SKILL.md is deleted")
 	}
 }
